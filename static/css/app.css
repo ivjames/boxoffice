@@ -978,6 +978,156 @@ table.dash-table th {
     color: #b91c1c;
 }
 
+/* -- seating chart visual editor (Phase B) -------------------------------- */
+
+.chart-editor {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.chart-editor__stage {
+    flex: 1 1 32rem;
+    min-width: 0;
+}
+
+.chart-editor__toolbar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+}
+
+.chart-editor__dirty {
+    color: #b45309;
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.chart-editor__saved {
+    color: #166534;
+    font-size: 0.875rem;
+}
+
+.chart-editor__error {
+    color: #b91c1c;
+    font-size: 0.875rem;
+}
+
+.chart-editor__svg-wrap {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: #fafafa;
+    max-width: 100%;
+    overflow: auto;
+}
+
+.chart-editor__svg {
+    display: block;
+    width: 100%;
+    height: 70vh;
+    min-height: 24rem;
+    touch-action: none;
+}
+
+.editor-seat {
+    cursor: grab;
+    stroke-width: 0.06;
+}
+
+.editor-seat:hover {
+    filter: brightness(1.15);
+}
+
+.editor-seat--dragging {
+    cursor: grabbing;
+    filter: brightness(1.3);
+}
+
+.editor-seat--accessible {
+    stroke: #2563eb;
+}
+
+.editor-seat-label {
+    pointer-events: none;
+    fill: #fff;
+    font-family: inherit;
+    text-anchor: middle;
+    dominant-baseline: central;
+    user-select: none;
+}
+
+.chart-editor__sidebar {
+    flex: 0 0 20rem;
+    max-width: 100%;
+}
+
+.chart-editor__legend {
+    list-style: none;
+    margin: 0 0 1.25rem;
+    padding: 0;
+    font-size: 0.875rem;
+}
+
+.chart-editor__legend li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+
+.chart-editor__swatch {
+    display: inline-block;
+    width: 0.85rem;
+    height: 0.85rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.chart-editor__section-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.chart-editor__section-panel h3 {
+    margin: 0 0 0.35rem;
+    font-size: 0.95rem;
+}
+
+.chart-editor__section-panel dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.15rem 0.5rem;
+    font-size: 0.8rem;
+    color: var(--muted-color);
+    margin: 0 0 0.5rem;
+}
+
+.chart-editor__section-panel dd {
+    margin: 0;
+}
+
+.chart-editor__section-actions {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.chart-editor__section-actions form {
+    margin: 0;
+}
+
+@media (max-width: 900px) {
+    .chart-editor__svg {
+        height: 60vh;
+    }
+}
+
 .search-form {
     display: flex;
     gap: 0.5rem;

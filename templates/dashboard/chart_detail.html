@@ -7,7 +7,10 @@
 <a class="back-link" href="{% url 'dashboard_chart_list' chart.venue.pk %}">&larr; {{ chart.venue.name }} charts</a>
 <div class="dash-header">
     <h1>{{ chart.name }}</h1>
-    <a class="button button--secondary" href="{% url 'dashboard_chart_update' chart.pk %}">Rename</a>
+    <div>
+        <a class="button" href="{% url 'dashboard_chart_editor' chart.pk %}">Open visual editor</a>
+        <a class="button button--secondary" href="{% url 'dashboard_chart_update' chart.pk %}">Rename</a>
+    </div>
 </div>
 
 <div class="dash-header">

@@ -1,7 +1,15 @@
 """Tests for venues/generation.py: row-label schemes (skip I/O by default),
 each numbering scheme, ragged rows, accessible flags, x/y placement, and the
 destructive-regeneration guardrails (refuse w/o replace, refuse outright if
-live tickets exist)."""
+live tickets exist).
+
+Phase B (docs/SEATING.md "B. Geometry + visual editor") adds GeometryTests
+below: grid math is unchanged (asserted directly, not just "same as before"),
+plus raked/diagonal (rotation + row_x_offset) and fanned (arc_radius) --
+coordinates asserted within tolerance via assertAlmostEqual since trig is
+involved."""
+
+import math
 
 from django.test import TestCase
 
@@ -195,3 +203,164 @@ class GenerateSeatsTests(TestCase):
 
         seats = generate_seats(section, [4], replace=True)
         self.assertEqual(len(seats), 4)
+
+
+class GeometryTests(TestCase):
+    """Phase B: grid/raked/fanned coordinate generation (venues.generation's
+    _seat_xy dispatch). Uses generate_seats end-to-end (not the private
+    helpers directly) so these also exercise the public contract staff code
+    calls."""
+
+    def setUp(self):
+        self.org = make_org("roxy")
+        venue = Venue.objects.create(organization=self.org, name="Main Stage")
+        self.chart = SeatingChart.objects.create(organization=self.org, venue=venue, name="Standard")
+
+    def make_section(self, **overrides):
+        defaults = {"organization": self.org, "chart": self.chart, "name": "Orchestra"}
+        defaults.update(overrides)
+        return Section.objects.create(**defaults)
+
+    def seats_by_row(self, section):
+        seats = list(section.seats.order_by("row_label", "number"))
+        by_row = {}
+        for seat in seats:
+            by_row.setdefault(seat.row_label, []).append(seat)
+        return by_row
+
+    # -- grid (rotation=0, row_x_offset=0, arc_radius=None) -- unchanged from
+    # Phase A; asserted directly here (not just "matches old behavior").
+
+    def test_grid_is_a_plain_rectangle(self):
+        section = self.make_section(origin_x=0, origin_y=0, seat_pitch=2.0, row_pitch=3.0)
+        generate_seats(section, [3, 3])
+        by_row = self.seats_by_row(section)
+        row_a = sorted(by_row["A"], key=lambda s: s.number)
+        row_b = sorted(by_row["B"], key=lambda s: s.number)
+        self.assertEqual([s.x for s in row_a], [0.0, 2.0, 4.0])
+        self.assertEqual([s.y for s in row_a], [0.0, 0.0, 0.0])
+        self.assertEqual([s.x for s in row_b], [0.0, 2.0, 4.0])
+        self.assertEqual([s.y for s in row_b], [3.0, 3.0, 3.0])
+
+    # -- raked/diagonal: rotation + per-row x_offset --------------------
+
+    def test_raked_row_x_offset_staggers_rows_into_a_trapezoid(self):
+        # No rotation -- row_x_offset alone should shift each row right by
+        # a growing amount, independent of rotation.
+        section = self.make_section(
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=1.0, row_x_offset=0.5, rotation=0.0
+        )
+        generate_seats(section, [3, 3, 3])
+        by_row = self.seats_by_row(section)
+        row_a = sorted(by_row["A"], key=lambda s: s.number)
+        row_b = sorted(by_row["B"], key=lambda s: s.number)
+        row_c = sorted(by_row["C"], key=lambda s: s.number)
+        self.assertEqual([s.x for s in row_a], [0.0, 1.0, 2.0])
+        self.assertEqual([s.x for s in row_b], [0.5, 1.5, 2.5])
+        self.assertEqual([s.x for s in row_c], [1.0, 2.0, 3.0])
+        self.assertEqual([s.y for s in row_a], [0.0, 0.0, 0.0])
+        self.assertEqual([s.y for s in row_b], [1.0, 1.0, 1.0])
+        self.assertEqual([s.y for s in row_c], [2.0, 2.0, 2.0])
+
+    def test_raked_ragged_rows_form_an_angled_block_edge(self):
+        # A side section: ragged (shrinking) row lengths + a growing
+        # row_x_offset -- the "diagonal wall edge" from docs/SEATING.md.
+        section = self.make_section(row_x_offset=1.0, seat_pitch=1.0, row_pitch=1.0)
+        generate_seats(section, [5, 4, 3])
+        by_row = self.seats_by_row(section)
+        # Rightmost seat of each row (the aisle-side edge, ascending x)
+        # traces a straight diagonal line despite ragged row lengths.
+        rightmost = {
+            label: max(s.x for s in seats) for label, seats in by_row.items()
+        }
+        self.assertAlmostEqual(rightmost["A"], 4.0)  # 0..4, row_x_offset=0
+        self.assertAlmostEqual(rightmost["B"], 4.0)  # 0 + 1*1.0 .. 3 + 1.0
+        self.assertAlmostEqual(rightmost["C"], 4.0)  # 0 + 2*1.0 .. 2 + 2.0
+        # i.e. the wall edge (rightmost seat) is flush across all 3 rows --
+        # exactly the ragged-row + growing-offset trapezoid shape.
+
+    def test_raked_rotation_tilts_the_whole_staggered_block(self):
+        section = self.make_section(
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=1.0, row_x_offset=0.0, rotation=90.0
+        )
+        generate_seats(section, [1, 1])
+        by_row = self.seats_by_row(section)
+        seat_a = by_row["A"][0]
+        seat_b = by_row["B"][0]
+        # A 90-degree rotation swaps the local (x, y) axes: row B (local
+        # y=1, x=0) should land near (-1, 0) rather than (0, 1).
+        self.assertAlmostEqual(seat_a.x, 0.0, places=6)
+        self.assertAlmostEqual(seat_a.y, 0.0, places=6)
+        self.assertAlmostEqual(seat_b.x, -1.0, places=6)
+        self.assertAlmostEqual(seat_b.y, 0.0, places=6)
+
+    def test_raked_origin_offsets_the_whole_block(self):
+        section = self.make_section(origin_x=50.0, origin_y=20.0, row_x_offset=1.0)
+        generate_seats(section, [2, 2])
+        for seat in section.seats.all():
+            self.assertGreaterEqual(seat.x, 50.0)
+            self.assertGreaterEqual(seat.y, 20.0)
+
+    # -- fanned: arc_radius set -------------------------------------------
+
+    def test_fanned_row_curves_symmetrically_around_center(self):
+        section = self.make_section(
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0, arc_radius=10.0
+        )
+        generate_seats(section, [3])
+        seats = sorted(section.seats.all(), key=lambda s: s.x)
+        # Center seat (row midpoint) sits straight out from the origin.
+        self.assertAlmostEqual(seats[1].x, 0.0, places=6)
+        self.assertAlmostEqual(seats[1].y, 10.0, places=6)
+        # Left/right seats are equidistant from origin (radius preserved)
+        # and symmetric around x=0.
+        self.assertAlmostEqual(seats[0].x, -seats[2].x, places=6)
+        self.assertAlmostEqual(seats[0].y, seats[2].y, places=6)
+        for seat in seats:
+            self.assertAlmostEqual(math.hypot(seat.x, seat.y), 10.0, places=6)
+        # Matches the closed-form trig directly.
+        angle_step = 1.0 / 10.0
+        self.assertAlmostEqual(seats[0].x, 10.0 * math.sin(-angle_step), places=6)
+        self.assertAlmostEqual(seats[2].x, 10.0 * math.sin(angle_step), places=6)
+
+    def test_fanned_rows_step_outward_by_row_pitch(self):
+        section = self.make_section(
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0, arc_radius=10.0
+        )
+        generate_seats(section, [1, 1, 1])
+        by_row = self.seats_by_row(section)
+        # Single-seat rows sit dead center (theta=0) -- radius grows by
+        # row_pitch per row, straight out along y.
+        self.assertAlmostEqual(by_row["A"][0].y, 10.0, places=6)
+        self.assertAlmostEqual(by_row["B"][0].y, 15.0, places=6)
+        self.assertAlmostEqual(by_row["C"][0].y, 20.0, places=6)
+        for label in ("A", "B", "C"):
+            self.assertAlmostEqual(by_row[label][0].x, 0.0, places=6)
+
+    def test_fanned_rotation_rotates_the_whole_fan(self):
+        plain = self.make_section(
+            name="Plain", origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0, arc_radius=10.0
+        )
+        generate_seats(plain, [1])
+        plain_seat = plain.seats.get()
+
+        rotated = self.make_section(
+            name="Rotated", origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0,
+            arc_radius=10.0, rotation=90.0,
+        )
+        generate_seats(rotated, [1])
+        rotated_seat = rotated.seats.get()
+
+        # A 90-degree fan rotation swings the center seat from straight
+        # "ahead" (0, radius) to straight "right" (radius, 0).
+        self.assertAlmostEqual(plain_seat.x, 0.0, places=6)
+        self.assertAlmostEqual(plain_seat.y, 10.0, places=6)
+        self.assertAlmostEqual(rotated_seat.x, 10.0, places=6)
+        self.assertAlmostEqual(rotated_seat.y, 0.0, places=6)
+
+    def test_arc_radius_none_falls_back_to_grid_or_raked(self):
+        section = self.make_section(arc_radius=None, row_x_offset=0.0, rotation=0.0)
+        generate_seats(section, [2])
+        seats = sorted(section.seats.all(), key=lambda s: s.x)
+        self.assertEqual([s.x for s in seats], [0.0, 1.0])
+        self.assertEqual([s.y for s in seats], [0.0, 0.0])

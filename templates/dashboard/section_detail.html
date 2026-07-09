@@ -10,6 +10,7 @@
     {{ section.get_numbering_scheme_display }} · {{ section.get_row_label_scheme_display }}
     {% if section.tier %} · Tier: {{ section.tier }}{% endif %}
     · <a href="{% url 'dashboard_section_update' chart.pk section.pk %}">Edit layout</a>
+    · <a href="{% url 'dashboard_chart_editor' chart.pk %}">Open visual editor</a>
 </p>
 
 <h2>Generate seats</h2>

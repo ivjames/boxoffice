@@ -176,6 +176,7 @@ class SectionForm(forms.ModelForm):
             "rotation",
             "seat_pitch",
             "row_pitch",
+            "row_x_offset",
             "arc_radius",
         ]
 

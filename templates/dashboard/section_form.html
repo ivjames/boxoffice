@@ -9,6 +9,7 @@
 <p class="muted">{{ chart.name }} — {{ chart.venue.name }}</p>
 <form method="post" class="dash-form">
     {% csrf_token %}
+    {% if request.GET.next == "editor" %}<input type="hidden" name="next" value="editor">{% endif %}
     {% for field in form %}
         <div class="field">
             {{ field.label_tag }}

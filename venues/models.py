@@ -89,13 +89,25 @@ class Section(TenantScopedModel):
     )
     seat_pitch = models.FloatField(default=1.0, help_text="Spacing between adjacent seats in a row.")
     row_pitch = models.FloatField(default=1.0, help_text="Spacing between rows.")
+    row_x_offset = models.FloatField(
+        default=0.0,
+        help_text=(
+            "Phase B: extra horizontal offset applied per row (before rotation), growing "
+            "with row_index -- e.g. 0.5 shifts row B 0.5 right of row A, row C 1.0, and so on. "
+            "This is what turns a raked/diagonal side section into a trapezoid/angled block "
+            "(combined with ragged per-row seat counts and/or `rotation`) instead of a plain "
+            "rectangle. 0.0 (default) reproduces Phase A's straight grid exactly."
+        ),
+    )
     arc_radius = models.FloatField(
         null=True,
         blank=True,
         help_text=(
-            "Radius for a fanned/curved section. Not yet used for seat placement -- Phase A "
-            "always generates a straight (optionally rotated) grid; reserved for Phase B's "
-            "fanned-section geometry."
+            "Radius (distance from origin to the front row) for a fanned/curved section, e.g. "
+            "a center orchestra block. When set, seats in a row are placed along a circular "
+            "arc of this radius (rows step outward from the origin by row_pitch per row) "
+            "instead of a straight line -- see venues.generation for the trig. Null/blank "
+            "(default) means straight (grid or raked, per rotation/row_x_offset)."
         ),
     )
 

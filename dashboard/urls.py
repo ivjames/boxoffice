@@ -80,4 +80,20 @@ urlpatterns = [
         views.seat_delete,
         name="dashboard_seat_delete",
     ),
+    # -- visual editor (Phase B, docs/SEATING.md) ----------------------------
+    path(
+        "dashboard/charts/<int:pk>/editor/",
+        views.chart_editor,
+        name="dashboard_chart_editor",
+    ),
+    path(
+        "dashboard/charts/<int:pk>/editor/save/",
+        views.chart_editor_save,
+        name="dashboard_chart_editor_save",
+    ),
+    path(
+        "dashboard/charts/<int:chart_pk>/sections/<int:section_pk>/regenerate/",
+        views.section_regenerate,
+        name="dashboard_section_regenerate",
+    ),
 ]

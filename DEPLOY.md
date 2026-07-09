@@ -17,6 +17,20 @@ which have no `ALLOWED_HOSTS` lockdown and a different SQLite file).
 Everything below runs **on the droplet**, as root (lab980 apps run as root —
 no dedicated service user).
 
+### 0. Prerequisites (this is the droplet's first Python site)
+
+The lab980 box has been Node/static until now, so confirm two things first —
+both have bitten a real deploy:
+
+```bash
+doctl account get          # provision-site's DNS step fails hard if doctl isn't authed
+python3 --version          # need >= 3.10 for Django 5.2
+apt-get install -y python3-venv python3-dev   # often absent on a Node-first box
+```
+
+If the repo is private, export a token before provisioning so the clone works:
+`export GITHUB_TOKEN=<PAT with repo read>`.
+
 ### 1. Scaffold the site (DNS + dir + repo + nginx + TLS)
 
 ```bash
@@ -51,11 +65,17 @@ venv/bin/pip install -r requirements.txt
 copy `.env.example` for the full annotated list, but at minimum:
 
 ```bash
+# Generate a SHELL-SAFE secret key (alphanumeric — Django's default key can
+# contain ()$#&* which are awkward in an env file) and write it single-quoted:
+KEY=$(venv/bin/python -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(64)))")
+printf "SECRET_KEY='%s'\n" "$KEY" >> .env
+
+# The rest. Keep each comment on its OWN line — never inline after a value.
 cat >> .env <<'EOF'
-SECRET_KEY=<paste output of: venv/bin/python -c "from django.core.management.utils import get_random_secret_key as g; print(g())">
 DEBUG=false
 DJANGO_SETTINGS_MODULE=config.settings.prod
 BASE_DOMAIN=lab980.com
+RESERVED_SUBDOMAINS=www,app,admin,boxoffice
 ALLOWED_HOSTS=boxoffice.lab980.com,.lab980.com
 CSRF_TRUSTED_ORIGINS=https://*.lab980.com,https://lab980.com
 WEB_CONCURRENCY=3
@@ -66,6 +86,14 @@ DEFAULT_FROM_EMAIL=no-reply@lab980.com
 EOF
 chmod 600 .env
 ```
+
+Two `.env` rules the hard way:
+- **`RESERVED_SUBDOMAINS` must include `boxoffice`** (the platform's own
+  subdomain). Otherwise `boxoffice.lab980.com` is parsed as a nonexistent
+  tenant and 404s. Add every future platform host (e.g. `app`, `admin`) here too.
+- `bin/boxoffice` reads this file literally (not via bash). It strips an
+  inline `# comment` after an unquoted value, but keep comments on their own
+  line anyway — and single-quote any value containing `#`, `)`, `$`, or spaces.
 
 Leave `DATABASE_URL` unset for the default SQLite-in-`data/` deploy (see
 "SQLite -> Postgres" below for the upgrade path).
@@ -84,8 +112,15 @@ app directory from the symlink target, not `cwd`.
 ```bash
 boxoffice migrate
 boxoffice deploy            # pip install (no-op first time) + migrate + collectstatic + pm2 start/restart
-venv/bin/python manage.py createsuperuser
+DJANGO_SETTINGS_MODULE=config.settings.prod venv/bin/python manage.py createsuperuser
 ```
+
+Note the explicit `DJANGO_SETTINGS_MODULE=config.settings.prod` on
+`createsuperuser`: a bare `manage.py` defaults to **dev** settings, which would
+create the admin in the dev SQLite (repo root), not the prod DB in `data/` —
+and you'd never be able to log in on the live site. `boxoffice`-wrapped
+commands already export prod settings from `.env`; only direct `manage.py`
+calls need the prefix.
 
 `boxoffice deploy` starts the pm2 app automatically the first time (from
 `deploy/ecosystem.config.js`, name `boxoffice`, running `bin/boxoffice
@@ -110,10 +145,11 @@ venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:$PORT \
 curl -s https://boxoffice.lab980.com/healthz   # {"status": "ok"}
 ```
 
-With no tenant Organization yet, `boxoffice.lab980.com` (the reserved `www`
-host per `RESERVED_SUBDOMAINS`) serves the platform landing page. `/admin/`
-is where you'll set up tenants' Stripe keys and branding once they're
-onboarded (next section).
+With no tenant Organization yet, `boxoffice.lab980.com` serves the platform
+landing page — but only because `boxoffice` is listed in `RESERVED_SUBDOMAINS`
+(step 3); omit it and this host 404s as a nonexistent tenant. `/admin/` is
+where you'll set up tenants' Stripe keys and branding once they're onboarded
+(next section).
 
 ### 7. Install the Hold sweeper
 

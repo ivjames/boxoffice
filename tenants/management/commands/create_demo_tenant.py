@@ -8,6 +8,7 @@ Phase 3+ and as a smoke test that the whole model graph wires together.
 from datetime import timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -67,7 +68,16 @@ class Command(BaseCommand):
         )
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("Demo staff login (owner role, full access):"))
-        self.stdout.write(f"  URL:      http://{subdomain}.localhost:8000/login/  (or https://{subdomain}.lab980.com/login/ in prod)")
+        if settings.DEFAULT_TENANT and settings.DEFAULT_TENANT == subdomain:
+            self.stdout.write(
+                "  URL:      /login/ on your main site — this org is DEFAULT_TENANT, so it's "
+                "served on the platform host (no subdomain needed)."
+            )
+        else:
+            self.stdout.write(
+                f"  URL:      http://{subdomain}.localhost:8000/login/  "
+                f"(or https://{subdomain}.{settings.BASE_DOMAIN}/login/ once that subdomain is provisioned)"
+            )
         self.stdout.write(f"  Email:    {owner_email}")
         self.stdout.write(f"  Password: {owner_password}")
         self.stdout.write(

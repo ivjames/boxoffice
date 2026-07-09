@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxoffice{% endif %}{% endblock %}</title>
+    <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}</title>
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
     <style>
         :root {
@@ -22,7 +22,7 @@
                 {% if organization and organization.logo %}
                     <img src="{{ organization.logo.url }}" alt="{{ organization.name }}" class="site-header__logo">
                 {% endif %}
-                <span>{% if organization %}{{ organization.name }}{% else %}Boxoffice{% endif %}</span>
+                <span>{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}</span>
             </a>
         </div>
     </header>
@@ -43,7 +43,7 @@
             {% if organization %}
                 &copy; {{ organization.name }}
             {% else %}
-                &copy; Boxoffice
+                &copy; Boxo.show
             {% endif %}
         </div>
     </footer>

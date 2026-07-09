@@ -62,12 +62,25 @@ USAGE
 }
 
 # ---- load app-dir .env (KEY=VALUE lines) into the environment ----
+# Parses lines WITHOUT sourcing the file, so a value containing shell
+# metacharacters (e.g. a Django SECRET_KEY with ()$&*) can neither break
+# parsing nor be evaluated. Accepts optionally-quoted values and a leading
+# `export `. Values are taken literally (no variable expansion).
 load_env() {
   if [ -f "$APP_DIR/.env" ]; then
-    set -a
-    # shellcheck disable=SC1090,SC1091
-    . "$APP_DIR/.env"
-    set +a
+    local line key val
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=${line%$'\r'}                       # tolerate CRLF
+      case "$line" in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
+      key=${line%%=*}; val=${line#*=}
+      key=${key#export }; key=${key# }; key=${key% }
+      case "$key" in [!A-Za-z_]*|*[!A-Za-z0-9_]*) continue ;; esac
+      case "$val" in                           # strip one layer of matching quotes
+        \'*\') val=${val#\'}; val=${val%\'} ;;
+        \"*\") val=${val#\"}; val=${val%\"} ;;
+      esac
+      export "$key=$val"
+    done < "$APP_DIR/.env"
   else
     warn "$APP_DIR/.env not found — commands needing PORT/BASE_DOMAIN/etc. will fail."
   fi

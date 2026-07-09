@@ -113,6 +113,28 @@ class Order(TenantScopedModel):
             models.Index(fields=["organization", "status"]),
             models.Index(fields=["stripe_checkout_session_id"]),
         ]
+        constraints = [
+            # payments.services.fulfill_checkout_session()'s idempotency
+            # relies on "does an Order already exist for this session id"
+            # -- correct in sequence, but without a DB-level constraint two
+            # truly concurrent webhook deliveries (both reading "no Order
+            # yet" before either commits -- possible under Postgres's
+            # default READ COMMITTED isolation; SQLite's harden_sqlite()
+            # IMMEDIATE-mode whole-database lock is what prevents it today)
+            # could each create their own Order/Ticket set, double-
+            # fulfilling one payment. This constraint makes the DB itself
+            # the backstop regardless of isolation level or backend; see
+            # fulfill_checkout_session()'s IntegrityError handling for the
+            # graceful fallback this enables. NULL/blank session ids
+            # (pending/manually-created Orders) are excluded so they don't
+            # collide with each other.
+            models.UniqueConstraint(
+                fields=["organization", "stripe_checkout_session_id"],
+                condition=~models.Q(stripe_checkout_session_id__isnull=True)
+                & ~models.Q(stripe_checkout_session_id=""),
+                name="unique_stripe_checkout_session_per_org",
+            ),
+        ]
         ordering = ["-created_at"]
 
     def __str__(self):

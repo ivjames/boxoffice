@@ -8,6 +8,7 @@ from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import IntegrityError, transaction
 from django.test import RequestFactory, TestCase
 from django.utils import timezone
 
@@ -338,3 +339,139 @@ class FulfillCheckoutSessionTests(OrdersFixtureMixin, TestCase):
         with self.assertRaises(services.AvailabilityChangedError):
             services.fulfill_checkout_session(self.org, session)
         self.assertEqual(Order.objects.filter(stripe_checkout_session_id="cs_test_conflict").count(), 0)
+
+
+class StripeSessionIdempotencyRaceTests(OrdersFixtureMixin, TestCase):
+    """fulfill_checkout_session()'s idempotency (test_replaying_same_session_is_idempotent
+    above) is correct for a SEQUENTIAL replay -- the second call's initial
+    "does an Order already exist" check finds the first call's already-
+    committed Order and returns early. That check isn't itself locked,
+    though: two truly concurrent deliveries (real duplicate Stripe webhook
+    delivery hitting two gunicorn workers at once) can both read "no Order
+    yet" before either commits. Under Postgres's default READ COMMITTED
+    isolation this is a real race; SQLite's harden_sqlite() IMMEDIATE-mode
+    whole-database lock is the only thing preventing it on today's default
+    deployment (see orders/test_concurrency_multiprocess.py's module
+    docstring for why a real multi-connection race can't be reproduced
+    against pytest's in-memory SQLite test database either way). These
+    tests instead prove the DB-level backstop directly: first, that the
+    constraint itself rejects a duplicate (organization,
+    stripe_checkout_session_id) pair; second, that fulfill_checkout_session
+    survives hitting it mid-race (by forcing its own pre-check to report
+    "not found", which is exactly what it would legitimately see in the
+    race window) without creating a second Order/Ticket set or crashing the
+    webhook.
+    """
+
+    def test_db_rejects_a_second_order_for_the_same_org_and_session_id(self):
+        self.build_ga_performance()
+        Order.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            buyer_email="first@example.com",
+            total=Decimal("10.00"),
+            status=Order.Status.PAID,
+            stripe_checkout_session_id="cs_dup",
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Order.objects.create(
+                    organization=self.org,
+                    performance=self.performance,
+                    buyer_email="second@example.com",
+                    total=Decimal("10.00"),
+                    status=Order.Status.PAID,
+                    stripe_checkout_session_id="cs_dup",
+                )
+
+    def test_multiple_orders_without_a_session_id_are_still_allowed(self):
+        """The constraint's exclusion condition must not block ordinary
+        manually-created/pending Orders that have no Stripe session id."""
+        self.build_ga_performance()
+        Order.objects.create(
+            organization=self.org, performance=self.performance,
+            buyer_email="a@example.com", total=Decimal("10.00"),
+        )
+        Order.objects.create(
+            organization=self.org, performance=self.performance,
+            buyer_email="b@example.com", total=Decimal("10.00"),
+        )
+        from django.db.models import Q
+
+        no_session_id = Q(stripe_checkout_session_id__isnull=True) | Q(stripe_checkout_session_id="")
+        self.assertEqual(Order.objects.filter(no_session_id).count(), 2)
+
+    def _build_ga_hold(self, quantity=2):
+        self.build_ga_performance()
+        return order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-race",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=quantity,
+        )
+
+    def _session(self, hold, session_id="cs_test_race", email="buyer@example.com", name="Buyer Person"):
+        return {
+            "id": session_id,
+            "payment_intent": "pi_test_race",
+            "metadata": {"hold_id": str(hold.pk), "organization_id": str(hold.organization_id)},
+            "customer_details": {"email": email, "name": name},
+        }
+
+    def test_concurrent_duplicate_delivery_falls_back_to_the_committed_winner(self):
+        """Simulates the real race: two "concurrent" webhook deliveries for
+        the same session id where BOTH pass fulfill_checkout_session's
+        initial existence check before either has committed. Patches that
+        pre-check to report "not found" for this call (exactly what it
+        would legitimately see mid-race), after a competing Order for the
+        same session id has already been committed by "the other worker" --
+        proving the DB constraint + graceful IntegrityError handling is
+        what actually prevents a second Order/Ticket set and a double
+        GAAllocation.sold bump, not just the ordering of test assertions.
+        """
+        self.hold = self._build_ga_hold()
+        session = self._session(self.hold)
+
+        winner = Order.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            buyer_email="winner@example.com",
+            buyer_name="Winner",
+            total=Decimal("70.00"),
+            status=Order.Status.PAID,
+            stripe_checkout_session_id=session["id"],
+        )
+
+        # Only the FIRST Order.objects.filter() call (fulfill_checkout_session's
+        # own pre-check) is faked out to miss -- exactly what it would
+        # legitimately see mid-race. The except-block's post-IntegrityError
+        # lookup must hit the real table (that's the fallback under test).
+        real_filter = Order.objects.filter
+        calls = {"n": 0}
+
+        def fake_filter(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                from unittest.mock import MagicMock
+
+                mock_qs = MagicMock()
+                mock_qs.first.return_value = None
+                return mock_qs
+            return real_filter(*args, **kwargs)
+
+        with patch("payments.services.Order.objects.filter", side_effect=fake_filter):
+            order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertFalse(created)
+        self.assertEqual(order.pk, winner.pk)
+        self.assertEqual(Order.objects.filter(stripe_checkout_session_id=session["id"]).count(), 1)
+        # The losing branch's fulfillment never ran: no extra tickets, GA
+        # allocation untouched, and the Hold it would have consumed
+        # survives (its transaction rolled back to the savepoint, not
+        # forward into _fulfill_ga/hold.delete()).
+        self.assertEqual(Ticket.objects.count(), 0)
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)
+        self.assertTrue(Hold.objects.filter(pk=self.hold.pk).exists())

@@ -24,7 +24,7 @@ one-shot, so "does an Order already exist for this session id" is both
 necessary and sufficient to detect a replay -- see its docstring.
 """
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.urls import reverse
 from django.utils import timezone
 
@@ -207,15 +207,33 @@ def fulfill_checkout_session(organization, session):
     buyer_name = customer_details.get("name") or ""
     total = order_services.hold_total(hold)
 
-    order = Order.objects.create(
-        organization=organization,
-        performance=hold.performance,
-        buyer_email=buyer_email,
-        buyer_name=buyer_name,
-        total=total,
-        status=Order.Status.PAID,
-        stripe_checkout_session_id=session_id,
-    )
+    # The `existing` check above is correct in sequence but isn't itself
+    # locked -- two truly concurrent deliveries for the same session_id can
+    # both read "no Order yet" before either commits (see Order.Meta's
+    # unique_stripe_checkout_session_per_org constraint docstring). Create
+    # inside a savepoint (nested atomic) so a unique-constraint violation
+    # here can be caught and handled without poisoning the outer
+    # transaction; the loser falls back to the winner's now-committed Order
+    # instead of raising 500 into the webhook view (which would just make
+    # Stripe retry into the same race again).
+    try:
+        with transaction.atomic():
+            order = Order.objects.create(
+                organization=organization,
+                performance=hold.performance,
+                buyer_email=buyer_email,
+                buyer_name=buyer_name,
+                total=total,
+                status=Order.Status.PAID,
+                stripe_checkout_session_id=session_id,
+            )
+    except IntegrityError:
+        winner = Order.objects.filter(
+            organization=organization, stripe_checkout_session_id=session_id
+        ).first()
+        if winner is not None:
+            return winner, False
+        raise
 
     if hold.price_tier_id and hold.quantity:
         _fulfill_ga(organization, hold, order)

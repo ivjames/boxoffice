@@ -1,0 +1,47 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxoffice{% endif %}{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    <style>
+        :root {
+            /* Per-tenant branding. Falls back to the platform defaults when
+               request.organization is None (reserved subdomain / bare host). */
+            --primary-color: {% if organization %}{{ organization.primary_color }}{% else %}#111111{% endif %};
+            --accent-color: {% if organization %}{{ organization.accent_color }}{% else %}#e11d48{% endif %};
+        }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <header class="site-header">
+        <div class="site-header__inner">
+            <a class="site-header__brand" href="/">
+                {% if organization and organization.logo %}
+                    <img src="{{ organization.logo.url }}" alt="{{ organization.name }}" class="site-header__logo">
+                {% endif %}
+                <span>{% if organization %}{{ organization.name }}{% else %}Boxoffice{% endif %}</span>
+            </a>
+        </div>
+    </header>
+
+    <main class="site-main">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="site-footer__inner">
+            {% if organization %}
+                &copy; {{ organization.name }}
+            {% else %}
+                &copy; Boxoffice
+            {% endif %}
+        </div>
+    </footer>
+
+    <script src="{% static 'js/alpine.min.js' %}" defer></script>
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

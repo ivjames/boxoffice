@@ -1,0 +1,110 @@
+/*
+ * Shared app stylesheet. Per-tenant colors come in as CSS custom properties
+ * (--primary-color / --accent-color) set inline in templates/base.html from
+ * request.organization, so this file itself stays tenant-agnostic.
+ */
+
+:root {
+    --primary-color: #111111;
+    --accent-color: #e11d48;
+    --bg-color: #ffffff;
+    --text-color: #1a1a1a;
+    --muted-color: #6b7280;
+    --border-color: #e5e7eb;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text-color);
+    background: var(--bg-color);
+    line-height: 1.5;
+}
+
+a {
+    color: var(--accent-color);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+.site-header {
+    background: var(--primary-color);
+    color: #fff;
+}
+
+.site-header__inner {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 1rem 1.5rem;
+    display: flex;
+    align-items: center;
+}
+
+.site-header__brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #fff;
+    font-weight: 700;
+    font-size: 1.25rem;
+}
+
+.site-header__brand:hover {
+    text-decoration: none;
+    opacity: 0.9;
+}
+
+.site-header__logo {
+    height: 2rem;
+    width: auto;
+}
+
+.site-main {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    min-height: 60vh;
+}
+
+.hero h1 {
+    margin-top: 0;
+    color: var(--primary-color);
+}
+
+.hero p {
+    color: var(--muted-color);
+    max-width: 40em;
+}
+
+.site-footer {
+    border-top: 1px solid var(--border-color);
+    color: var(--muted-color);
+    font-size: 0.875rem;
+}
+
+.site-footer__inner {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 1.5rem;
+}
+
+.button {
+    display: inline-block;
+    background: var(--accent-color);
+    color: #fff;
+    padding: 0.6rem 1.25rem;
+    border-radius: 0.375rem;
+    font-weight: 600;
+}
+
+.button:hover {
+    text-decoration: none;
+    opacity: 0.9;
+}

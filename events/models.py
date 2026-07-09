@@ -1,7 +1,7 @@
 from django.db import models
 
 from tenants.models import TenantScopedModel
-from venues.models import Section, Venue
+from venues.models import SeatingChart, Section, Venue
 
 
 class Event(TenantScopedModel):
@@ -38,7 +38,16 @@ class Event(TenantScopedModel):
 class Performance(TenantScopedModel):
     """A single dated/timed showing of an Event at a Venue. `seating_mode`
     decides whether availability is tracked via GAAllocation (GA) or per-Seat
-    Tickets/Holds (RESERVED) — see docs/ARCHITECTURE.md "Seating"."""
+    Tickets/Holds (RESERVED) — see docs/ARCHITECTURE.md "Seating".
+
+    `seating_chart` (Phase A of the seating-chart epic, docs/SEATING.md)
+    makes chart selection explicit instead of always implicitly resolving to
+    the venue's first SeatingChart (the pre-Phase-A behavior, still used as
+    the fallback when this is null -- see orders.services.get_seating_chart,
+    the single place that resolution happens). Null is the common case for a
+    venue with exactly one chart; set it explicitly once a venue has more
+    than one chart in play (e.g. a "Cabaret setup" vs. "Standard house") so
+    a given performance always uses the one it was actually built for."""
 
     class SeatingMode(models.TextChoices):
         GA = "GA", "General admission"
@@ -54,6 +63,17 @@ class Performance(TenantScopedModel):
     starts_at = models.DateTimeField()
     seating_mode = models.CharField(max_length=10, choices=SeatingMode.choices)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    seating_chart = models.ForeignKey(
+        SeatingChart,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="performances",
+        help_text=(
+            "Explicit chart choice for a RESERVED performance. Leave blank to use the venue's "
+            "first seating chart (correct for the common one-chart-per-venue case)."
+        ),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -61,6 +81,7 @@ class Performance(TenantScopedModel):
         indexes = TenantScopedModel.Meta.indexes + [
             models.Index(fields=["organization", "event"]),
             models.Index(fields=["organization", "starts_at"]),
+            models.Index(fields=["seating_chart"]),
         ]
         ordering = ["starts_at"]
 

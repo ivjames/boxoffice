@@ -310,6 +310,26 @@ class ReservedHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase)
         )
         self.assertEqual(Hold.objects.filter(performance=self.performance).count(), 1)
 
+    def test_blocked_seat_shows_blocked_state_and_cannot_be_held(self):
+        from orders.models import PerformanceSeatBlock
+
+        PerformanceSeatBlock.objects.create(
+            organization=self.org, performance=self.performance, seat=self.seat
+        )
+
+        resp = self.get_as("org-a", f"/performances/{self.performance.pk}/")
+        self.assertContains(resp, '"state": "blocked"')
+
+        resp = self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"seat_id": [str(self.seat.pk)]},
+        )
+        self.assertRedirects(
+            resp, f"/performances/{self.performance.pk}/", fetch_redirect_response=False
+        )
+        self.assertEqual(Hold.objects.filter(performance=self.performance).count(), 0)
+
 
 class PlatformHostLockoutTests(StorefrontFixtureMixin, TestCase):
     """No Host override at all -> testserver's default Host doesn't end in

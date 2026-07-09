@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Editor — {{ chart.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_chart_detail' chart.pk %}">&larr; {{ chart.name }}</a>
+<h1>{{ chart.name }} — visual editor</h1>
+<p class="muted">
+    Drag a seat to reposition it. Dragged positions win over the generated layout.
+    Generate seats from a section's page first if a section below has none yet.
+</p>
+
+{{ seats_json|json_script:"editor-seats-data" }}
+
+<div class="chart-editor" x-data="chartEditor('{{ save_url|escapejs }}')">
+    <div class="chart-editor__stage">
+        <div class="chart-editor__toolbar">
+            <button type="button" class="button" :disabled="dirtyCount === 0 || saving" @click="save()">
+                <span x-show="!saving">Save changes</span>
+                <span x-show="saving" x-cloak>Saving…</span>
+            </button>
+            <span class="chart-editor__dirty" x-show="dirtyCount > 0" x-cloak>
+                <span x-text="dirtyCount"></span> unsaved seat<span x-show="dirtyCount !== 1">s</span>
+            </span>
+            <span class="chart-editor__saved" x-show="dirtyCount === 0 && savedAt" x-cloak>Saved.</span>
+            <span class="chart-editor__error" x-show="error" x-text="error" x-cloak></span>
+        </div>
+
+        <div class="chart-editor__svg-wrap">
+            <svg class="chart-editor__svg" x-ref="svg" viewBox="{{ view_box }}"
+                 preserveAspectRatio="xMidYMid meet" role="img" aria-label="Seating chart layout"
+                 @pointermove.window="onDrag($event)"
+                 @pointerup.window="endDrag()"
+                 @pointercancel.window="endDrag()">
+                {% for seat in seats %}
+                    <circle class="editor-seat{% if seat.is_accessible %} editor-seat--accessible{% endif %}"
+                            data-seat-id="{{ seat.pk }}" data-section-id="{{ seat.section_id }}"
+                            :class="seatClass({{ seat.pk }})"
+                            :cx="seatsById[{{ seat.pk }}].x" :cy="seatsById[{{ seat.pk }}].y"
+                            r="{{ seat_radius }}" fill="{{ seat.editor_color }}"
+                            @pointerdown="startDrag({{ seat.pk }}, $event)">
+                        <title>{{ seat.section.name }} {{ seat.row_label }}{{ seat.number }}{% if seat.is_accessible %} (accessible){% endif %}</title>
+                    </circle>
+                    <text class="editor-seat-label" :x="seatsById[{{ seat.pk }}].x" :y="seatsById[{{ seat.pk }}].y"
+                          font-size="{{ seat_radius }}">{{ seat.row_label }}{{ seat.number }}</text>
+                {% endfor %}
+            </svg>
+        </div>
+        {% if not seats %}
+            <p class="muted">This chart has no seats yet — generate seats on a section below, then come back here to fine-tune positions.</p>
+        {% endif %}
+    </div>
+
+    <div class="chart-editor__sidebar">
+        <h2>Sections</h2>
+        <ul class="chart-editor__legend">
+            {% for section in sections %}
+                <li><i class="chart-editor__swatch" style="background:{{ section.editor_color }}"></i>{{ section.name }}</li>
+            {% endfor %}
+        </ul>
+
+        {% for section in sections %}
+            <div class="chart-editor__section-panel">
+                <h3>{{ section.name }}{% if section.tier %} <span class="muted">— {{ section.tier }}</span>{% endif %}</h3>
+                <dl>
+                    <dt>Seats</dt><dd>{{ section.seats.count }}</dd>
+                    <dt>Rotation</dt><dd>{{ section.rotation }}&deg;</dd>
+                    <dt>Seat pitch</dt><dd>{{ section.seat_pitch }}</dd>
+                    <dt>Row pitch</dt><dd>{{ section.row_pitch }}</dd>
+                    <dt>Row x-offset</dt><dd>{{ section.row_x_offset }}</dd>
+                    <dt>Arc radius</dt><dd>{{ section.arc_radius|default:"—" }}</dd>
+                </dl>
+                <div class="chart-editor__section-actions">
+                    <a href="{% url 'dashboard_section_update' chart.pk section.pk %}?next=editor">Edit layout</a>
+                    <form method="post" action="{% url 'dashboard_section_regenerate' chart.pk section.pk %}"
+                          onsubmit="return confirm('Regenerate {{ section.name }}&#39;s seats with the current layout params? Positions you dragged for this section will be reset to the generated layout, and accessible flags are cleared. Refused if any seat has a live ticket.');">
+                        {% csrf_token %}
+                        <button type="submit" class="button button--secondary">Regenerate seats</button>
+                    </form>
+                    <a href="{% url 'dashboard_section_detail' chart.pk section.pk %}">Seats list</a>
+                </div>
+            </div>
+        {% empty %}
+            <p class="muted">No sections yet.</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/chart_editor.js' %}"></script>
+{% endblock %}

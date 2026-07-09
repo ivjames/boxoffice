@@ -77,7 +77,9 @@ def performance_detail(request, pk):
             {
                 "seats_json": seats_json,
                 "held_by_you_ids": held_by_you_ids,
-                "available_count": sum(1 for s in seats_json if s["state"] != "unavailable"),
+                "available_count": sum(
+                    1 for s in seats_json if s["state"] not in services.NOT_SELECTABLE_STATES
+                ),
             }
         )
 

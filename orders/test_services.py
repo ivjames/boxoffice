@@ -24,6 +24,7 @@ when POSTGRES_URL is set, against real Postgres row locking too).
 
 from decimal import Decimal
 
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
 from datetime import timedelta
@@ -32,7 +33,7 @@ from events.models import GAAllocation, Performance, PriceTier
 from orders import services
 from orders.models import Hold, HoldSeat, Ticket
 from orders.tests import OrdersFixtureMixin
-from venues.models import Seat
+from venues.models import Seat, SeatingChart, Section
 from venues.tests import make_org
 
 
@@ -369,6 +370,115 @@ class ReservedSeatAvailabilityTests(OrdersFixtureMixin, TestCase):
             buyer_email="buyer@example.com",
             total=Decimal("65.00"),
         )
+
+
+class PerformanceSeatBlockTests(OrdersFixtureMixin, TestCase):
+    """PerformanceSeatBlock ("house kill") availability wiring: a blocked
+    seat reads as unavailable/unselectable exactly like a ticketed or
+    held-by-someone-else seat, for this performance only."""
+
+    def setUp(self):
+        self.build_reserved_performance()
+
+    def _block(self, performance=None, seat=None, reason=""):
+        from orders.models import PerformanceSeatBlock
+
+        return PerformanceSeatBlock.objects.create(
+            organization=self.org,
+            performance=performance or self.performance,
+            seat=seat or self.seat,
+            reason=reason,
+        )
+
+    def test_blocked_seat_has_its_own_state(self):
+        self._block(reason="Sightline obstructed")
+        states = services.reserved_seat_states(self.performance)
+        self.assertEqual(states[self.seat.id], "blocked")
+
+    def test_blocked_seat_excluded_from_available_count(self):
+        self.assertEqual(services.reserved_available_count(self.performance), 1)
+        self._block()
+        self.assertEqual(services.reserved_available_count(self.performance), 0)
+
+    def test_blocked_seat_cannot_be_held(self):
+        self._block()
+        with self.assertRaises(services.SeatUnavailableError):
+            services.set_reserved_hold(
+                organization=self.org,
+                performance=self.performance,
+                session_key="sess-a",
+                user=None,
+                seat_ids=[self.seat.id],
+            )
+        self.assertEqual(HoldSeat.objects.filter(seat=self.seat).count(), 0)
+
+    def test_block_is_scoped_to_one_performance(self):
+        """The same seat, on a DIFFERENT performance of the same chart, is
+        untouched by a block on this one."""
+        other_performance = Performance.objects.create(
+            organization=self.org,
+            event=self.event,
+            venue=self.venue,
+            starts_at=timezone.now(),
+            seating_mode=Performance.SeatingMode.RESERVED,
+        )
+        self._block()
+        states = services.reserved_seat_states(other_performance)
+        self.assertEqual(states[self.seat.id], "available")
+
+    def test_unique_per_performance_and_seat(self):
+        self._block()
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._block()
+
+    def test_blocked_seat_not_selectable_via_seat_map_state_helper(self):
+        self._block()
+        states = services.reserved_seat_states(self.performance)
+        self.assertIn(states[self.seat.id], services.NOT_SELECTABLE_STATES)
+
+
+class PerformanceSeatingChartFKTests(OrdersFixtureMixin, TestCase):
+    """Performance.seating_chart, when set, is authoritative;
+    get_seating_chart() only falls back to the venue's first chart when
+    it's null -- see orders.services.get_seating_chart's docstring."""
+
+    def setUp(self):
+        self.build_reserved_performance()
+
+    def test_falls_back_to_venues_first_chart_when_null(self):
+        self.assertIsNone(self.performance.seating_chart_id)
+        chart = services.get_seating_chart(self.performance)
+        self.assertEqual(chart, self.section.chart)
+
+    def test_explicit_chart_wins_over_fallback(self):
+        second_chart = SeatingChart.objects.create(
+            organization=self.org, venue=self.venue, name="Cabaret setup"
+        )
+        self.performance.seating_chart = second_chart
+        self.performance.save(update_fields=["seating_chart"])
+
+        chart = services.get_seating_chart(self.performance)
+        self.assertEqual(chart, second_chart)
+        # And it drives which seats/sections resolve for the performance too.
+        self.assertEqual(list(services.performance_seats(self.performance)), [])
+
+    def test_explicit_chart_used_by_reserved_seat_states(self):
+        second_chart = SeatingChart.objects.create(
+            organization=self.org, venue=self.venue, name="Cabaret setup"
+        )
+        other_section = Section.objects.create(
+            organization=self.org, chart=second_chart, name="Cabaret floor"
+        )
+        other_seat = Seat.objects.create(
+            organization=self.org, section=other_section, row_label="A", number="1"
+        )
+        self.performance.seating_chart = second_chart
+        self.performance.save(update_fields=["seating_chart"])
+
+        states = services.reserved_seat_states(self.performance)
+        self.assertIn(other_seat.id, states)
+        self.assertNotIn(self.seat.id, states)
 
 
 class ReservedSeatPricingOverrideTests(OrdersFixtureMixin, TestCase):

@@ -87,14 +87,12 @@ command and a dashboard "Export" button.
   storefront/checkout integration + tests. *(needs UX steer)*
 - **D. Export:** Chromium-rendered PNG/PDF of a performance's zone map.
 
-## Open questions for product (branch-time decisions)
+## Decisions (locked)
 
-1. **Drag-select mechanics:** rubber-band marquee, shift-click accumulate, or
-   lasso? (Recommend marquee + shift-click.)
-2. **Zones — reusable or ad-hoc:** named/colored zone *templates* reused across
-   performances, or defined per performance each time? (Recommend reusable
-   templates you can apply/clone per performance.)
-3. **Visual editor scope:** SVG drag (lightweight, in-house) vs. a canvas library
-   / tldraw-style editor (richer, bigger). (Recommend SVG drag first.)
-4. **Export detail:** PNG + PDF both? Include seat labels + price legend? Paper
-   size for the PDF?
+1. **Drag-select mechanics:** marquee (rubber-band) + shift-click to accumulate.
+2. **Zones:** reusable named/colored zone **templates** — define once, apply/clone
+   onto any performance. A performance's zone assignment is its own instance;
+   editing one performance never mutates another.
+3. **Visual editor:** in-house **SVG drag** (lightweight, no canvas library).
+4. **Export:** **PNG and PDF both**. Seat labels + price legend are **optional**
+   (toggle, default on). Paper size **Letter by default, Legal optional**.

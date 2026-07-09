@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Venues — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<h1>Venues</h1>
+<p class="muted">Pick a venue to manage its seating charts.</p>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead><tr><th>Name</th><th>Address</th><th>Seating charts</th><th></th></tr></thead>
+    <tbody>
+    {% for venue in venues %}
+        <tr>
+            <td>{{ venue.name }}</td>
+            <td>{{ venue.address|default:"—" }}</td>
+            <td>{{ venue.chart_count }}</td>
+            <td><a href="{% url 'dashboard_chart_list' venue.pk %}">Seating charts</a></td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="4" class="muted">No venues yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

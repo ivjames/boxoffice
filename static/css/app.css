@@ -928,6 +928,56 @@ table.dash-table th {
     font-size: 0.875rem;
 }
 
+/* -- dashboard seating chart builder (Phase A) ---------------------------- */
+
+.chart-seat {
+    width: 3.25rem;
+    height: 3.25rem;
+    border: 2px solid var(--accent-color);
+    border-radius: 0.375rem;
+    background: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.15rem;
+    font-size: 0.65rem;
+}
+
+.chart-seat--accessible {
+    border-color: #2563eb;
+    background: #eff6ff;
+}
+
+.chart-seat__label {
+    font-weight: 600;
+}
+
+.chart-seat__actions {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.chart-seat__actions form {
+    margin: 0;
+}
+
+.chart-seat__btn {
+    width: 1.1rem;
+    height: 1.1rem;
+    line-height: 1;
+    padding: 0;
+    font-size: 0.65rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.2rem;
+    background: #fff;
+    cursor: pointer;
+}
+
+.chart-seat__btn--delete {
+    color: #b91c1c;
+}
+
 .search-form {
     display: flex;
     gap: 0.5rem;

@@ -29,9 +29,9 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
         <template x-for="seat in seats" :key="seat.id">
             <button type="button" class="seat-btn" :class="seatClass(seat)"
                     :style="'grid-column:' + (seat.x + 1) + '; grid-row:' + (seat.y + 1) + ';'"
-                    :disabled="seat.state === 'unavailable'"
+                    :disabled="!isSelectable(seat)"
                     :aria-pressed="selected.includes(seat.id).toString()"
-                    :title="seat.section + ' — ' + seat.row + seat.number + (seat.price ? (' — $' + seat.price) : '') + (seat.state === 'unavailable' ? ' (unavailable)' : '')"
+                    :title="seat.section + ' — ' + seat.row + seat.number + (seat.price ? (' — $' + seat.price) : '') + (seat.state === 'blocked' ? ' (not available for this performance)' : (seat.state === 'unavailable' ? ' (unavailable)' : ''))"
                     @click="toggle(seat)">
                 <span x-text="seat.row + seat.number"></span>
             </button>
@@ -66,8 +66,15 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
             seats: seats,
             selected: [...heldByYou],
             gridStyle: `grid-template-columns: repeat(${maxX + 1}, 2.5rem); grid-template-rows: repeat(${maxY + 1}, 2.5rem);`,
+            // 'blocked' (a house kill -- PerformanceSeatBlock) is exactly as
+            // unselectable as 'unavailable' (sold/held by someone else); it
+            // just gets its own state name so callers/labels can tell them
+            // apart if they want to.
+            isSelectable(seat) {
+                return seat.state !== 'unavailable' && seat.state !== 'blocked';
+            },
             toggle(seat) {
-                if (seat.state === 'unavailable') return;
+                if (!this.isSelectable(seat)) return;
                 const i = this.selected.indexOf(seat.id);
                 if (i === -1) {
                     this.selected.push(seat.id);
@@ -76,7 +83,7 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
                 }
             },
             seatClass(seat) {
-                if (seat.state === 'unavailable') return 'seat-btn--unavailable';
+                if (!this.isSelectable(seat)) return 'seat-btn--unavailable';
                 return this.selected.includes(seat.id) ? 'seat-btn--selected' : 'seat-btn--available';
             },
             get total() {

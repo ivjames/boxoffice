@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Hold, HoldSeat, Order, OrderItem, Payment, Ticket
+from .models import Hold, HoldSeat, Order, OrderItem, Payment, PerformanceSeatBlock, Ticket
 
 
 class HoldSeatInline(admin.TabularInline):
@@ -50,3 +50,10 @@ class PaymentAdmin(admin.ModelAdmin):
     list_display = ("order", "provider", "amount", "status", "provider_ref")
     list_filter = ("organization", "provider", "status")
     search_fields = ("provider_ref", "order__token")
+
+
+@admin.register(PerformanceSeatBlock)
+class PerformanceSeatBlockAdmin(admin.ModelAdmin):
+    list_display = ("performance", "seat", "reason", "created_at", "organization")
+    list_filter = ("organization", "performance")
+    search_fields = ("reason",)

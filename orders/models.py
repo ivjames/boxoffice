@@ -86,6 +86,35 @@ class HoldSeat(TenantScopedModel):
         return f"{self.seat} on hold #{self.hold_id}"
 
 
+class PerformanceSeatBlock(TenantScopedModel):
+    """A "house kill": a Seat pulled from sale for ONE Performance only
+    (sightline obstruction, tech hold, VIP hold, etc.) without touching the
+    Seat itself -- the same seat is unaffected on every other performance
+    that uses the same chart. Phase A of the seating-chart epic
+    (docs/SEATING.md); reserved-availability math (orders.services) treats a
+    blocked seat exactly like a ticketed/held one -- see
+    reserved_seat_states's docstring for the resulting state precedence."""
+
+    performance = models.ForeignKey(Performance, on_delete=models.CASCADE, related_name="seat_blocks")
+    seat = models.ForeignKey(Seat, on_delete=models.CASCADE, related_name="performance_blocks")
+    reason = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta(TenantScopedModel.Meta):
+        indexes = TenantScopedModel.Meta.indexes + [
+            models.Index(fields=["organization", "performance"]),
+            models.Index(fields=["performance", "seat"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["performance", "seat"], name="unique_seat_block_per_performance"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.seat} blocked on {self.performance}"
+
+
 class Order(TenantScopedModel):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}{{ chart.name }} — {{ chart.venue.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_chart_list' chart.venue.pk %}">&larr; {{ chart.venue.name }} charts</a>
+<div class="dash-header">
+    <h1>{{ chart.name }}</h1>
+    <a class="button button--secondary" href="{% url 'dashboard_chart_update' chart.pk %}">Rename</a>
+</div>
+
+<div class="dash-header">
+    <h2>Sections</h2>
+    <a class="button" href="{% url 'dashboard_section_create' chart.pk %}">New section</a>
+</div>
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead><tr><th>Name</th><th>Tier</th><th>Numbering</th><th>Row labels</th><th>Seats</th><th></th></tr></thead>
+    <tbody>
+    {% for section in sections %}
+        <tr>
+            <td>{{ section.name }}</td>
+            <td>{{ section.tier|default:"—" }}</td>
+            <td>{{ section.get_numbering_scheme_display }}</td>
+            <td>{{ section.get_row_label_scheme_display }}</td>
+            <td>{{ section.seat_count }}</td>
+            <td>
+                <a href="{% url 'dashboard_section_detail' chart.pk section.pk %}">Seats</a>
+                · <a href="{% url 'dashboard_section_update' chart.pk section.pk %}">Edit layout</a>
+            </td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="6" class="muted">No sections yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

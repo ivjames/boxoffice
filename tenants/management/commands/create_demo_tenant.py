@@ -46,9 +46,9 @@ class Command(BaseCommand):
             venue = self._create_venue(org)
             chart, sections = self._create_seating(org, venue)
             event = self._create_event(org)
-            ga_perf, ga_tier = self._create_ga_performance(org, event, venue)
+            ga_perf, ga_tier = self._create_ga_performance(org, event, venue, chart)
             reserved_perf, reserved_tiers = self._create_reserved_performance(
-                org, event, venue, sections
+                org, event, venue, chart, sections
             )
             owner_email, owner_password = self._create_demo_owner(org)
 
@@ -146,7 +146,7 @@ class Command(BaseCommand):
         )
         return event
 
-    def _create_ga_performance(self, org, event, venue):
+    def _create_ga_performance(self, org, event, venue, chart):
         # `starts_at` is intentionally NOT part of the lookup: it's computed
         # relative to "now" on every run, which would break idempotency
         # (a fresh row each time) if used as a get_or_create key. Instead we
@@ -160,6 +160,12 @@ class Command(BaseCommand):
             defaults={
                 "starts_at": timezone.now() + timedelta(days=14, hours=4),
                 "status": Performance.Status.PUBLISHED,
+                # GA doesn't read seats off a chart, but wiring it explicitly
+                # here mirrors what the Phase-A backfill migration did to
+                # every pre-existing performance (see orders.services.
+                # get_seating_chart) -- harmless, and keeps the demo tenant
+                # representative of steady-state data.
+                "seating_chart": chart,
             },
         )
         GAAllocation.objects.get_or_create(
@@ -173,7 +179,7 @@ class Command(BaseCommand):
         )
         return perf, tier
 
-    def _create_reserved_performance(self, org, event, venue, sections):
+    def _create_reserved_performance(self, org, event, venue, chart, sections):
         # Same reasoning as _create_ga_performance: keep starts_at out of the
         # lookup so re-running the command doesn't create a second row.
         perf, created = Performance.objects.get_or_create(
@@ -184,6 +190,7 @@ class Command(BaseCommand):
             defaults={
                 "starts_at": timezone.now() + timedelta(days=21, hours=4),
                 "status": Performance.Status.PUBLISHED,
+                "seating_chart": chart,
             },
         )
 

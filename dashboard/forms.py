@@ -9,7 +9,7 @@ from django import forms
 
 from events.models import Event, GAAllocation, Performance, PriceTier
 from orders.services import get_seating_chart
-from venues.models import Section, Venue
+from venues.models import SeatingChart, Section, Venue
 
 
 class EventForm(forms.ModelForm):
@@ -34,11 +34,18 @@ class PerformanceForm(forms.ModelForm):
 
     class Meta:
         model = Performance
-        fields = ["venue", "starts_at", "seating_mode", "status"]
+        fields = ["venue", "starts_at", "seating_mode", "seating_chart", "status"]
         widgets = {
             "starts_at": forms.DateTimeInput(
                 attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"
             )
+        }
+        help_texts = {
+            "seating_chart": (
+                "Optional -- leave blank to use the venue's first seating chart "
+                "(orders.services.get_seating_chart's fallback). Only set this once a venue has "
+                "more than one chart in play."
+            ),
         }
 
     def __init__(self, *args, organization, event, **kwargs):
@@ -46,6 +53,8 @@ class PerformanceForm(forms.ModelForm):
         self.organization = organization
         self.event = event
         self.fields["venue"].queryset = Venue.objects.filter(organization=organization)
+        self.fields["seating_chart"].queryset = SeatingChart.objects.filter(organization=organization)
+        self.fields["seating_chart"].required = False
         self.fields["starts_at"].input_formats = ["%Y-%m-%dT%H:%M"]
         if self.instance.pk and self.instance.seating_mode == Performance.SeatingMode.GA:
             allocation = getattr(self.instance, "ga_allocation", None)
@@ -67,6 +76,10 @@ class PerformanceForm(forms.ModelForm):
                         "ga_capacity",
                         f"Capacity can't be less than the {allocation.sold} ticket(s) already sold.",
                     )
+        venue = cleaned.get("venue")
+        seating_chart = cleaned.get("seating_chart")
+        if venue is not None and seating_chart is not None and seating_chart.venue_id != venue.id:
+            self.add_error("seating_chart", "That chart doesn't belong to the selected venue.")
         return cleaned
 
     def save(self, commit=True):
@@ -119,3 +132,117 @@ class PriceTierForm(forms.ModelForm):
         if commit:
             tier.save()
         return tier
+
+
+# --- seating chart builder (Phase A of the seating-chart epic,
+#     docs/SEATING.md) -- manager+, see accounts.permissions.manager_required
+#     and dashboard.views' ManagerRequiredMixin usage below. ------------------
+
+
+class SeatingChartForm(forms.ModelForm):
+    class Meta:
+        model = SeatingChart
+        fields = ["name"]
+
+    def __init__(self, *args, organization, venue, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.venue = venue
+
+    def save(self, commit=True):
+        chart = super().save(commit=False)
+        chart.organization = self.organization
+        chart.venue = self.venue
+        if commit:
+            chart.save()
+        return chart
+
+
+class SectionForm(forms.ModelForm):
+    """Layout params + numbering/row-label scheme for a Section -- these are
+    the inputs venues.generation.generate_seats reads (see its docstring);
+    changing them here does NOT retroactively move already-generated seats."""
+
+    class Meta:
+        model = Section
+        fields = [
+            "name",
+            "ordering",
+            "tier",
+            "numbering_scheme",
+            "row_label_scheme",
+            "origin_x",
+            "origin_y",
+            "rotation",
+            "seat_pitch",
+            "row_pitch",
+            "arc_radius",
+        ]
+
+    def __init__(self, *args, organization, chart, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.chart = chart
+
+    def save(self, commit=True):
+        section = super().save(commit=False)
+        section.organization = self.organization
+        section.chart = self.chart
+        if commit:
+            section.save()
+        return section
+
+
+class GenerateSeatsForm(forms.Form):
+    """Feeds venues.generation.generate_seats: either a uniform rows x
+    seats-per-row grid, or a ragged per-row seat-count list which overrides
+    it. Accessible-seat flags aren't set here -- toggle individual seats
+    after generating (dashboard_seat_toggle_accessible)."""
+
+    rows = forms.IntegerField(
+        min_value=1, required=False, label="Rows", help_text="Uniform mode: number of rows."
+    )
+    seats_per_row = forms.IntegerField(
+        min_value=1,
+        required=False,
+        label="Seats per row",
+        help_text="Uniform mode: seats in every row.",
+    )
+    ragged_counts = forms.CharField(
+        required=False,
+        label="Ragged row counts",
+        help_text=(
+            'Optional -- comma-separated seat counts, one per row, front to back '
+            '(e.g. "10,10,8,12"). Overrides Rows/Seats per row and allows ragged rows.'
+        ),
+    )
+    replace_existing = forms.BooleanField(
+        required=False,
+        label="Replace existing seats",
+        help_text="Required if this section already has seats (refused if any have a live ticket).",
+    )
+
+    def clean(self):
+        cleaned = super().clean()
+        ragged = (cleaned.get("ragged_counts") or "").strip()
+        if ragged:
+            try:
+                counts = [int(part.strip()) for part in ragged.split(",") if part.strip()]
+            except ValueError:
+                self.add_error(
+                    "ragged_counts", "Use a comma-separated list of whole numbers, e.g. 10,10,8."
+                )
+                return cleaned
+            if not counts or any(count < 1 for count in counts):
+                self.add_error("ragged_counts", "Each row needs at least 1 seat.")
+                return cleaned
+            cleaned["row_counts"] = counts
+        else:
+            rows = cleaned.get("rows")
+            seats_per_row = cleaned.get("seats_per_row")
+            if not rows or not seats_per_row:
+                raise forms.ValidationError(
+                    "Enter Rows + Seats per row, or a ragged row-count list."
+                )
+            cleaned["row_counts"] = [seats_per_row] * rows
+        return cleaned

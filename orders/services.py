@@ -35,7 +35,7 @@ from events import pricing
 from events.models import GAAllocation
 from venues.models import Section, Seat
 
-from .models import Hold, HoldSeat, Ticket, default_hold_expiry
+from .models import Hold, HoldSeat, PerformanceSeatBlock, Ticket, default_hold_expiry
 
 
 class HoldError(Exception):
@@ -118,14 +118,19 @@ def ga_available(performance, *, exclude_session_key=None):
 
 
 def get_seating_chart(performance):
-    """Phase 3's resolution of "whichever chart is in use" (see the
-    SeatingChart docstring in venues/models.py): Performance has no explicit
-    chart FK, so we use the venue's first seating chart. Correct for the
-    common one-chart-per-venue case (including the demo tenant). A venue
-    that legitimately needs multiple charts in play will need an explicit
-    Performance.seating_chart FK added in a later phase — flagged here
-    rather than guessed at.
+    """Which SeatingChart `performance` uses. Phase A of the seating-chart
+    epic (docs/SEATING.md) added the explicit `Performance.seating_chart`
+    FK -- if it's set, that's authoritative. If it's null (the common case
+    for a venue with exactly one chart, and every performance created
+    before that FK existed), fall back to the original Phase 3 resolution:
+    the venue's first seating chart, by pk. The backfill migration
+    (events/migrations) set this FK on every pre-existing performance to
+    whatever this fallback would already have resolved to, so this function
+    never changes behavior for existing data -- it just makes explicit what
+    used to be implicit.
     """
+    if performance.seating_chart_id is not None:
+        return performance.seating_chart
     return performance.venue.seating_charts.order_by("pk").first()
 
 
@@ -162,15 +167,28 @@ def price_tiers_by_section(performance):
 
 
 def reserved_seat_states(performance, session_key=None):
-    """{seat_id: 'unavailable' | 'held_by_you' | 'available'} for every seat
-    in the performance's chart. A seat is 'unavailable' if it backs a live
-    (non-void) Ticket for this performance OR an active HoldSeat belonging
-    to a different session; 'held_by_you' if the active HoldSeat is this
-    session's own (still selectable — re-submitting keeps it); else
-    'available'.
+    """{seat_id: 'unavailable' | 'blocked' | 'held_by_you' | 'available'}
+    for every seat in the performance's chart.
+
+    - 'blocked': a PerformanceSeatBlock exists for this seat/performance (a
+      house kill -- sightline hold, tech hold, etc.). Checked first: a
+      blocked seat is unavailable regardless of any other state, and
+      *never* selectable, matching a ticketed seat's math exactly (see
+      NOT_SELECTABLE_STATES below / reserved_available_count).
+    - 'unavailable': backs a live (non-void) Ticket for this performance, OR
+      an active HoldSeat belonging to a DIFFERENT session.
+    - 'held_by_you': the active HoldSeat is this session's own (still
+      selectable — re-submitting keeps it).
+    - 'available': none of the above.
     """
     seats = performance_seats(performance)
     now = timezone.now()
+
+    blocked = set(
+        PerformanceSeatBlock.objects.filter(performance=performance).values_list(
+            "seat_id", flat=True
+        )
+    )
 
     ticketed = set(
         Ticket.objects.filter(performance=performance)
@@ -191,7 +209,9 @@ def reserved_seat_states(performance, session_key=None):
 
     states = {}
     for seat in seats:
-        if seat.id in ticketed or seat.id in held_by_others:
+        if seat.id in blocked:
+            states[seat.id] = "blocked"
+        elif seat.id in ticketed or seat.id in held_by_others:
             states[seat.id] = "unavailable"
         elif seat.id in held_by_you:
             states[seat.id] = "held_by_you"
@@ -200,9 +220,15 @@ def reserved_seat_states(performance, session_key=None):
     return states
 
 
+# States a seat can be IN but never be SELECTED from -- shared by
+# reserved_available_count (the storefront "N available" number) and
+# set_reserved_hold's re-check (below) so both agree on what "taken" means.
+NOT_SELECTABLE_STATES = {"unavailable", "blocked"}
+
+
 def reserved_available_count(performance):
     states = reserved_seat_states(performance)
-    return sum(1 for state in states.values() if state != "unavailable")
+    return sum(1 for state in states.values() if state not in NOT_SELECTABLE_STATES)
 
 
 # --- mutations (transactional) ------------------------------------------
@@ -268,11 +294,11 @@ def set_reserved_hold(*, organization, performance, session_key, user, seat_ids)
 
     Locks the target Seat rows (select_for_update, ordered by pk so
     concurrent callers acquire locks in a consistent order and can't
-    deadlock each other), then re-checks each seat against live Tickets and
-    other sessions' active HoldSeats. If any requested seat is taken, the
-    whole call fails with SeatUnavailableError naming the offending seats —
-    nothing is partially held. See module docstring for the SQLite/Postgres
-    locking parity note.
+    deadlock each other), then re-checks each seat against live Tickets,
+    other sessions' active HoldSeats, and PerformanceSeatBlocks (house
+    kills). If any requested seat is taken, the whole call fails with
+    SeatUnavailableError naming the offending seats — nothing is partially
+    held. See module docstring for the SQLite/Postgres locking parity note.
     """
     seat_ids = list(dict.fromkeys(int(s) for s in seat_ids))
     if not seat_ids:
@@ -300,7 +326,12 @@ def set_reserved_hold(*, organization, performance, session_key, user, seat_ids)
         .exclude(hold__session_key=session_key)
         .values_list("seat_id", flat=True)
     )
-    unavailable_ids = ticketed_ids | held_by_others_ids
+    blocked_ids = set(
+        PerformanceSeatBlock.objects.filter(
+            performance=performance, seat_id__in=seat_ids
+        ).values_list("seat_id", flat=True)
+    )
+    unavailable_ids = ticketed_ids | held_by_others_ids | blocked_ids
     if unavailable_ids:
         labels = ", ".join(f"{s.row_label}{s.number}" for s in seats if s.id in unavailable_ids)
         verb = "was" if len(unavailable_ids) == 1 else "were"

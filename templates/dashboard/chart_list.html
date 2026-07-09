@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}Seating charts — {{ venue.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_venue_list' %}">&larr; All venues</a>
+<div class="dash-header">
+    <h1>Seating charts — {{ venue.name }}</h1>
+    <a class="button" href="{% url 'dashboard_chart_create' venue.pk %}">New chart</a>
+</div>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead><tr><th>Name</th><th>Sections</th><th></th></tr></thead>
+    <tbody>
+    {% for chart in charts %}
+        <tr>
+            <td>{{ chart.name }}</td>
+            <td>{{ chart.section_count }}</td>
+            <td><a href="{% url 'dashboard_chart_detail' chart.pk %}">Open</a></td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="3" class="muted">No seating charts yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

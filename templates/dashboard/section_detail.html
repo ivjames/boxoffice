@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.name }} seats — {{ chart.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_chart_detail' chart.pk %}">&larr; {{ chart.name }}</a>
+<h1>{{ section.name }} — seats</h1>
+<p class="muted">
+    {{ section.get_numbering_scheme_display }} · {{ section.get_row_label_scheme_display }}
+    {% if section.tier %} · Tier: {{ section.tier }}{% endif %}
+    · <a href="{% url 'dashboard_section_update' chart.pk section.pk %}">Edit layout</a>
+</p>
+
+<h2>Generate seats</h2>
+<form method="post" class="dash-form">
+    {% csrf_token %}
+    {% for field in form %}
+        <div class="field">
+            {{ field.label_tag }}
+            {{ field }}
+            {{ field.errors }}
+            {% if field.help_text %}<p class="muted">{{ field.help_text }}</p>{% endif %}
+        </div>
+    {% endfor %}
+    <button type="submit" class="button">Generate</button>
+</form>
+
+<h2>Seats ({{ seat_cells|length }})</h2>
+<p class="muted">Click the wheelchair icon to toggle accessible; the × removes a seat (e.g. to open up an aisle gap).</p>
+<div class="seat-map__grid" style="grid-template-columns: repeat({{ max_x }}, 3.5rem); grid-template-rows: repeat({{ max_y }}, 3.5rem);">
+    {% for cell in seat_cells %}
+        <div class="chart-seat{% if cell.seat.is_accessible %} chart-seat--accessible{% endif %}"
+             style="grid-column:{{ cell.grid_x }}; grid-row:{{ cell.grid_y }};"
+             title="{{ cell.seat.row_label }}{{ cell.seat.number }}">
+            <span class="chart-seat__label">{{ cell.seat.row_label }}{{ cell.seat.number }}</span>
+            <div class="chart-seat__actions">
+                <form method="post" action="{% url 'dashboard_seat_toggle_accessible' chart.pk section.pk cell.seat.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="chart-seat__btn" title="Toggle accessible">&#9855;</button>
+                </form>
+                <form method="post" action="{% url 'dashboard_seat_delete' chart.pk section.pk cell.seat.pk %}"
+                      onsubmit="return confirm('Remove seat {{ cell.seat.row_label }}{{ cell.seat.number }}?');">
+                    {% csrf_token %}
+                    <button type="submit" class="chart-seat__btn chart-seat__btn--delete" title="Remove seat">&times;</button>
+                </form>
+            </div>
+        </div>
+    {% empty %}
+        <p class="muted">No seats yet — use the form above to generate this section's seats.</p>
+    {% endfor %}
+</div>
+{% endblock %}

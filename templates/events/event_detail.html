@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}{{ event.title }} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <p><a href="{% url 'home' %}">&larr; All shows</a></p>
+
+    <section class="hero">
+        <h1>{{ event.title }}</h1>
+        {% if event.category %}<p class="event-card__category">{{ event.category }}</p>{% endif %}
+        {% if event.description %}<p>{{ event.description }}</p>{% endif %}
+    </section>
+
+    <h2>Performances</h2>
+    {% if performance_rows %}
+        <ul class="performance-list">
+            {% for row in performance_rows %}
+                <li class="performance-list__item">
+                    <div>
+                        <strong>{{ row.performance.starts_at|date:"D, M j Y — g:i A" }}</strong>
+                        <span class="badge">{{ row.performance.get_seating_mode_display }}</span>
+                        {% if row.available > 0 %}
+                            <span class="badge badge--available">{{ row.available }} available</span>
+                        {% else %}
+                            <span class="badge badge--soldout">Sold out</span>
+                        {% endif %}
+                    </div>
+                    {% if row.available > 0 %}
+                        <a class="button" href="{% url 'performance_detail' row.performance.pk %}">Select tickets</a>
+                    {% else %}
+                        <span class="button button--disabled">Sold out</span>
+                    {% endif %}
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>No upcoming performances scheduled.</p>
+    {% endif %}
+{% endblock %}

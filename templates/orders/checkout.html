@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Checkout — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <h1>Checkout</h1>
+
+    {% if items %}
+        {% for item in items %}
+            <div class="checkout-item">
+                <h2>{{ item.hold.performance.event.title }}</h2>
+                <p>{{ item.hold.performance.starts_at|date:"D, M j Y — g:i A" }} · {{ item.hold.performance.venue.name }}</p>
+
+                {% if item.hold.quantity %}
+                    <p>{{ item.hold.quantity }} × {{ item.hold.price_tier.name }} (${{ item.hold.price_tier.amount }} ea)</p>
+                {% else %}
+                    <ul>
+                        {% for hs in item.hold.hold_seats.all %}
+                            <li>{{ hs.seat.section.name }} — {{ hs.seat.row_label }}{{ hs.seat.number }} (${{ hs.price_tier.amount }})</li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+
+                <p><strong>Total: ${{ item.total }}</strong></p>
+                <p class="muted">Held until {{ item.hold.expires_at|date:"g:i:s A" }}.</p>
+
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                    <button type="submit" class="button">Proceed to payment</button>
+                </form>
+                <p class="muted">Payment isn't wired up yet — Phase 4 adds Stripe Checkout here. Submitting just confirms and refreshes your hold.</p>
+            </div>
+        {% endfor %}
+        <p class="cart-total"><strong>Order total: ${{ grand_total }}</strong></p>
+    {% else %}
+        <p>Your cart is empty. <a href="{% url 'home' %}">Browse shows</a>.</p>
+    {% endif %}
+{% endblock %}

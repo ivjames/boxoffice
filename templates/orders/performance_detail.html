@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}{{ performance.event.title }} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <p><a href="{% url 'event_detail' performance.event.slug %}">&larr; {{ performance.event.title }}</a></p>
+
+    <section class="hero">
+        <h1>{{ performance.event.title }}</h1>
+        <p>{{ performance.starts_at|date:"D, M j Y — g:i A" }} · {{ performance.venue.name }}</p>
+    </section>
+
+    {% if performance.seating_mode == "GA" %}
+        <form method="post" action="{% url 'hold_create' performance.pk %}" class="ga-form">
+            {% csrf_token %}
+            {% if tiers|length > 1 %}
+                <div class="ga-form__row">
+                    <label for="id_price_tier">Ticket type</label>
+                    <select name="price_tier" id="id_price_tier">
+                        {% for tier in tiers %}
+                            <option value="{{ tier.pk }}" {% if existing_hold and existing_hold.price_tier_id == tier.pk %}selected{% endif %}>
+                                {{ tier.name }} — ${{ tier.amount }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            {% else %}
+                {% for tier in tiers %}
+                    <input type="hidden" name="price_tier" value="{{ tier.pk }}">
+                    <p>{{ tier.name }} — ${{ tier.amount }} each</p>
+                {% endfor %}
+            {% endif %}
+
+            <div class="ga-form__row">
+                <label for="id_quantity">Quantity</label>
+                <input type="number" id="id_quantity" name="quantity" min="0" max="{{ available }}"
+                       value="{{ existing_quantity|default:1 }}" {% if available == 0 %}disabled{% endif %}>
+                <span class="muted">{{ available }} available</span>
+            </div>
+
+            <button type="submit" class="button" {% if available == 0 %}disabled{% endif %}>
+                {% if available == 0 %}Sold out{% else %}Hold tickets{% endif %}
+            </button>
+        </form>
+    {% else %}
+        <p>{{ available_count }} seat(s) available. Click a seat to select it, then reserve.</p>
+        {% include "orders/_seat_map.html" %}
+    {% endif %}
+{% endblock %}

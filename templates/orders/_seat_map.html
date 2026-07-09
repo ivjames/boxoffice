@@ -1,0 +1,74 @@
+{% comment %}
+Interactive reserved-seat map. Seat data is passed via json_script (safe
+HTML-escaping) so Alpine can read it client-side; seat.x/seat.y (from
+venues.models.Seat) drive an SVG layout. Progressive-enhancement note: the
+form still works with JS off in the sense that the "Reserve selected seats"
+button posts whatever hidden seat_id inputs exist, but seat *selection*
+itself requires Alpine (click-to-toggle), matching the brief's allowance
+that click-to-select is JS-driven.
+{% endcomment %}
+{{ seats_json|json_script:"seats-data" }}
+{{ held_by_you_ids|json_script:"held-by-you-data" }}
+
+<div x-data="seatMap()" class="seat-map">
+    <div class="seat-map__legend">
+        <span class="seat-legend seat-legend--available"><i class="seat-swatch seat-swatch--available"></i> Available</span>
+        <span class="seat-legend seat-legend--selected"><i class="seat-swatch seat-swatch--selected"></i> Selected</span>
+        <span class="seat-legend seat-legend--unavailable"><i class="seat-swatch seat-swatch--unavailable"></i> Unavailable</span>
+    </div>
+
+    <svg :viewBox="viewBox" class="seat-map__svg" preserveAspectRatio="xMidYMid meet">
+        <template x-for="seat in seats" :key="seat.id">
+            <g @click="toggle(seat)" :class="seatClass(seat)" class="seat">
+                <title x-text="seat.section + ' ' + seat.row + seat.number + (seat.price ? (' — $' + seat.price) : '')"></title>
+                <circle :cx="seat.x * 40 + 30" :cy="seat.y * 40 + 30" r="14"></circle>
+                <text :x="seat.x * 40 + 30" :y="seat.y * 40 + 34" text-anchor="middle" x-text="seat.row + seat.number"></text>
+            </g>
+        </template>
+    </svg>
+
+    <form method="post" action="{% url 'hold_create' performance.pk %}">
+        {% csrf_token %}
+        <template x-for="id in selected" :key="id">
+            <input type="hidden" name="seat_id" :value="id">
+        </template>
+        <p>Selected: <span x-text="selected.length"></span> seat(s) — <strong><span x-text="'$' + total.toFixed(2)"></span></strong></p>
+        <button type="submit" class="button" :disabled="selected.length === 0">Reserve selected seats</button>
+    </form>
+</div>
+
+<script>
+    function seatMap() {
+        const seats = JSON.parse(document.getElementById('seats-data').textContent);
+        const heldByYou = JSON.parse(document.getElementById('held-by-you-data').textContent);
+        const xs = seats.map((s) => s.x);
+        const ys = seats.map((s) => s.y);
+        const maxX = xs.length ? Math.max(...xs) : 0;
+        const maxY = ys.length ? Math.max(...ys) : 0;
+
+        return {
+            seats: seats,
+            selected: [...heldByYou],
+            viewBox: `0 0 ${maxX * 40 + 80} ${maxY * 40 + 80}`,
+            toggle(seat) {
+                if (seat.state === 'unavailable') return;
+                const i = this.selected.indexOf(seat.id);
+                if (i === -1) {
+                    this.selected.push(seat.id);
+                } else {
+                    this.selected.splice(i, 1);
+                }
+            },
+            seatClass(seat) {
+                if (seat.state === 'unavailable') return 'seat--unavailable';
+                return this.selected.includes(seat.id) ? 'seat--selected' : 'seat--available';
+            },
+            get total() {
+                return this.selected.reduce((sum, id) => {
+                    const seat = this.seats.find((s) => s.id === id);
+                    return sum + (seat && seat.price ? parseFloat(seat.price) : 0);
+                }, 0);
+            },
+        };
+    }
+</script>

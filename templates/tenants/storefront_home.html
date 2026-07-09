@@ -5,6 +5,25 @@
 {% block content %}
     <section class="hero">
         <h1>{{ organization.name }}</h1>
-        <p>Upcoming events will show up here. (Phase 2 adds Event/Performance models and this becomes a real listing.)</p>
+        <p>Upcoming shows at {{ organization.name }}.</p>
     </section>
+
+    {% if events_with_upcoming %}
+        <div class="event-grid">
+            {% for event, performances in events_with_upcoming %}
+                <a class="event-card" href="{% url 'event_detail' event.slug %}">
+                    {% if event.image %}
+                        <img src="{{ event.image.url }}" alt="{{ event.title }}" class="event-card__image">
+                    {% endif %}
+                    <div class="event-card__body">
+                        <h2>{{ event.title }}</h2>
+                        {% if event.category %}<p class="event-card__category">{{ event.category }}</p>{% endif %}
+                        <p class="event-card__next">Next: {{ performances.0.starts_at|date:"D, M j Y — g:i A" }}</p>
+                    </div>
+                </a>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p>No upcoming shows right now — check back soon.</p>
+    {% endif %}
 {% endblock %}

@@ -34,9 +34,27 @@ class PerformanceAdmin(admin.ModelAdmin):
 
 @admin.register(PriceTier)
 class PriceTierAdmin(admin.ModelAdmin):
-    list_display = ("name", "amount", "currency", "performance", "section", "organization")
+    """Staff can set BOTH `performance` and `section` here to create a
+    per-performance override (a higher/lower price for that section on one
+    specific performance) -- the dashboard CRUD only ever creates the GA
+    flat tier or the section's chart-wide default, so overrides are
+    admin-only for now. See PriceTier's docstring / events/pricing.py for
+    the resolution rule. `target` spells out which of the three shapes each
+    row is so overrides are easy to spot in the list view."""
+
+    list_display = ("name", "amount", "currency", "target", "performance", "section", "organization")
     list_filter = ("organization", "currency")
-    search_fields = ("name",)
+    search_fields = ("name", "performance__event__title", "section__name")
+
+    @admin.display(description="Target")
+    def target(self, obj):
+        if obj.performance_id and obj.section_id:
+            return "Override (section × performance)"
+        if obj.performance_id:
+            return "GA performance"
+        if obj.section_id:
+            return "Section default"
+        return "—"
 
 
 @admin.register(GAAllocation)

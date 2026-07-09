@@ -16,7 +16,10 @@ writer's BEGIN blocks until the first COMMITs) and Postgres
 — "first one to commit wins, the second re-checks against committed truth
 and is rejected." A thread/process-based test would only be meaningful
 against a real multi-connection backend (Postgres, or SQLite pointed at a
-shared file), which isn't what CI runs by default here.
+shared file), which isn't what CI runs by default here. See
+orders/test_concurrency_multiprocess.py for that real multi-connection test,
+run against actual OS subprocesses on a shared on-disk SQLite file (and,
+when POSTGRES_URL is set, against real Postgres row locking too).
 """
 
 from decimal import Decimal
@@ -25,7 +28,7 @@ from django.test import TestCase
 from django.utils import timezone
 from datetime import timedelta
 
-from events.models import GAAllocation, Performance
+from events.models import GAAllocation, Performance, PriceTier
 from orders import services
 from orders.models import Hold, HoldSeat, Ticket
 from orders.tests import OrdersFixtureMixin
@@ -366,6 +369,84 @@ class ReservedSeatAvailabilityTests(OrdersFixtureMixin, TestCase):
             buyer_email="buyer@example.com",
             total=Decimal("65.00"),
         )
+
+
+class ReservedSeatPricingOverrideTests(OrdersFixtureMixin, TestCase):
+    """price_tiers_by_section() / set_reserved_hold() must route through
+    events.pricing.resolve_seat_tier, so a per-performance override on the
+    section (events/pricing.py, events/models.py PriceTier docstring) is
+    honored end to end -- from the seat-map price display through the
+    HoldSeat.price_tier that Stripe checkout ultimately charges."""
+
+    def setUp(self):
+        self.build_reserved_performance()  # section default tier: $65.00
+
+    def test_no_override_uses_section_default(self):
+        tiers = services.price_tiers_by_section(self.performance)
+        self.assertEqual(tiers[self.section.id].amount, Decimal("65.00"))
+
+    def test_override_wins_in_price_tiers_by_section(self):
+        override = PriceTier.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            section=self.section,
+            name="Orchestra (evening premium)",
+            amount=Decimal("85.00"),
+        )
+        tiers = services.price_tiers_by_section(self.performance)
+        self.assertEqual(tiers[self.section.id], override)
+
+    def test_override_does_not_leak_to_other_performances(self):
+        other_perf = Performance.objects.create(
+            organization=self.org,
+            event=self.event,
+            venue=self.venue,
+            starts_at=timezone.now(),
+            seating_mode=Performance.SeatingMode.RESERVED,
+        )
+        PriceTier.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            section=self.section,
+            name="Orchestra (evening premium)",
+            amount=Decimal("85.00"),
+        )
+        tiers = services.price_tiers_by_section(other_perf)
+        self.assertEqual(tiers[self.section.id].amount, Decimal("65.00"))
+
+    def test_set_reserved_hold_assigns_the_override_price_to_the_holdseat(self):
+        PriceTier.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            section=self.section,
+            name="Orchestra (evening premium)",
+            amount=Decimal("85.00"),
+        )
+        hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        hold_seat = hold.hold_seats.get(seat=self.seat)
+        self.assertEqual(hold_seat.price_tier.amount, Decimal("85.00"))
+        self.assertEqual(services.hold_total(hold), Decimal("85.00"))
+
+    def test_seat_with_no_override_and_no_default_is_omitted_and_blocks_hold(self):
+        # Remove the section-default fixture tier entirely -- this seat now
+        # has neither an override nor a default priced.
+        self.price_tier.delete()
+        tiers = services.price_tiers_by_section(self.performance)
+        self.assertNotIn(self.section.id, tiers)
+        with self.assertRaises(services.HoldError):
+            services.set_reserved_hold(
+                organization=self.org,
+                performance=self.performance,
+                session_key="sess-a",
+                user=None,
+                seat_ids=[self.seat.id],
+            )
 
 
 class HoldTotalTests(OrdersFixtureMixin, TestCase):

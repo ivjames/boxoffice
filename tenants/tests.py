@@ -41,11 +41,46 @@ class CreateDemoTenantCommandTests(TestCase):
         self.assertTrue(GAAllocation.objects.filter(performance=ga_perf, capacity=100).exists())
 
         reserved_perf = performances.get(seating_mode=Performance.SeatingMode.RESERVED)
+        # 3 section-scoped tiers: Orchestra default, Balcony default, and the
+        # Orchestra evening-premium override on the reserved performance
+        # (events/pricing.py) -- see test_reserved_performance_pricing_has_a_demo_override.
         self.assertEqual(
-            PriceTier.objects.filter(organization=org, section__chart=chart).count(), 2
+            PriceTier.objects.filter(organization=org, section__chart=chart).count(), 3
         )
         self.assertTrue(PriceTier.objects.filter(organization=org, performance=ga_perf).exists())
         self.assertIsNotNone(reserved_perf)
+
+    def test_reserved_performance_pricing_has_a_demo_override(self):
+        """create_demo_tenant seeds ONE example per-performance section
+        override (events/pricing.py resolve_seat_tier) so the feature is
+        demonstrable out of the box: Orchestra's evening premium on the
+        reserved performance beats its section-wide default."""
+        call_command("create_demo_tenant")
+        org = Organization.objects.get(subdomain="roxy")
+        venue = Venue.objects.get(organization=org)
+        chart = SeatingChart.objects.get(organization=org, venue=venue)
+        orchestra = Section.objects.get(organization=org, chart=chart, name="Orchestra")
+        balcony = Section.objects.get(organization=org, chart=chart, name="Balcony")
+        reserved_perf = Performance.objects.get(
+            organization=org, seating_mode=Performance.SeatingMode.RESERVED
+        )
+
+        default_tier = PriceTier.objects.get(
+            organization=org, section=orchestra, performance__isnull=True
+        )
+        self.assertEqual(default_tier.amount, 65)
+
+        override_tier = PriceTier.objects.get(
+            organization=org, section=orchestra, performance=reserved_perf
+        )
+        self.assertEqual(override_tier.amount, 85)
+
+        from events.pricing import resolve_seat_tier
+
+        self.assertEqual(resolve_seat_tier(reserved_perf, orchestra), override_tier)
+        # Balcony has no override -- still resolves to its plain default.
+        balcony_tier = PriceTier.objects.get(organization=org, section=balcony)
+        self.assertEqual(resolve_seat_tier(reserved_perf, balcony), balcony_tier)
 
     def test_idempotent_on_rerun(self):
         call_command("create_demo_tenant")

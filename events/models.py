@@ -69,11 +69,21 @@ class Performance(TenantScopedModel):
 
 
 class PriceTier(TenantScopedModel):
-    """A price. Exactly one of `performance` / `section` is set:
+    """A price. At least one of `performance` / `section` must be set (both
+    null is forbidden); see events/pricing.py for the resolution rule this
+    shape supports:
 
     - `performance` set, `section` null: a flat price for a GA performance.
-    - `section` set, `performance` null: the price for seats in that Section
-      on reserved-seating performances that use its chart.
+    - `section` set, `performance` null: the DEFAULT price for seats in that
+      Section, applied on every reserved-seating performance that uses its
+      chart (unless overridden -- see below).
+    - `performance` AND `section` both set: a per-performance OVERRIDE price
+      for that Section on that one Performance only (e.g. a higher evening
+      price), taking precedence over the section's chart-wide default.
+
+    Reserved-seat pricing should never be read directly off this model --
+    use `events.pricing.resolve_seat_tier(performance, section)`, which
+    implements the override-then-default lookup above.
     """
 
     name = models.CharField(max_length=255)
@@ -103,12 +113,14 @@ class PriceTier(TenantScopedModel):
             models.Index(fields=["organization", "section"]),
         ]
         constraints = [
+            # At least one of performance/section must be set. Both set is
+            # now allowed (a per-performance section override -- see the
+            # class docstring); both null is still forbidden.
             models.CheckConstraint(
                 condition=(
-                    models.Q(performance__isnull=False, section__isnull=True)
-                    | models.Q(performance__isnull=True, section__isnull=False)
+                    models.Q(performance__isnull=False) | models.Q(section__isnull=False)
                 ),
-                name="price_tier_xor_performance_section",
+                name="price_tier_requires_performance_or_section",
             ),
         ]
         ordering = ["organization", "name"]

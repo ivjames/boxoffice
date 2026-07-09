@@ -124,7 +124,10 @@ class HomeViewTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         self.build_ga(org, venue)
         resp = self.client.get("/")  # default testserver Host -> no tenant
         self.assertNotContains(resp, "GA Show")
-        self.assertContains(resp, "Boxoffice")
+        # Platform brand name (see templates/base.html) -- pre-existing
+        # assertion updated for the "Boxo.show" rebrand; unrelated to this
+        # change, fixed in passing to keep the suite green.
+        self.assertContains(resp, "Boxo.show")
 
 
 class EventDetailViewTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):

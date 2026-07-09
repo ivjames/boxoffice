@@ -107,6 +107,37 @@ class CreateCheckoutSessionReservedHoldTests(OrdersFixtureMixin, TestCase):
         self.org.save(update_fields=["stripe_secret_key"])
         self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
 
+    def test_reserved_hold_honors_a_per_performance_price_override(self):
+        """events/pricing.py resolve_seat_tier's override must flow all the
+        way through to the Stripe line item: set_reserved_hold resolves it
+        onto HoldSeat.price_tier, and _line_items_for_hold reads that field
+        directly -- no separate price lookup at checkout time."""
+        from events.models import PriceTier
+
+        PriceTier.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            section=self.section,
+            name="Orchestra (evening premium)",
+            amount=Decimal("85.00"),
+        )
+        hold = order_services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-override",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = FakeStripeSession()
+            services.create_checkout_session(hold, self.request)
+            _, kwargs = mock_create.call_args
+
+        line_items = kwargs["line_items"]
+        self.assertEqual(len(line_items), 1)
+        self.assertEqual(line_items[0]["price_data"]["unit_amount"], 8500)  # $85.00 override
+
     def test_reserved_hold_has_one_line_item_per_seat(self):
         second_seat = Seat.objects.create(
             organization=self.org, section=self.section, row_label="A", number="2"
@@ -252,6 +283,34 @@ class FulfillCheckoutSessionTests(OrdersFixtureMixin, TestCase):
         seat_ids = set(order.tickets.values_list("seat_id", flat=True))
         self.assertEqual(seat_ids, {self.seat.id, second_seat.id})
         self.assertEqual(order.total, Decimal("130.00"))  # 2 x $65
+
+    def test_fulfillment_charges_the_override_price_not_the_section_default(self):
+        from events.models import PriceTier
+
+        self.build_reserved_performance()  # section default: $65.00
+        PriceTier.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            section=self.section,
+            name="Orchestra (evening premium)",
+            amount=Decimal("85.00"),
+        )
+        hold = order_services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-override",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        session = self._session(hold, session_id="cs_test_override")
+
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("85.00"))
+        item = order.items.get()
+        self.assertEqual(item.unit_amount, Decimal("85.00"))
+        self.assertEqual(item.price_tier.amount, Decimal("85.00"))
 
     def test_seat_already_ticketed_raises_availability_changed(self):
         self.build_reserved_performance()

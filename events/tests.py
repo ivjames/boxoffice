@@ -73,11 +73,35 @@ class EventModelTests(TestCase):
         self.assertIsNone(tier.performance)
         self.assertEqual(perf.seating_mode, Performance.SeatingMode.RESERVED)
 
-    def test_price_tier_requires_exactly_one_of_performance_or_section(self):
-        # Neither set -> violates the XOR check constraint.
+    def test_price_tier_requires_at_least_one_of_performance_or_section(self):
+        # Neither set -> violates price_tier_requires_performance_or_section.
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 PriceTier.objects.create(organization=self.org, name="Orphan", amount=Decimal("10.00"))
+
+    def test_price_tier_may_set_both_performance_and_section_as_an_override(self):
+        # Both set is now allowed -- a per-performance section override (see
+        # events/pricing.py). This is the constraint relaxation from the
+        # original XOR: the old constraint would have rejected this row.
+        event = Event.objects.create(organization=self.org, title="Show", slug="show")
+        perf = Performance.objects.create(
+            organization=self.org,
+            event=event,
+            venue=self.venue,
+            starts_at=timezone.now(),
+            seating_mode=Performance.SeatingMode.RESERVED,
+        )
+        chart = SeatingChart.objects.create(organization=self.org, venue=self.venue, name="Standard")
+        section = Section.objects.create(organization=self.org, chart=chart, name="Orchestra")
+        override = PriceTier.objects.create(
+            organization=self.org,
+            performance=perf,
+            section=section,
+            name="Orchestra (evening premium)",
+            amount=Decimal("85.00"),
+        )
+        self.assertEqual(override.performance_id, perf.id)
+        self.assertEqual(override.section_id, section.id)
 
     def test_ga_allocation_sold_cannot_exceed_capacity(self):
         event = Event.objects.create(organization=self.org, title="Show", slug="show")

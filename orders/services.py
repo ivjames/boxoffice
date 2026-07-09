@@ -31,8 +31,9 @@ from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
-from events.models import GAAllocation, PriceTier
-from venues.models import Seat
+from events import pricing
+from events.models import GAAllocation
+from venues.models import Section, Seat
 
 from .models import Hold, HoldSeat, Ticket, default_hold_expiry
 
@@ -141,11 +142,23 @@ def performance_seats(performance):
 
 
 def price_tiers_by_section(performance):
+    """{section_id: PriceTier} for every Section on `performance`'s chart,
+    resolved through events.pricing.resolve_seat_tier -- so a per-performance
+    override (see PriceTier's docstring) wins over the section's chart-wide
+    default automatically. A section with neither an override nor a default
+    priced yet is simply omitted (callers, e.g. set_reserved_hold, already
+    treat "section not in this dict" as "no price set yet")."""
     chart = get_seating_chart(performance)
     if chart is None:
         return {}
-    tiers = PriceTier.objects.filter(organization=performance.organization_id, section__chart=chart)
-    return {tier.section_id: tier for tier in tiers}
+    sections = Section.objects.filter(organization=performance.organization_id, chart=chart)
+    result = {}
+    for section in sections:
+        try:
+            result[section.id] = pricing.resolve_seat_tier(performance, section)
+        except pricing.PricingError:
+            continue
+    return result
 
 
 def reserved_seat_states(performance, session_key=None):

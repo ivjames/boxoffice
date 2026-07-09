@@ -61,6 +61,10 @@ class Command(BaseCommand):
         self.stdout.write(f"  Event: {event.title} ({event.status})")
         self.stdout.write(f"  GA performance: {ga_perf.starts_at} — capacity {ga_perf.ga_allocation.capacity}")
         self.stdout.write(f"  Reserved performance: {reserved_perf.starts_at}")
+        self.stdout.write(
+            "  Pricing: Orchestra $65 default / $85 evening-premium override on the reserved "
+            "performance, Balcony $45 default (see events/pricing.py)"
+        )
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("Demo staff login (owner role, full access):"))
         self.stdout.write(f"  URL:      http://{subdomain}.localhost:8000/login/  (or https://{subdomain}.lab980.com/login/ in prod)")
@@ -198,6 +202,24 @@ class Command(BaseCommand):
             defaults={"amount": Decimal("45.00"), "currency": org.currency},
         )
         tiers.extend([tier_orchestra, tier_balcony])
+
+        # Demonstrates the per-performance section override (events/pricing.py
+        # resolve_seat_tier): Orchestra normally defaults to $65 (the
+        # section-scoped tier above), but THIS performance charges a $85
+        # evening premium for it. Balcony is untouched, so it still falls
+        # through to its $45 default -- both behaviors are visible side by
+        # side on the same performance.
+        tier_orchestra_override, _ = PriceTier.objects.get_or_create(
+            organization=org,
+            performance=perf,
+            section=orchestra,
+            defaults={
+                "name": "Orchestra (evening premium)",
+                "amount": Decimal("85.00"),
+                "currency": org.currency,
+            },
+        )
+        tiers.append(tier_orchestra_override)
         return perf, tiers
 
     def _create_demo_owner(self, org):

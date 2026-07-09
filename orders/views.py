@@ -97,11 +97,17 @@ def hold_create(request, pk):
             quantity = _parse_int(request.POST.get("quantity"), default=0)
             price_tier = None
             if quantity > 0:
+                # section__isnull=True keeps this strictly to GA-shaped tiers
+                # (performance set, section null) -- a per-performance
+                # section override (events/pricing.py) is reserved-seat-only
+                # and must never be selectable here even if a client POSTs
+                # its pk.
                 price_tier = get_object_or_404(
                     PriceTier,
                     pk=request.POST.get("price_tier"),
                     organization=request.organization,
                     performance=performance,
+                    section__isnull=True,
                 )
             services.set_ga_hold(
                 organization=request.organization,

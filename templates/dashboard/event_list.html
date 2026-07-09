@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Events — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Events</h1>
+    <a class="button" href="{% url 'dashboard_event_create' %}">New event</a>
+</div>
+
+<table class="dash-table">
+    <thead><tr><th>Title</th><th>Status</th><th>Category</th><th>Performances</th><th></th></tr></thead>
+    <tbody>
+    {% for event in events %}
+        <tr>
+            <td><a href="{% url 'dashboard_event_detail' event.pk %}">{{ event.title }}</a></td>
+            <td><span class="badge badge--{{ event.status }}">{{ event.get_status_display }}</span></td>
+            <td>{{ event.category }}</td>
+            <td>{{ event.performances.count }}</td>
+            <td><a href="{% url 'dashboard_event_update' event.pk %}">Edit</a></td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="5" class="muted">No events yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

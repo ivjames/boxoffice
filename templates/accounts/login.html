@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Staff sign in — {{ organization.name }}{% endblock %}
+
+{% block content %}
+<h1>Staff sign in</h1>
+<p class="muted">{{ organization.name }}</p>
+
+{% if error %}<p class="scan-result scan-result--fail">{{ error }}</p>{% endif %}
+
+<form method="post" class="dash-form">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ next }}">
+    {% for field in form %}
+        <div class="field">
+            {{ field.label_tag }}
+            {{ field }}
+            {{ field.errors }}
+        </div>
+    {% endfor %}
+    <button type="submit" class="button">Sign in</button>
+</form>
+{% endblock %}

@@ -1,0 +1,17 @@
+<nav class="dash-nav">
+    <a href="{% url 'dashboard_overview' %}">Overview</a>
+    {% if request.membership.can_manage_events %}
+        <a href="{% url 'dashboard_event_list' %}">Events</a>
+    {% endif %}
+    {% if request.membership.can_sell_tickets %}
+        <a href="{% url 'dashboard_order_list' %}">Orders</a>
+    {% endif %}
+    {% if request.membership.can_scan %}
+        <a href="{% url 'scan_home' %}">Scan</a>
+    {% endif %}
+    <span class="muted">{{ request.user.email }} · {{ request.membership.get_role_display }}</span>
+    <form method="post" action="{% url 'logout' %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="button button--secondary">Log out</button>
+    </form>
+</nav>

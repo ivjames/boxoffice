@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}{{ event.title }} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>{{ event.title }}</h1>
+    <p class="muted">
+        <span class="badge badge--{{ event.status }}">{{ event.get_status_display }}</span>
+        · <a href="{% url 'dashboard_event_update' event.pk %}">Edit event</a>
+    </p>
+</div>
+
+<h2>Performances</h2>
+<p><a class="button" href="{% url 'dashboard_performance_create' event.pk %}">New performance</a></p>
+<table class="dash-table">
+    <thead><tr><th>When</th><th>Venue</th><th>Mode</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for performance in performances %}
+        <tr>
+            <td>{{ performance.starts_at|date:"D, M j Y — g:i A" }}</td>
+            <td>{{ performance.venue.name }}</td>
+            <td>{{ performance.get_seating_mode_display }}</td>
+            <td><span class="badge badge--{{ performance.status }}">{{ performance.get_status_display }}</span></td>
+            <td>
+                <a href="{% url 'dashboard_performance_update' performance.pk %}">Edit</a>
+                · <a href="{% url 'dashboard_performance_price_tiers' performance.pk %}">Pricing</a>
+            </td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="5" class="muted">No performances yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

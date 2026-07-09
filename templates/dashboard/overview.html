@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Overview</h1>
+</div>
+
+<div class="stat-row">
+    <div class="stat-tile">
+        <span class="stat-tile__value">{{ upcoming_performances|length }}</span>
+        <span class="stat-tile__label">Upcoming performances</span>
+    </div>
+    <div class="stat-tile">
+        <span class="stat-tile__value">{{ tickets_sold }}</span>
+        <span class="stat-tile__label">Tickets sold</span>
+    </div>
+    <div class="stat-tile">
+        <span class="stat-tile__value">${{ gross_revenue }}</span>
+        <span class="stat-tile__label">Gross revenue (paid orders)</span>
+    </div>
+</div>
+
+<h2>Upcoming performances</h2>
+{% if upcoming_performances %}
+<table class="dash-table">
+    <thead><tr><th>Event</th><th>When</th><th>Venue</th><th>Mode</th></tr></thead>
+    <tbody>
+    {% for performance in upcoming_performances %}
+        <tr>
+            <td>{{ performance.event.title }}</td>
+            <td>{{ performance.starts_at|date:"D, M j Y — g:i A" }}</td>
+            <td>{{ performance.venue.name }}</td>
+            <td>{{ performance.get_seating_mode_display }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+    <p class="muted">No upcoming performances.</p>
+{% endif %}
+
+<h2>Sold / capacity by performance</h2>
+<table class="dash-table">
+    <thead><tr><th>Event</th><th>When</th><th>Sold</th><th>Capacity</th></tr></thead>
+    <tbody>
+    {% for row in performance_rows %}
+        <tr>
+            <td>{{ row.performance.event.title }}</td>
+            <td>{{ row.performance.starts_at|date:"M j Y g:i A" }}</td>
+            <td>{{ row.sold }}</td>
+            <td>{% if row.capacity is not None %}{{ row.capacity }}{% else %}—{% endif %}</td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="4" class="muted">No performances yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

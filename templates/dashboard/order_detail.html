@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}Order {{ order.token }} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<h1>Order {{ order.token }}</h1>
+<p><span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
+<p><strong>Buyer:</strong> {{ order.buyer_name }} — {{ order.buyer_email }}</p>
+<p><strong>Performance:</strong> {{ order.performance.event.title }} — {{ order.performance.starts_at|date:"D, M j Y — g:i A" }} ({{ order.performance.venue.name }})</p>
+<p><strong>Total:</strong> ${{ order.total }}</p>
+<p class="muted">Placed {{ order.created_at|date:"M j Y g:i A" }}</p>
+
+<h2>Tickets</h2>
+<table class="dash-table">
+    <thead><tr><th>Token</th><th>Holder</th><th>Seat</th><th>Status</th><th>Used</th></tr></thead>
+    <tbody>
+    {% for ticket in tickets %}
+        <tr>
+            <td>{{ ticket.token }}</td>
+            <td>{{ ticket.holder_name|default:"—" }}</td>
+            <td>{% if ticket.seat %}{{ ticket.seat.row_label }}{{ ticket.seat.number }}{% else %}GA{% endif %}</td>
+            <td><span class="badge badge--{{ ticket.status }}">{{ ticket.get_status_display }}</span></td>
+            <td>{% if ticket.used_at %}{{ ticket.used_at|date:"M j Y g:i A" }} by {{ ticket.scanned_by }}{% else %}—{% endif %}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

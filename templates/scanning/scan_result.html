@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Scan result — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <h1>Scan result</h1>
+
+    <div class="scan-result {% if result.ok %}scan-result--pass{% else %}scan-result--fail{% endif %}">
+        <p class="scan-result__headline">{% if result.ok %}PASS{% else %}FAIL{% endif %}</p>
+        <p>{{ result.message }}</p>
+
+        {% if result.ticket %}
+            <ul>
+                {% if result.ticket.holder_name %}<li><strong>Holder:</strong> {{ result.ticket.holder_name }}</li>{% endif %}
+                {% if result.ticket.seat %}<li><strong>Seat:</strong> {{ result.ticket.seat.row_label }}{{ result.ticket.seat.number }}</li>{% endif %}
+                <li><strong>Performance:</strong> {{ result.ticket.performance }}</li>
+                <li><strong>Status:</strong> {{ result.ticket.get_status_display }}</li>
+            </ul>
+        {% endif %}
+    </div>
+
+    <p><a href="{% url 'scan_home' %}" class="button">Scan another ticket</a></p>
+{% endblock %}

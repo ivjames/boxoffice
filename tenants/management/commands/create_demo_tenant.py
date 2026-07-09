@@ -8,13 +8,24 @@ Phase 3+ and as a smoke test that the whole model graph wires together.
 from datetime import timedelta
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
+from accounts.models import Membership
 from events.models import Event, GAAllocation, Performance, PriceTier
 from tenants.models import Organization
 from venues.models import Seat, SeatingChart, Section, Venue
+
+User = get_user_model()
+
+# Fixed, well-known demo credentials -- intentionally not randomized, so
+# "how do I log into the demo tenant" always has the same answer. Never used
+# for a real (non-demo) Organization -- this command only ever seeds
+# `--subdomain roxy`-style throwaway tenants.
+DEMO_OWNER_EMAIL_TEMPLATE = "owner@{subdomain}.demo"
+DEMO_OWNER_PASSWORD = "roxy-demo-owner-2024"
 
 
 class Command(BaseCommand):
@@ -39,6 +50,7 @@ class Command(BaseCommand):
             reserved_perf, reserved_tiers = self._create_reserved_performance(
                 org, event, venue, sections
             )
+            owner_email, owner_password = self._create_demo_owner(org)
 
         self.stdout.write(self.style.SUCCESS(f"Demo tenant ready: {org.name} ({org.subdomain})"))
         self.stdout.write(f"  Venue: {venue.name}")
@@ -49,6 +61,15 @@ class Command(BaseCommand):
         self.stdout.write(f"  Event: {event.title} ({event.status})")
         self.stdout.write(f"  GA performance: {ga_perf.starts_at} — capacity {ga_perf.ga_allocation.capacity}")
         self.stdout.write(f"  Reserved performance: {reserved_perf.starts_at}")
+        self.stdout.write("")
+        self.stdout.write(self.style.SUCCESS("Demo staff login (owner role, full access):"))
+        self.stdout.write(f"  URL:      http://{subdomain}.localhost:8000/login/  (or https://{subdomain}.lab980.com/login/ in prod)")
+        self.stdout.write(f"  Email:    {owner_email}")
+        self.stdout.write(f"  Password: {owner_password}")
+        self.stdout.write(
+            "  (Use `manage.py create_staff_user` to add more staff, including "
+            "manager/box_office/scanner roles.)"
+        )
 
     # -- steps ------------------------------------------------------------
 
@@ -178,3 +199,22 @@ class Command(BaseCommand):
         )
         tiers.extend([tier_orchestra, tier_balcony])
         return perf, tiers
+
+    def _create_demo_owner(self, org):
+        """One demo staff user with the 'owner' role (full dashboard +
+        scanning access), so a fresh clone can log into the Phase 5
+        dashboard immediately without a separate create_staff_user call.
+        Idempotent: re-running the command does not reset an existing
+        password (matches create_staff_user's default behavior) so a demo
+        password change made by hand during testing survives a re-seed."""
+        email = User.objects.normalize_email(DEMO_OWNER_EMAIL_TEMPLATE.format(subdomain=org.subdomain))
+        user, created = User.objects.get_or_create(
+            email=email, defaults={"first_name": "Demo", "last_name": "Owner"}
+        )
+        if created:
+            user.set_password(DEMO_OWNER_PASSWORD)
+            user.save(update_fields=["password"])
+        Membership.objects.update_or_create(
+            user=user, organization=org, defaults={"role": Membership.Role.OWNER}
+        )
+        return email, DEMO_OWNER_PASSWORD

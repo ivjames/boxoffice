@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Scan tickets — {{ organization.name }}{% endblock %}
+
+{% block content %}
+<div x-data="qrScanner()" x-init="start()">
+    <div class="dash-header">
+        <h1>Scan tickets</h1>
+        <p class="muted">{{ request.membership.get_role_display }} — {{ organization.name }}</p>
+    </div>
+
+    <div class="scanner">
+        <div class="scanner__camera" x-show="status === 'starting' || status === 'scanning'">
+            <video x-ref="video" class="scanner__video" playsinline muted autoplay></video>
+            <canvas x-ref="canvas" class="scanner__canvas" style="display:none;"></canvas>
+        </div>
+
+        <template x-if="status === 'starting'">
+            <p class="muted">Starting camera…</p>
+        </template>
+
+        <template x-if="status === 'error'">
+            <p class="scan-result scan-result--fail" x-text="errorMessage"></p>
+        </template>
+
+        <p class="muted" x-show="status === 'scanning'">
+            Point the camera at a ticket's QR code. Scanned:
+            <strong><span x-text="tally.pass"></span> passed</strong>,
+            <strong><span x-text="tally.fail"></span> failed</strong>.
+        </p>
+
+        <template x-if="lastResult">
+            <div class="scan-result" :class="lastResult.ok ? 'scan-result--pass' : 'scan-result--fail'">
+                <p class="scan-result__headline" x-text="lastResult.ok ? 'PASS' : 'FAIL'"></p>
+                <p x-text="lastResult.message"></p>
+                <template x-if="lastResult.ticket">
+                    <ul>
+                        <li x-show="lastResult.ticket.holder_name"><strong>Holder:</strong> <span x-text="lastResult.ticket.holder_name"></span></li>
+                        <li x-show="lastResult.ticket.seat"><strong>Seat:</strong> <span x-text="lastResult.ticket.seat"></span></li>
+                        <li><strong>Performance:</strong> <span x-text="lastResult.ticket.performance"></span></li>
+                    </ul>
+                </template>
+            </div>
+        </template>
+    </div>
+
+    <noscript>
+        <p class="muted">Enable JavaScript to use the camera scanner. The manual entry form below still works.</p>
+    </noscript>
+
+    <div class="scanner__manual">
+        <h2>Manual entry</h2>
+        <p class="muted">No camera, or permission denied? Type or paste the ticket code (the value after <code>/scan/redeem/</code> in the QR link).</p>
+        {% if error %}<p class="scan-result scan-result--fail">{{ error }}</p>{% endif %}
+        <form method="post">
+            {% csrf_token %}
+            <input type="text" name="token" placeholder="Ticket code (UUID)" required>
+            <button type="submit" class="button">Redeem</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/jsQR.js' %}"></script>
+<script src="{% static 'js/scanner.js' %}"></script>
+{% endblock %}

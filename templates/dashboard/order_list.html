@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Orders — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Orders</h1>
+</div>
+
+<form method="get" class="search-form">
+    <input type="text" name="q" value="{{ q }}" placeholder="Search buyer email, name, or order code">
+    <button type="submit" class="button">Search</button>
+</form>
+
+<table class="dash-table">
+    <thead><tr><th>Order</th><th>Buyer</th><th>Performance</th><th>Total</th><th>Status</th><th>Placed</th></tr></thead>
+    <tbody>
+    {% for order in orders %}
+        <tr>
+            <td><a href="{% url 'dashboard_order_detail' order.token %}">{{ order.token }}</a></td>
+            <td>{{ order.buyer_email }}</td>
+            <td>{{ order.performance.event.title }}</td>
+            <td>${{ order.total }}</td>
+            <td><span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></td>
+            <td>{{ order.created_at|date:"M j Y g:i A" }}</td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="6" class="muted">No orders found.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if is_paginated %}
+    <p>
+        {% if page_obj.has_previous %}<a href="?q={{ q }}&page={{ page_obj.previous_page_number }}">Previous</a>{% endif %}
+        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+        {% if page_obj.has_next %}<a href="?q={{ q }}&page={{ page_obj.next_page_number }}">Next</a>{% endif %}
+    </p>
+{% endif %}
+{% endblock %}

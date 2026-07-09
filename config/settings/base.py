@@ -48,6 +48,8 @@ INSTALLED_APPS = [
     "events",
     "orders",
     "payments",
+    "dashboard",
+    "scanning",
 ]
 
 MIDDLEWARE = [
@@ -90,6 +92,12 @@ WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
 AUTH_USER_MODEL = "accounts.User"
+
+# Staff sign-in is per-tenant (accounts.views.login_view) -- this is a URL
+# NAME, not a path, so it resolves correctly on whichever subdomain a
+# redirect-to-login happens on (every tenant subdomain serves the same
+# urlconf; only request.organization differs).
+LOGIN_URL = "login"
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

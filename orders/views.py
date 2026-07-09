@@ -6,10 +6,12 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from events.models import Performance, PriceTier
+from payments import services as payment_services
 from tenants.decorators import require_tenant
 
 from . import services
-from .models import Hold, default_hold_expiry
+from .models import Hold, Order
+from .qr import ticket_qr_data_uri
 
 
 def _parse_int(value, default=0):
@@ -163,10 +165,13 @@ def cart_release(request):
 
 @require_tenant
 def checkout_view(request):
-    """STUB: no Order/Payment/Stripe here (Phase 4). GET renders the current
-    hold(s) as an order summary; POST just confirms/refreshes the targeted
-    hold's expiry so it survives a bit longer while Phase 4 wires up the
-    real "Proceed to payment" action."""
+    """GET renders the current hold(s) as an order summary. POST creates a
+    Stripe Checkout Session for the targeted hold (using THIS org's own
+    Stripe secret key -- see payments/services.py) and redirects the
+    browser to Stripe's hosted payment page. No Order/Payment/Ticket is
+    created here -- that happens once Stripe confirms payment via the
+    checkout.session.completed webhook (payments/views.py).
+    """
     session_key = services.get_session_key(request)
 
     if request.method == "POST":
@@ -177,15 +182,62 @@ def checkout_view(request):
             session_key=session_key,
             expires_at__gt=timezone.now(),
         )
-        hold.expires_at = default_hold_expiry()
-        hold.save(update_fields=["expires_at"])
-        messages.info(
-            request,
-            "Your hold is confirmed and refreshed. Online payment (Stripe) is coming in Phase 4.",
-        )
-        return redirect("checkout")
+        try:
+            checkout_url = payment_services.create_checkout_session(hold, request)
+        except payment_services.CheckoutError as exc:
+            messages.error(request, str(exc))
+            return redirect("cart")
+        return redirect(checkout_url)
 
     holds = _active_holds(request.organization, session_key)
     items = [{"hold": h, "total": services.hold_total(h)} for h in holds]
     grand_total = sum((item["total"] for item in items), Decimal("0.00"))
     return render(request, "orders/checkout.html", {"items": items, "grand_total": grand_total})
+
+
+@require_tenant
+def checkout_success(request):
+    """Stripe redirects here after a successful payment with
+    ?session_id={CHECKOUT_SESSION_ID}. The webhook that actually creates the
+    Order can lag behind this redirect by a second or two, so: if the Order
+    already exists, show it; otherwise show a "we're confirming" state that
+    auto-refreshes (see the template) rather than erroring.
+    """
+    session_id = request.GET.get("session_id")
+    order = None
+    if session_id:
+        order = (
+            Order.objects.for_organization(request.organization)
+            .select_related("performance", "performance__event", "performance__venue")
+            .filter(stripe_checkout_session_id=session_id)
+            .first()
+        )
+    return render(request, "orders/checkout_success.html", {"order": order})
+
+
+@require_tenant
+def checkout_cancel(request):
+    """Stripe redirects here if the buyer backs out of the hosted payment
+    page. The Hold (if not yet expired) is untouched -- nothing to clean up,
+    the buyer can just try checkout again."""
+    return render(request, "orders/checkout_cancel.html")
+
+
+@require_tenant
+def ticket_detail(request, token):
+    """Public order confirmation + tickets page, scoped to this org and
+    reachable only by the unguessable Order.token (no login required) --
+    the link sent in the ticket email and shown on /checkout/success/."""
+    order = get_object_or_404(
+        Order.objects.for_organization(request.organization).select_related(
+            "performance", "performance__event", "performance__venue"
+        ),
+        token=token,
+    )
+    tickets = list(
+        order.tickets.select_related("seat", "seat__section").order_by(
+            "seat__section__ordering", "seat__row_label", "seat__number", "id"
+        )
+    )
+    ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket, request)} for ticket in tickets]
+    return render(request, "orders/ticket_detail.html", {"order": order, "ticket_rows": ticket_rows})

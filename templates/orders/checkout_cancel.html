@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block title %}Checkout cancelled — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <h1>Checkout cancelled</h1>
+    <p>No payment was made.</p>
+    <p>
+        If your hold hasn't expired yet, your seats may still be waiting —
+        <a href="{% url 'cart' %}">return to your cart</a> to finish checking out, or
+        <a href="{% url 'home' %}">browse shows</a> to start over.
+    </p>
+{% endblock %}

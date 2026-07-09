@@ -1,0 +1,15 @@
+Your tickets for {{ order.performance.event.title }}
+{{ organization.name }}
+
+{{ order.performance.starts_at|date:"D, M j Y — g:i A" }} — {{ order.performance.venue.name }}
+Order total: ${{ order.total }}
+
+View your tickets online any time: {{ tickets_url }}
+
+Tickets in this order:
+{% for row in ticket_rows %}
+- Ticket {{ forloop.counter }}{% if row.ticket.seat %} — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}{% endif %} ({{ row.ticket.token }})
+{% endfor %}
+Show the QR code on the tickets page (or this email, if your client displays images) at the door.
+
+Thank you for your order — {{ organization.name }}

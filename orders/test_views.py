@@ -198,7 +198,7 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         self.post_as("org-a", "/cart/release/", {"hold_id": hold.pk})
         self.assertEqual(Hold.objects.filter(pk=hold.pk).count(), 0)
 
-    def test_checkout_stub_shows_summary_and_creates_no_order(self):
+    def test_checkout_get_shows_summary_and_creates_no_order(self):
         self.post_as(
             "org-a",
             f"/performances/{self.performance.pk}/hold/",
@@ -212,23 +212,51 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
 
         self.assertEqual(Order.objects.count(), 0)
 
-    def test_checkout_post_refreshes_hold_without_creating_order(self):
+    def test_checkout_post_redirects_to_stripe_without_creating_order(self):
+        """POST /checkout/ creates a Stripe Checkout Session (mocked -- no
+        network) for the targeted hold and redirects the browser to its
+        hosted payment page. No Order/Payment/Ticket exists yet; that's the
+        webhook's job (see payments/test_services.py,
+        payments/test_views.py)."""
+        from unittest.mock import patch
+
+        from orders.models import Order
+
         self.post_as(
             "org-a",
             f"/performances/{self.performance.pk}/hold/",
             {"price_tier": self.tier.pk, "quantity": 2},
         )
         hold = Hold.objects.get(performance=self.performance)
-        old_expiry = hold.expires_at
 
-        resp = self.post_as("org-a", "/checkout/", {"hold_id": hold.pk})
-        self.assertEqual(resp.status_code, 302)
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = type(
+                "FakeSession", (), {"url": "https://checkout.stripe.com/pay/cs_test_123"}
+            )()
+            resp = self.post_as("org-a", "/checkout/", {"hold_id": hold.pk})
 
-        hold.refresh_from_db()
-        self.assertGreater(hold.expires_at, old_expiry)
+        self.assertRedirects(
+            resp, "https://checkout.stripe.com/pay/cs_test_123", fetch_redirect_response=False
+        )
+        # The hold is left alone -- fulfillment (which deletes it) only
+        # happens once the webhook confirms payment.
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+        self.assertEqual(Order.objects.count(), 0)
 
+    def test_checkout_post_with_expired_hold_shows_error_and_creates_no_order(self):
         from orders.models import Order
 
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        hold = Hold.objects.get(performance=self.performance)
+        hold.expires_at = timezone.now() - timezone.timedelta(minutes=1)
+        hold.save(update_fields=["expires_at"])
+
+        resp = self.post_as("org-a", "/checkout/", {"hold_id": hold.pk})
+        self.assertEqual(resp.status_code, 404)  # expired hold no longer matches the lookup
         self.assertEqual(Order.objects.count(), 0)
 
 
@@ -342,3 +370,99 @@ class ReleaseExpiredHoldsCommandTests(StorefrontFixtureMixin, TestCase):
 
         self.assertTrue(Hold.objects.filter(pk=active.pk).exists())
         self.assertFalse(Hold.objects.filter(pk=expired.pk).exists())
+
+
+class CheckoutSuccessCancelViewTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue)
+
+    def test_success_without_session_id_shows_processing_state(self):
+        resp = self.get_as("org-a", "/checkout/success/")
+        self.assertContains(resp, "confirming your payment")
+
+    def test_success_with_unknown_session_id_shows_processing_state(self):
+        resp = self.get_as("org-a", "/checkout/success/?session_id=cs_test_unknown")
+        self.assertContains(resp, "confirming your payment")
+
+    def test_success_with_known_session_id_shows_order(self):
+        from orders.models import Order
+
+        order = Order.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            buyer_email="buyer@example.com",
+            total=Decimal("70.00"),
+            status=Order.Status.PAID,
+            stripe_checkout_session_id="cs_test_known",
+        )
+        resp = self.get_as("org-a", "/checkout/success/?session_id=cs_test_known")
+        self.assertContains(resp, "View your tickets")
+        self.assertContains(resp, str(order.token))
+
+    def test_success_does_not_leak_another_orgs_order(self):
+        from orders.models import Order
+
+        org_b, venue_b = self.build_org("org-b")
+        event_b, performance_b, tier_b = self.build_ga(org_b, venue_b, slug="show-b")
+        Order.objects.create(
+            organization=org_b,
+            performance=performance_b,
+            buyer_email="buyer@example.com",
+            total=Decimal("70.00"),
+            status=Order.Status.PAID,
+            stripe_checkout_session_id="cs_test_cross_org",
+        )
+        resp = self.get_as("org-a", "/checkout/success/?session_id=cs_test_cross_org")
+        self.assertContains(resp, "confirming your payment")
+
+    def test_cancel_page_renders(self):
+        resp = self.get_as("org-a", "/checkout/cancel/")
+        self.assertContains(resp, "Checkout cancelled")
+
+
+class TicketDetailViewTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue)
+
+    def _make_order_with_tickets(self, org, performance, n=2):
+        from orders.models import Order, Ticket
+
+        order = Order.objects.create(
+            organization=org,
+            performance=performance,
+            buyer_email="buyer@example.com",
+            total=Decimal("70.00"),
+            status=Order.Status.PAID,
+        )
+        for _ in range(n):
+            Ticket.objects.create(organization=org, order=order, performance=performance)
+        return order
+
+    def test_renders_order_and_qr_codes(self):
+        order = self._make_order_with_tickets(self.org, self.performance, n=2)
+        resp = self.get_as("org-a", f"/tickets/{order.token}/")
+        self.assertContains(resp, "Your tickets")
+        self.assertContains(resp, "GA Show")
+        self.assertContains(resp, "data:image/png;base64,")
+        self.assertEqual(resp.content.decode().count("data:image/png;base64,"), 2)
+
+    def test_unknown_token_404s(self):
+        import uuid
+
+        resp = self.get_as("org-a", f"/tickets/{uuid.uuid4()}/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_cross_org_token_404s(self):
+        org_b, venue_b = self.build_org("org-b")
+        event_b, performance_b, tier_b = self.build_ga(org_b, venue_b, slug="show-b")
+        order = self._make_order_with_tickets(org_b, performance_b, n=1)
+
+        resp = self.get_as("org-a", f"/tickets/{order.token}/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_no_tenant_404s(self):
+        order = self._make_order_with_tickets(self.org, self.performance, n=1)
+        resp = self.client.get(f"/tickets/{order.token}/")
+        self.assertEqual(resp.status_code, 404)

@@ -22,6 +22,14 @@ Idempotency: `fulfill_checkout_session` is keyed on
 a slow response or a network blip), and Checkout Sessions are otherwise
 one-shot, so "does an Order already exist for this session id" is both
 necessary and sufficient to detect a replay -- see its docstring.
+
+`fulfill_hold()` is the shared core both `fulfill_checkout_session` (Stripe)
+and the env-gated TEST CHECKOUT path (orders/views.py's checkout_test, only
+reachable when settings.ENABLE_TEST_CHECKOUT is True -- see
+config/settings/base.py and .env.example) call to actually turn a Hold into
+an Order + Tickets. There is exactly one code path that hands out tickets;
+the two callers differ only in idempotency strategy and where buyer_email/
+buyer_name/payment_ref come from.
 """
 
 from django.db import IntegrityError, transaction
@@ -153,6 +161,91 @@ def _to_minor_units(amount):
     return int((amount * 100).to_integral_value())
 
 
+# --- Shared fulfillment core ---------------------------------------------
+
+
+@transaction.atomic
+def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe_checkout_session_id=None):
+    """Core order-fulfillment transaction, shared by EVERY payment path
+    (the Stripe webhook below, and the env-gated TEST CHECKOUT path in
+    orders/views.py). This is the one and only place that turns a Hold into
+    a real Order + OrderItems + Tickets -- re-validate the hold, lock +
+    recheck its inventory (GAAllocation row for GA, Seat rows for reserved
+    -- the same targets orders/services.py locks, so this can't race a
+    fresh set_ga_hold/set_reserved_hold call), create the Order
+    (status=paid) + OrderItems + Tickets, bump GAAllocation.sold for GA,
+    record a Payment row, and delete the Hold. `hold` must already have been
+    looked up (and, for a session-based caller, tenant/session-scoped) by
+    the caller -- this function only re-checks its expiry, not who's
+    allowed to consume it.
+
+    Raises HoldGoneError if `hold` has expired since the caller looked it
+    up, or AvailabilityChangedError (via _fulfill_ga/_fulfill_reserved) if
+    availability no longer holds. Nothing is written to the DB before the
+    raise, thanks to @transaction.atomic (this function's own savepoint,
+    nested inside whatever transaction the caller is in).
+
+    ALWAYS creates a fresh Order -- it does not check for an existing one,
+    so callers own idempotency:
+      - fulfill_checkout_session (below) pre-checks "does an Order already
+        exist for this session_id" before calling this, and wraps the call
+        in an IntegrityError fallback for the concurrent-delivery race (see
+        its docstring) -- that's why `stripe_checkout_session_id` is
+        threaded through and written in the SAME Order.objects.create()
+        call this function makes, rather than added after: two concurrent
+        deliveries for the same session must collide on that create(), or
+        the race protection is void.
+      - The test-checkout path (orders/views.py's checkout_test) relies on
+        the Hold itself: this function deletes it before returning, so a
+        resubmitted test-checkout POST for the same hold hits
+        Hold.DoesNotExist / a stale lookup in the view, not a second Order.
+
+    provider/payment_ref are caller-supplied and recorded verbatim on the
+    Payment row (e.g. provider="stripe", payment_ref=<payment_intent id>;
+    or provider="test", payment_ref=f"test-{uuid4()}" for TEST CHECKOUT --
+    see .env.example's ENABLE_TEST_CHECKOUT for why that path must stay
+    off by default).
+
+    Sending the ticket email is every caller's job, done AFTER this
+    returns/commits -- email delivery shouldn't be able to roll back a paid
+    order.
+    """
+    if hold.expires_at <= timezone.now():
+        raise HoldGoneError(
+            f"Hold {hold.pk} is missing or expired; payment succeeded but nothing was fulfilled."
+        )
+
+    organization = hold.organization
+    total = order_services.hold_total(hold)
+
+    order = Order.objects.create(
+        organization=organization,
+        performance=hold.performance,
+        buyer_email=buyer_email,
+        buyer_name=buyer_name,
+        total=total,
+        status=Order.Status.PAID,
+        stripe_checkout_session_id=stripe_checkout_session_id,
+    )
+
+    if hold.price_tier_id and hold.quantity:
+        _fulfill_ga(organization, hold, order)
+    else:
+        _fulfill_reserved(organization, hold, order)
+
+    Payment.objects.create(
+        organization=organization,
+        order=order,
+        provider=provider,
+        amount=total,
+        status="succeeded",
+        provider_ref=payment_ref,
+    )
+
+    hold.delete()  # HoldSeat rows cascade-delete with it.
+    return order
+
+
 # --- Webhook fulfillment (checkout.session.completed) --------------------
 
 
@@ -164,18 +257,16 @@ def fulfill_checkout_session(organization, session):
     Idempotent: if an Order already exists for `session["id"]` (a Stripe
     retry, or this handler running twice), returns that Order unchanged with
     created=False and does nothing else -- no duplicate Order/Tickets, no
-    double-incrementing GAAllocation.sold. Otherwise, inside this single
-    transaction: re-validate + lock the Hold's inventory (GAAllocation row
-    for GA, Seat rows for reserved -- the same targets orders/services.py
-    locks, so a fulfillment can't race a fresh set_ga_hold/set_reserved_hold
-    call), create the Order (status=paid) + OrderItems + Tickets, bump
-    GAAllocation.sold for GA, delete the Hold, and record a Payment row.
+    double-incrementing GAAllocation.sold. Otherwise, re-validates the Hold
+    named in the session's metadata and hands off to fulfill_hold() (see its
+    docstring for what "fulfill" means) with provider="stripe" and this
+    session's id.
 
     Returns (order, created). Raises FulfillmentError (never touches the
-    DB before the raise, thanks to @transaction.atomic) if the Hold is gone/
-    expired or availability no longer holds. Sending the ticket email is the
-    caller's job, done AFTER this returns/commits -- email delivery
-    shouldn't be able to roll back a paid order.
+    DB before the raise) if the Hold is gone/expired or availability no
+    longer holds. Sending the ticket email is the caller's job, done AFTER
+    this returns/commits -- email delivery shouldn't be able to roll back a
+    paid order.
     """
     session_id = session["id"]
     existing = Order.objects.filter(organization=organization, stripe_checkout_session_id=session_id).first()
@@ -205,28 +296,26 @@ def fulfill_checkout_session(organization, session):
     customer_details = session.get("customer_details") or {}
     buyer_email = customer_details.get("email") or ""
     buyer_name = customer_details.get("name") or ""
-    total = order_services.hold_total(hold)
 
     # The `existing` check above is correct in sequence but isn't itself
     # locked -- two truly concurrent deliveries for the same session_id can
     # both read "no Order yet" before either commits (see Order.Meta's
-    # unique_stripe_checkout_session_per_org constraint docstring). Create
-    # inside a savepoint (nested atomic) so a unique-constraint violation
-    # here can be caught and handled without poisoning the outer
-    # transaction; the loser falls back to the winner's now-committed Order
-    # instead of raising 500 into the webhook view (which would just make
-    # Stripe retry into the same race again).
+    # unique_stripe_checkout_session_per_org constraint docstring).
+    # fulfill_hold()'s own @transaction.atomic gives its Order.objects.create()
+    # call a savepoint, so a unique-constraint violation there can be caught
+    # and handled below without poisoning this transaction; the loser falls
+    # back to the winner's now-committed Order instead of raising 500 into
+    # the webhook view (which would just make Stripe retry into the same
+    # race again).
     try:
-        with transaction.atomic():
-            order = Order.objects.create(
-                organization=organization,
-                performance=hold.performance,
-                buyer_email=buyer_email,
-                buyer_name=buyer_name,
-                total=total,
-                status=Order.Status.PAID,
-                stripe_checkout_session_id=session_id,
-            )
+        order = fulfill_hold(
+            hold,
+            buyer_email=buyer_email,
+            buyer_name=buyer_name,
+            payment_ref=session.get("payment_intent") or session_id,
+            provider="stripe",
+            stripe_checkout_session_id=session_id,
+        )
     except IntegrityError:
         winner = Order.objects.filter(
             organization=organization, stripe_checkout_session_id=session_id
@@ -235,21 +324,6 @@ def fulfill_checkout_session(organization, session):
             return winner, False
         raise
 
-    if hold.price_tier_id and hold.quantity:
-        _fulfill_ga(organization, hold, order)
-    else:
-        _fulfill_reserved(organization, hold, order)
-
-    Payment.objects.create(
-        organization=organization,
-        order=order,
-        provider="stripe",
-        amount=total,
-        status="succeeded",
-        provider_ref=session.get("payment_intent") or session_id,
-    )
-
-    hold.delete()  # HoldSeat rows cascade-delete with it.
     return order, True
 
 

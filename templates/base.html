@@ -19,6 +19,12 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
 
+    {% if test_checkout_enabled %}
+        <div class="test-mode-banner" role="alert">
+            TEST MODE — payments are simulated, no real charges are made. Do not enable this on a real production site.
+        </div>
+    {% endif %}
+
     <header class="site-header" x-data="{ navOpen: false }">
         <div class="site-header__inner">
             <a class="site-header__brand" href="{% url 'home' %}">

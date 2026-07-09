@@ -87,6 +87,8 @@ TEMPLATES = [
                 "accounts.context_processors.staff_membership",
                 # Exposes the session's live cart item count as `cart_count`.
                 "orders.context_processors.cart_count",
+                # Exposes settings.ENABLE_TEST_CHECKOUT as `test_checkout_enabled`.
+                "payments.context_processors.test_checkout_enabled",
             ],
         },
     },
@@ -155,3 +157,20 @@ BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
 # resolution (an explicit tenant subdomain in the Host header) is completely
 # unaffected either way — this only changes the platform-host fallback.
 DEFAULT_TENANT = env("DEFAULT_TENANT", default="")
+
+# --- TEST CHECKOUT (env-gated fake-payment path) -------------------------
+# When True, orders/views.py's checkout_test view (and the "Pay (TEST -- no
+# real charge)" button it powers, see templates/orders/checkout.html +
+# base.html's TEST MODE banner) becomes reachable: it fulfills a Hold via
+# payments.services.fulfill_hold() with provider="test" and a synthetic
+# payment_ref, WITHOUT ever calling Stripe or requiring any Stripe keys.
+# Real tickets get created for zero payment.
+#
+# Default False, and MUST STAY False in any real production deployment --
+# this exists purely so an operator with no Stripe account yet can exercise
+# the full browse -> buy -> ticket -> scan flow. When False, checkout_test
+# 404s unconditionally (checked per-request, not at urlconf import time, so
+# it responds correctly to test overrides too) and the storefront only ever
+# shows the normal Stripe checkout button. See .env.example for the loud
+# warning next to ENABLE_TEST_CHECKOUT.
+ENABLE_TEST_CHECKOUT = env.bool("ENABLE_TEST_CHECKOUT", default=False)

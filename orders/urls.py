@@ -8,6 +8,9 @@ urlpatterns = [
     path("cart/", views.cart_view, name="cart"),
     path("cart/release/", views.cart_release, name="cart_release"),
     path("checkout/", views.checkout_view, name="checkout"),
+    # TEST CHECKOUT: always routed, but 404s per-request unless
+    # settings.ENABLE_TEST_CHECKOUT is True -- see checkout_test's docstring.
+    path("checkout/test/", views.checkout_test, name="checkout_test"),
     path("checkout/success/", views.checkout_success, name="checkout_success"),
     path("checkout/cancel/", views.checkout_cancel, name="checkout_cancel"),
     path("tickets/<uuid:token>/", views.ticket_detail, name="ticket_detail"),

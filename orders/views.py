@@ -1,6 +1,9 @@
+import uuid
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib import messages
+from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -10,6 +13,7 @@ from payments import services as payment_services
 from tenants.decorators import require_tenant
 
 from . import services
+from .emails import send_ticket_email
 from .models import Hold, Order
 from .qr import ticket_qr_data_uri
 
@@ -199,6 +203,65 @@ def checkout_view(request):
     items = [{"hold": h, "total": services.hold_total(h)} for h in holds]
     grand_total = sum((item["total"] for item in items), Decimal("0.00"))
     return render(request, "orders/checkout.html", {"items": items, "grand_total": grand_total})
+
+
+@require_tenant
+@require_POST
+def checkout_test(request):
+    """TEST CHECKOUT: env-gated fake-payment path. Reachable ONLY when
+    settings.ENABLE_TEST_CHECKOUT is True (checked here, per-request --
+    not baked into urls.py at import time -- so it responds correctly to
+    the setting being flipped, including in tests via override_settings).
+    When the flag is off, this 404s exactly like a URL that doesn't exist,
+    and the storefront never shows the button that would POST here (see
+    templates/orders/checkout.html + payments/context_processors.py).
+
+    Fulfills the targeted hold IMMEDIATELY, with NO real payment: it calls
+    the exact same payments.services.fulfill_hold() core the Stripe webhook
+    uses (same re-validate-then-lock, same Order/OrderItem/Ticket creation,
+    same GA-sold/seat bookkeeping, same Hold deletion) with provider="test"
+    and a synthetic payment_ref -- Order.stripe_checkout_session_id is left
+    NULL, so this can never collide with (or be mistaken for) a real Stripe
+    order. Overselling/expired-hold rejection is identical to the Stripe
+    path because it's the identical code.
+
+    Scoped to THIS org + THIS session's own hold, exactly like every other
+    hold-consuming view in this module -- a test-checkout POST can no more
+    reach another tenant's or another session's hold than a real checkout
+    can.
+    """
+    if not settings.ENABLE_TEST_CHECKOUT:
+        raise Http404("Test checkout is not enabled.")
+
+    session_key = services.get_session_key(request)
+    hold = get_object_or_404(
+        Hold,
+        pk=request.POST.get("hold_id"),
+        organization=request.organization,
+        session_key=session_key,
+        expires_at__gt=timezone.now(),
+    )
+
+    buyer_name = request.POST.get("buyer_name", "").strip()
+    buyer_email = request.POST.get("buyer_email", "").strip()
+    if not buyer_email:
+        messages.error(request, "Enter an email address to receive your tickets.")
+        return redirect("checkout")
+
+    try:
+        order = payment_services.fulfill_hold(
+            hold,
+            buyer_email=buyer_email,
+            buyer_name=buyer_name,
+            payment_ref=f"test-{uuid.uuid4()}",
+            provider="test",
+        )
+    except payment_services.FulfillmentError as exc:
+        messages.error(request, str(exc))
+        return redirect("cart")
+
+    send_ticket_email(order, request)
+    return redirect("ticket_detail", token=order.token)
 
 
 @require_tenant

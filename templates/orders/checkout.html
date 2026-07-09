@@ -31,6 +31,23 @@
                     <button type="submit" class="button">Proceed to payment</button>
                 </form>
                 <p class="muted">You'll be redirected to Stripe's secure checkout to pay — your hold stays reserved until it expires above.</p>
+
+                {% if test_checkout_enabled %}
+                    <form method="post" action="{% url 'checkout_test' %}" class="checkout-item__test-form">
+                        {% csrf_token %}
+                        <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                        <p class="muted"><strong>Test mode:</strong> skip Stripe entirely and fulfill this order with a simulated payment.</p>
+                        <div class="field">
+                            <label for="test-buyer-name-{{ item.hold.pk }}">Name</label>
+                            <input type="text" id="test-buyer-name-{{ item.hold.pk }}" name="buyer_name" autocomplete="name">
+                        </div>
+                        <div class="field">
+                            <label for="test-buyer-email-{{ item.hold.pk }}">Email</label>
+                            <input type="email" id="test-buyer-email-{{ item.hold.pk }}" name="buyer_email" autocomplete="email" required>
+                        </div>
+                        <button type="submit" class="button button--test">Pay (TEST — no real charge)</button>
+                    </form>
+                {% endif %}
             </div>
         {% endfor %}
         <p class="cart-total"><strong>Order total: ${{ grand_total }}</strong></p>

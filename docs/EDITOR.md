@@ -97,3 +97,25 @@ handle (visible, around the shown pivot), resize via corner handles, confirm arc
 curves in place (section doesn't jump), open a seat popover and toggle ADA / delete,
 verify vertical drag tracks the cursor 1:1. Screenshot the live editing. Fix
 anything that isn't actually live/usable.
+
+## Round 2 refinements (post-review feedback)
+1. **Slider + numeric entry**: every slider (tilt, offset, arc, pitch, ...) pairs
+   with a small number input showing/accepting the exact value; the two stay in
+   sync (drag slider updates number, type number updates slider + map).
+2. **Rotation pivot = section CENTER by default** (not the origin corner), and
+   **configurable** — let the user move the pivot (draggable pivot marker and/or a
+   center/origin/custom选 selector). Persist if configurable (Section field +
+   migration); a plain center default needs no migration.
+3. **Responsive handle size**: the on-canvas control dots are too big for mouse.
+   Small for fine pointers (desktop), larger for coarse/touch — `@media (pointer:
+   coarse)` or equivalent.
+4. **Background scale grid**: a light reference grid (with a sense of scale) drawn
+   behind the seats in the canvas.
+5. **Handle tooltips**: every on-canvas handle has a native mouseover title
+   (SVG `<title>`) naming its function (Rotate, Resize, Offset, Pivot, ...).
+6. **Seat size must NOT change with spacing** (bug): seat radius is a constant;
+   changing seat_pitch/row_pitch changes the GAPS between seats, not the seat
+   size. Decouple the drawn seat radius from pitch in both the JS and any export.
+7. **Add sections without leaving the editor**: "New section" adds a section
+   inline (in-editor form/modal); it appears live on the canvas. No navigation to
+   a separate page.

@@ -9,7 +9,15 @@
  * x-for -- see templates/orders/_seat_map.html's big comment on why x-for
  * breaks inside <svg>), and reads seat screen positions via
  * getBoundingClientRect() for marquee hit-testing instead of doing viewBox
- * math, so it works correctly no matter how the SVG is scaled on screen.
+ * math, so marquee selection itself is already correct no matter how the
+ * SVG is scaled on screen (it never divides by viewBox/rect size).
+ *
+ * Navigation (docs/EDITOR.md): wheel-zoom-to-cursor, pan, and Fit come from
+ * the shared static/js/editor_viewport.js module (also used by
+ * chart_editor.js) -- see that file for the vertical-0.5x-drag bug it
+ * fixes. Marquee-drag on empty background is this editor's PRIMARY
+ * interaction (unchanged), so plain background-drag still draws a marquee;
+ * pan is Alt+drag on empty background instead, so the two never collide.
  *
  * Selection model: `selected` is a Set of seat ids (Alpine's reactivity,
  * built on @vue/reactivity, tracks Set add/delete/has() -- chart_editor.js's
@@ -28,12 +36,20 @@
  * instead of re-fetching the page.
  */
 
+function parseViewBox(str) {
+    const [x, y, w, h] = str.trim().split(/\s+/).map(Number);
+    return { x, y, w, h };
+}
+
 function zoneEditor(config) {
     return {
+        ...window.EditorViewport.mixin(),
+
         zones: [],
         templatesJson: [],
         selected: new Set(),
         marquee: null, // {startX, startY, curX, curY, additive} in CLIENT (screen) coords
+        _panMode: false,
         saving: false,
         error: null,
         notice: null,
@@ -55,6 +71,20 @@ function zoneEditor(config) {
             this.templatesJson = JSON.parse(
                 document.getElementById("zone-editor-templates-data").textContent
             );
+            this._initialViewBox = parseViewBox(config.initialViewBox);
+            this.viewBox = { ...this._initialViewBox };
+            this._fitW = this.viewBox.w;
+            this._fitH = this.viewBox.h;
+            // See editor_viewport.js's syncViewBoxAttr() doc comment: a
+            // :viewBox="..." bind can't work on an inline <svg> (HTML
+            // parsing lowercases the attribute name before Alpine sees
+            // it), so push it imperatively on every reactive change.
+            this.$watch("viewBox", () => this.syncViewBoxAttr());
+            this.$nextTick(() => this.syncViewBoxAttr());
+        },
+
+        fit() {
+            this.viewBox = { ...this._initialViewBox };
         },
 
         // -- zone lookups ----------------------------------------------------
@@ -101,8 +131,15 @@ function zoneEditor(config) {
 
         onBackgroundPointerDown(evt) {
             // Seat circles call @pointerdown.stop, so this only fires when the
-            // drag starts on empty SVG background.
+            // drag starts on empty SVG background. Alt+drag pans (see module
+            // comment); plain/shift drag draws the marquee, unchanged.
             evt.preventDefault();
+            if (evt.altKey) {
+                this._panMode = true;
+                this.startPan(evt);
+                return;
+            }
+            this._panMode = false;
             this.marquee = {
                 startX: evt.clientX,
                 startY: evt.clientY,
@@ -113,6 +150,11 @@ function zoneEditor(config) {
         },
 
         onDrag(evt) {
+            if (this._panMode) {
+                evt.preventDefault();
+                this.onPanMove(evt);
+                return;
+            }
             if (!this.marquee) return;
             evt.preventDefault();
             this.marquee.curX = evt.clientX;
@@ -120,6 +162,11 @@ function zoneEditor(config) {
         },
 
         endDrag() {
+            if (this._panMode) {
+                this._panMode = false;
+                this.endPan();
+                return;
+            }
             if (!this.marquee) return;
             const rect = this.marqueeRect;
             const additive = this.marquee.additive;

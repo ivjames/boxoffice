@@ -23,18 +23,22 @@
          removeUrl: '{{ remove_url|escapejs }}',
          deleteUrlPrefix: '{{ delete_url_prefix|escapejs }}',
          cloneUrl: '{{ clone_url|escapejs }}',
+         initialViewBox: '{{ view_box|escapejs }}',
      })">
     <div class="chart-editor__stage">
         <div class="chart-editor__toolbar">
+            <button type="button" class="button button--secondary" @click="fit()">Fit</button>
             <span x-show="selectedCount > 0" x-cloak><span x-text="selectedCount"></span> seat(s) selected</span>
             <button type="button" class="button button--secondary" x-show="selectedCount > 0" x-cloak @click="clearSelection()">Clear selection</button>
             <span class="chart-editor__error" x-show="error" x-text="error" x-cloak></span>
             <span class="chart-editor__saved" x-show="notice && !error" x-text="notice" x-cloak></span>
+            <span class="muted chart-editor__hint">Scroll to zoom · Alt+drag background to pan</span>
         </div>
 
         <div class="chart-editor__svg-wrap zone-editor__svg-wrap" style="position: relative;">
             <svg class="chart-editor__svg zone-editor__svg" x-ref="svg" viewBox="{{ view_box }}"
                  preserveAspectRatio="xMidYMid meet" role="img" aria-label="Pricing zone map"
+                 @wheel.prevent="onWheel($event)"
                  @pointerdown="onBackgroundPointerDown($event)"
                  @pointermove.window="onDrag($event)"
                  @pointerup.window="endDrag()"
@@ -157,5 +161,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
+<script src="{% static 'js/editor_viewport.js' %}"></script>
 <script src="{% static 'js/zone_editor.js' %}"></script>
 {% endblock %}

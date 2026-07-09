@@ -1118,7 +1118,7 @@ table.dash-table th {
 }
 
 .editor-seat {
-    cursor: grab;
+    cursor: pointer;
     stroke-width: 0.06;
 }
 
@@ -1126,13 +1126,13 @@ table.dash-table th {
     filter: brightness(1.15);
 }
 
-.editor-seat--dragging {
-    cursor: grabbing;
-    filter: brightness(1.3);
-}
-
 .editor-seat--accessible {
     stroke: #2563eb;
+}
+
+.chart-editor__group--selected circle {
+    stroke: #111827;
+    stroke-width: 0.08;
 }
 
 .editor-seat-label {
@@ -1205,6 +1205,221 @@ table.dash-table th {
 
 .chart-editor__section-actions form {
     margin: 0;
+}
+
+.chart-editor__hint {
+    margin-left: auto;
+    font-size: 0.8rem;
+}
+
+/* -- live editor: transform box handles + pivot marker (docs/EDITOR.md) -- */
+
+.chart-editor__transform-box,
+.chart-editor__pivot-group {
+    pointer-events: none;
+}
+
+.chart-editor__handle,
+.chart-editor__pivot {
+    pointer-events: all;
+    fill: #fff;
+    stroke: #111827;
+    stroke-width: 0.08;
+    cursor: pointer;
+}
+
+.chart-editor__handle--resize {
+    cursor: nwse-resize;
+}
+
+.chart-editor__handle--offset {
+    fill: #d97706;
+    cursor: ew-resize;
+}
+
+.chart-editor__handle--rotate {
+    fill: #7c3aed;
+    cursor: grab;
+}
+
+.chart-editor__pivot {
+    fill: #e11d48;
+    cursor: move;
+}
+
+.chart-editor__handle-line {
+    stroke: #111827;
+    stroke-width: 0.04;
+    stroke-dasharray: 0.15 0.1;
+    opacity: 0.6;
+}
+
+.chart-editor__handle-line--offset {
+    stroke: #d97706;
+}
+
+.chart-editor__handle-line--rotate {
+    stroke: #7c3aed;
+}
+
+.chart-editor__pivot-cross {
+    stroke: #e11d48;
+    stroke-width: 0.05;
+}
+
+.chart-editor__pivot-connector {
+    stroke: #e11d48;
+    stroke-width: 0.03;
+    stroke-dasharray: 0.06 0.06;
+    opacity: 0.7;
+}
+
+.chart-editor__pivot-point {
+    fill: #e11d48;
+    pointer-events: none;
+}
+
+/* -- live editor: per-seat popover ----------------------------------------- */
+
+.chart-editor__popover {
+    display: none;
+    position: fixed;
+    z-index: 20;
+    transform: translate(0.75rem, -0.5rem);
+    background: #fff;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+    padding: 0.6rem 0.75rem;
+    min-width: 10rem;
+    font-size: 0.85rem;
+}
+
+.chart-editor__popover-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+
+.chart-editor__popover-close {
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    color: var(--muted-color);
+}
+
+.chart-editor__popover-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+    cursor: pointer;
+}
+
+.chart-editor__popover-delete {
+    width: 100%;
+}
+
+/* -- live editor: semantic sidebar controls -------------------------------- */
+
+.chart-editor__control {
+    margin-bottom: 0.85rem;
+}
+
+.chart-editor__control label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.chart-editor__control-value {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted-color);
+    font-weight: 400;
+}
+
+.chart-editor__slider {
+    width: 100%;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__slider--centered {
+    /* A visual center-zero marker under the track. */
+    background: linear-gradient(to right, transparent 49.5%, var(--muted-color) 49.5%, var(--muted-color) 50.5%, transparent 50.5%);
+}
+
+.chart-editor__toggle {
+    display: flex;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    overflow: hidden;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__toggle button {
+    flex: 1;
+    padding: 0.35rem 0.5rem;
+    border: none;
+    background: #fff;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.chart-editor__toggle button.is-active {
+    background: var(--accent-color);
+    color: #fff;
+}
+
+.chart-editor__stepper {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__stepper button {
+    width: 1.75rem;
+    height: 1.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    background: #fff;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.chart-editor__stepper span {
+    min-width: 1.75rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.chart-editor__legend-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid transparent;
+    border-radius: 0.375rem;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    font-size: 0.875rem;
+}
+
+.chart-editor__legend-btn:hover {
+    background: #f3f4f6;
+}
+
+.chart-editor__legend-btn.is-selected {
+    border-color: var(--accent-color);
+    background: #f3f4f6;
 }
 
 @media (max-width: 900px) {

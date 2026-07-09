@@ -4,12 +4,14 @@
 
 {% block content %}
 {% include "dashboard/_nav.html" %}
-<a class="back-link" href="{% if object %}{% url 'dashboard_section_detail' chart.pk object.pk %}{% else %}{% url 'dashboard_chart_detail' chart.pk %}{% endif %}">&larr; Back</a>
+<a class="back-link" href="{% url 'dashboard_chart_detail' chart.pk %}">&larr; {{ chart.name }}</a>
 <h1>{% if object %}Edit “{{ object.name }}”{% else %}New section{% endif %}</h1>
-<p class="muted">{{ chart.name }} — {{ chart.venue.name }}</p>
+<p class="muted">
+    {{ chart.name }} — {{ chart.venue.name }}
+    {% if not object %}· shape, position, and seats are set live in the visual editor after you create this section.{% endif %}
+</p>
 <form method="post" class="dash-form">
     {% csrf_token %}
-    {% if request.GET.next == "editor" %}<input type="hidden" name="next" value="editor">{% endif %}
     {% for field in form %}
         <div class="field">
             {{ field.label_tag }}

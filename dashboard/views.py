@@ -3,6 +3,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
+from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -21,7 +22,7 @@ from orders.services import get_seating_chart, performance_seats
 from venues import generation
 from venues.models import Seat, SeatingChart, Section, Venue
 
-from .forms import EventForm, GenerateSeatsForm, PerformanceForm, PriceTierForm, SeatingChartForm, SectionForm
+from .forms import EventForm, PerformanceForm, PriceTierForm, SeatingChartForm, SectionForm
 
 
 # --- overview / reports ---------------------------------------------------
@@ -409,11 +410,17 @@ class SectionCreateView(ManagerRequiredMixin, CreateView):
         return context
 
     def form_valid(self, form):
-        messages.success(self.request, "Section created.")
+        # A fresh section's layout params are all still model defaults
+        # (origin 0,0) -- stagger new sections' origin_x a bit so they
+        # don't all land exactly on top of each other in the live editor;
+        # staff drag the pivot handle to place it precisely afterward.
+        existing_count = Section.objects.filter(organization=self.request.organization, chart=self.chart).count()
+        form.instance.origin_x = existing_count * 12.0
+        messages.success(self.request, "Section created -- shape and place it in the visual editor.")
         return super().form_valid(form)
 
     def get_success_url(self):
-        return reverse("dashboard_section_detail", args=[self.chart.pk, self.object.pk])
+        return f"{reverse('dashboard_chart_editor', args=[self.chart.pk])}?section={self.object.pk}"
 
 
 class SectionUpdateView(ManagerRequiredMixin, UpdateView):
@@ -441,120 +448,29 @@ class SectionUpdateView(ManagerRequiredMixin, UpdateView):
         return context
 
     def form_valid(self, form):
-        messages.success(self.request, "Section layout updated.")
+        messages.success(self.request, "Section updated.")
         return super().form_valid(form)
 
     def get_success_url(self):
-        # The visual editor's "Edit layout" link sends staff here with
-        # ?next=editor (rendered as a hidden field on submit -- see
-        # section_form.html) so saving comes back to the editor instead of
-        # section_detail. Whitelisted to this one literal value -- never an
-        # arbitrary redirect target from user input.
-        if self.request.POST.get("next") == "editor":
-            return reverse("dashboard_chart_editor", args=[self.chart.pk])
-        return reverse("dashboard_section_detail", args=[self.chart.pk, self.object.pk])
+        return reverse("dashboard_chart_detail", args=[self.chart.pk])
 
 
-def _get_org_scoped_section(request, chart_pk, section_pk):
-    chart = get_object_or_404(SeatingChart, pk=chart_pk, organization=request.organization)
-    section = get_object_or_404(
-        Section, pk=section_pk, chart=chart, organization=request.organization
-    )
-    return chart, section
-
-
-@manager_required
-def section_detail(request, chart_pk, pk):
-    """Generate-seats form (venues.generation.generate_seats) + a basic
-    read-only-except-toggle/delete preview of the section's current seats,
-    laid out on the same CSS grid the storefront seat map uses (seat.x/y),
-    so staff can see ragged rows / accessible flags / aisle gaps at a
-    glance without needing the Phase B visual editor."""
-    chart, section = _get_org_scoped_section(request, chart_pk, pk)
-
-    if request.method == "POST":
-        form = GenerateSeatsForm(request.POST)
-        if form.is_valid():
-            row_counts = form.cleaned_data["row_counts"]
-            try:
-                generation.generate_seats(
-                    section, row_counts, replace=form.cleaned_data["replace_existing"]
-                )
-            except generation.SeatGenerationError as exc:
-                messages.error(request, str(exc))
-            else:
-                messages.success(request, f"Generated {sum(row_counts)} seat(s).")
-                return redirect("dashboard_section_detail", chart_pk=chart.pk, pk=section.pk)
-    else:
-        form = GenerateSeatsForm()
-
-    seats = list(section.seats.order_by("row_label", "number"))
-    seat_cells = [
-        {"seat": seat, "grid_x": int(round(seat.x)) + 1, "grid_y": int(round(seat.y)) + 1}
-        for seat in seats
-    ]
-    max_x = max((cell["grid_x"] for cell in seat_cells), default=1)
-    max_y = max((cell["grid_y"] for cell in seat_cells), default=1)
-
-    return render(
-        request,
-        "dashboard/section_detail.html",
-        {
-            "chart": chart,
-            "section": section,
-            "form": form,
-            "seat_cells": seat_cells,
-            "max_x": max_x,
-            "max_y": max_y,
-        },
-    )
-
-
-@manager_required
-@require_POST
-def seat_toggle_accessible(request, chart_pk, section_pk, seat_pk):
-    chart, section = _get_org_scoped_section(request, chart_pk, section_pk)
-    seat = get_object_or_404(
-        Seat, pk=seat_pk, section=section, organization=request.organization
-    )
-    seat.is_accessible = not seat.is_accessible
-    seat.save(update_fields=["is_accessible"])
-    return redirect("dashboard_section_detail", chart_pk=chart.pk, pk=section.pk)
-
-
-@manager_required
-@require_POST
-def seat_delete(request, chart_pk, section_pk, seat_pk):
-    """Remove a single seat (e.g. to open up an aisle gap). Refused if the
-    seat backs a live (non-void) ticket -- same "never orphan an issued
-    ticket" rule venues.generation.generate_seats enforces in bulk."""
-    chart, section = _get_org_scoped_section(request, chart_pk, section_pk)
-    seat = get_object_or_404(
-        Seat, pk=seat_pk, section=section, organization=request.organization
-    )
-    if Ticket.objects.filter(seat=seat).exclude(status=Ticket.Status.VOID).exists():
-        messages.error(request, f"Can't remove {seat} -- it has a live ticket issued.")
-    else:
-        label = str(seat)
-        seat.delete()
-        messages.success(request, f"Removed seat {label}.")
-    return redirect("dashboard_section_detail", chart_pk=chart.pk, pk=section.pk)
-
-
-# --- seating chart visual editor (Phase B, docs/SEATING.md) ---------------
+# --- seating chart visual editor (live, param-driven -- docs/EDITOR.md) ---
 #
-# SVG drag editor: renders every section/seat of a chart with true (float,
-# unrounded) x/y -- unlike section_detail's CSS-grid preview above, which
-# rounds to integer cells for a simple `<div>` grid, the editor needs real
-# geometry for raked/fanned shapes to render/drag correctly. Dragging itself
-# is client-side (Alpine + pointer events on inline SVG -- no canvas
-# library, per the epic's locked "SVG drag" decision); chart_editor_save
-# below is the only thing that persists it, and it's the sole place a
-# manager can move a seat off its generated position. Phase C's drag-select
-# pricing zones can reuse the same <svg>/seat-element structure (each seat
-# is `<circle class="editor-seat" data-seat-id data-section-id ...>` --
-# see the template) for marquee/shift-click selection instead of building a
-# second seat-map renderer.
+# Rework of the Phase B SVG drag editor: the canvas is entirely param-driven
+# and live -- static/js/seat_geometry.js mirrors venues.generation's
+# formulas so the browser computes/redraws a section's seats with zero
+# server round-trips as sliders/handles move (no per-seat dragging, no
+# "Regenerate" button/flow anywhere -- see chart_editor.js). This view only
+# ships each section's CURRENT params (+ its removed/accessible seat-
+# identity overrides) as JSON; chart_editor_save below is the only thing
+# that persists them, and it's also the only place seats actually get
+# (re)generated server-side (venues.generation.generate_seats, same
+# formulas, authoritative). Phase C's drag-select pricing zones reuse the
+# same SVG seat-element structure (`<circle class="editor-seat"
+# data-seat-id data-section-id ...>`, rendered by
+# performance_pricing_zones/zone_editor.html against real, already-
+# persisted Seat rows) -- unaffected by this rework.
 
 _SECTION_PALETTE = [
     "#e11d48", "#2563eb", "#059669", "#d97706", "#7c3aed",
@@ -566,73 +482,51 @@ def _section_color(index):
     return _SECTION_PALETTE[index % len(_SECTION_PALETTE)]
 
 
+# Every Section field the live editor reads/writes -- the single list both
+# chart_editor (serializing for the page) and chart_editor_save
+# (deserializing + persisting) iterate, so the two can never drift apart on
+# which fields are in scope.
+_SECTION_PARAM_FIELDS = [
+    "origin_x", "origin_y", "rotation", "seat_pitch", "row_pitch", "row_x_offset",
+    "arc_radius", "offset_mode", "alt_row_seat_delta", "rows", "seats_per_row",
+    "numbering_scheme", "row_label_scheme",
+]
+
+
 @manager_required
 def chart_editor(request, pk):
-    """GET-only: renders the whole chart as one inline SVG. Seat/section
-    data is embedded via json_script (same pattern as
-    templates/orders/_seat_map.html) so the Alpine component owns drag
-    state client-side; chart_editor_save is a separate POST endpoint, not a
-    Django form post, since it batches every dragged seat in one request."""
+    """GET-only: renders the chart editor shell. Every section's current
+    params (+ its removed_seats/accessible_seats overrides) are embedded via
+    json_script (same pattern as templates/orders/_seat_map.html) so
+    chart_editor.js can compute and draw the whole live seat map --
+    including the very first paint -- entirely client-side via
+    seat_geometry.js, with no seats/view_box computation needed here."""
     chart = get_object_or_404(
         SeatingChart.objects.select_related("venue"), pk=pk, organization=request.organization
     )
     sections = list(chart.sections.order_by("ordering", "name"))
-    seats = list(
-        Seat.objects.filter(organization=request.organization, section__chart=chart)
-        .select_related("section")
-        .order_by("section__ordering", "section__name", "row_label", "number")
-    )
-
-    section_color_by_id = {section.pk: _section_color(i) for i, section in enumerate(sections)}
-    for section in sections:
-        # Not persisted -- render-time convenience so chart_editor.html can
-        # set swatch/seat fill colors without a dict lookup in Django
-        # template syntax (which can't do `dict[var]` cleanly).
-        section.editor_color = section_color_by_id[section.pk]
-    for seat in seats:
-        seat.editor_color = section_color_by_id.get(seat.section_id, "#6b7280")
 
     sections_json = [
         {
             "id": section.pk,
             "name": section.name,
             "tier": section.tier,
-            "color": section_color_by_id[section.pk],
-            "seat_count": sum(1 for s in seats if s.section_id == section.pk),
-            "rotation": section.rotation,
-            "seat_pitch": section.seat_pitch,
-            "row_pitch": section.row_pitch,
-            "row_x_offset": section.row_x_offset,
-            "arc_radius": section.arc_radius,
+            "color": _section_color(i),
+            "edit_url": reverse("dashboard_section_update", args=[chart.pk, section.pk]),
+            **{field: getattr(section, field) for field in _SECTION_PARAM_FIELDS},
+            "removed_seats": section.removed_seats,
+            "accessible_seats": section.accessible_seats,
         }
         for i, section in enumerate(sections)
     ]
-    seats_json = [
-        {
-            "id": seat.pk,
-            "section_id": seat.section_id,
-            "row": seat.row_label,
-            "number": seat.number,
-            "x": seat.x,
-            "y": seat.y,
-            "accessible": seat.is_accessible,
-            "color": section_color_by_id.get(seat.section_id, "#6b7280"),
-        }
-        for seat in seats
-    ]
 
-    xs = [s["x"] for s in seats_json]
-    ys = [s["y"] for s in seats_json]
-    pitches = [section.seat_pitch for section in sections if section.seat_pitch] or [1.0]
-    seat_radius = max(0.15, min(pitches) * 0.35)
-    pad = seat_radius * 4 + 1
-    if xs and ys:
-        view_min_x, view_max_x = min(xs) - pad, max(xs) + pad
-        view_min_y, view_max_y = min(ys) - pad, max(ys) + pad
-    else:
-        view_min_x = view_min_y = 0.0
-        view_max_x = view_max_y = 10.0
-    view_box = f"{view_min_x} {view_min_y} {view_max_x - view_min_x} {view_max_y - view_min_y}"
+    selected_param = request.GET.get("section")
+    try:
+        selected_id = int(selected_param) if selected_param else None
+    except ValueError:
+        selected_id = None
+    if selected_id is not None and not any(s.pk == selected_id for s in sections):
+        selected_id = None
 
     return render(
         request,
@@ -640,28 +534,50 @@ def chart_editor(request, pk):
         {
             "chart": chart,
             "sections": sections,
-            "seats": seats,
             "sections_json": sections_json,
-            "seats_json": seats_json,
-            "view_box": view_box,
-            "seat_radius": seat_radius,
+            "initial_selected_id": selected_id,
             "save_url": reverse("dashboard_chart_editor_save", args=[chart.pk]),
         },
     )
 
 
+def _clean_identity_pairs(raw):
+    """`raw` (whatever the client sent for removed/accessible) down to a
+    set of (row_label, number) string tuples -- silently drops anything
+    that isn't a 2-element [str, str]-ish pair rather than 400ing the whole
+    save over one malformed entry."""
+    pairs = set()
+    if not isinstance(raw, list):
+        return pairs
+    for item in raw:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            row, number = item
+            if isinstance(row, str) and row:
+                pairs.add((row, str(number)))
+    return pairs
+
+
 @manager_required
 @require_POST
 def chart_editor_save(request, pk):
-    """Batch-persist dragged seat positions: JSON body
-    `{"positions": {seat_id: {"x": ..., "y": ...}, ...}}`. Org- AND
-    chart-scoped: a seat id that doesn't belong to THIS organization's THIS
-    chart is silently excluded from the update queryset below -- never
-    mutated, never even distinguished from "doesn't exist" in the response,
-    so this can't be used to probe another tenant's seat ids either.
-    Repositioning is cosmetic (position != identity, unlike seat_delete/
-    generate_seats above), so this is allowed even for sold/ticketed seats
-    -- role + tenant scoping are the only gates, per docs/SEATING.md Phase B."""
+    """Batch-persist every section's live-edited params in one request --
+    JSON body `{"sections": {section_id: {<params...>, "removed": [[row,
+    number], ...], "accessible": [[row, number], ...]}, ...}}` (the exact
+    shape chart_editor.js's buildPayload() produces). Org- AND chart-
+    scoped: a section id that doesn't belong to THIS organization's THIS
+    chart is silently skipped -- never mutated, never even distinguished
+    from "doesn't exist" in the response (same tenant-isolation shape the
+    old positions-save endpoint used).
+
+    Each section is regenerated via venues.generation.generate_seats
+    (replace=True) with its new params, applying the removed/accessible
+    identity overrides -- the SAME formulas the client's live canvas just
+    used, so what staff see is exactly what gets persisted. Keeps the
+    Phase-A guardrail: generate_seats refuses outright (per-section, not
+    for the whole batch) if any of that section's existing seats has a
+    live (non-void) ticket -- that section's params are left untouched
+    (nothing about it is saved) and its error comes back in `errors`,
+    while every other valid section in the same request still saves."""
     chart = get_object_or_404(SeatingChart, pk=pk, organization=request.organization)
 
     try:
@@ -669,81 +585,75 @@ def chart_editor_save(request, pk):
     except (ValueError, UnicodeDecodeError):
         return JsonResponse({"ok": False, "error": "Invalid JSON body."}, status=400)
 
-    positions = payload.get("positions")
-    if not isinstance(positions, dict) or not positions:
-        return JsonResponse({"ok": False, "error": "No positions given."}, status=400)
+    sections_payload = payload.get("sections")
+    if not isinstance(sections_payload, dict) or not sections_payload:
+        return JsonResponse({"ok": False, "error": "No sections given."}, status=400)
 
     try:
-        seat_ids = [int(seat_id) for seat_id in positions.keys()]
+        section_ids = [int(section_id) for section_id in sections_payload.keys()]
     except (TypeError, ValueError):
-        return JsonResponse({"ok": False, "error": "Invalid seat id."}, status=400)
+        return JsonResponse({"ok": False, "error": "Invalid section id."}, status=400)
 
-    # The tenant-isolation gate: filtered by BOTH organization and this
-    # chart, so a seat id for another org (or another chart in this org)
-    # just isn't in `seats` below -- silently excluded, never touched.
-    seats = list(
-        Seat.objects.filter(
-            pk__in=seat_ids, organization=request.organization, section__chart=chart
+    # Tenant-isolation gate: filtered by BOTH organization and this chart,
+    # so a section id for another org (or another chart in this org) just
+    # isn't in `sections` below -- silently excluded, never touched.
+    sections = {
+        section.pk: section
+        for section in Section.objects.filter(
+            pk__in=section_ids, organization=request.organization, chart=chart
         )
-    )
+    }
 
-    updated = []
-    skipped = 0
-    for seat in seats:
-        raw = positions.get(str(seat.pk))
-        try:
-            x = float(raw["x"])
-            y = float(raw["y"])
-        except (KeyError, TypeError, ValueError):
-            skipped += 1
+    saved = []
+    errors = {}
+    for section_id, raw in sections_payload.items():
+        section = sections.get(int(section_id))
+        if section is None or not isinstance(raw, dict):
             continue
-        seat.x = x
-        seat.y = y
-        updated.append(seat)
 
-    if updated:
-        Seat.objects.bulk_update(updated, ["x", "y"])
-    skipped += len(seat_ids) - len(seats)  # ids not in this org/chart at all
+        try:
+            for field in _SECTION_PARAM_FIELDS:
+                if field not in raw:
+                    continue
+                if field in ("offset_mode", "numbering_scheme", "row_label_scheme"):
+                    setattr(section, field, str(raw[field]))
+                elif field == "arc_radius":
+                    setattr(section, field, None if raw[field] in (None, "", 0) else float(raw[field]))
+                elif field in ("alt_row_seat_delta",):
+                    setattr(section, field, int(raw[field]))
+                elif field in ("rows", "seats_per_row"):
+                    setattr(section, field, max(1, int(raw[field])))
+                else:
+                    setattr(section, field, float(raw[field]))
+        except (TypeError, ValueError):
+            errors[section_id] = "Invalid layout parameter value."
+            continue
 
-    return JsonResponse({"ok": True, "updated": len(updated), "skipped": skipped})
+        removed_ids = _clean_identity_pairs(raw.get("removed"))
+        accessible_ids = _clean_identity_pairs(raw.get("accessible"))
+        row_counts = generation.compute_row_counts(
+            section.rows, section.seats_per_row, section.offset_mode, section.alt_row_seat_delta
+        )
 
+        try:
+            with transaction.atomic():
+                generation.generate_seats(
+                    section,
+                    row_counts,
+                    removed_ids=removed_ids,
+                    accessible_ids=accessible_ids,
+                    replace=True,
+                )
+                section.removed_seats = sorted(removed_ids)
+                section.accessible_seats = sorted(accessible_ids)
+                section.save(update_fields=_SECTION_PARAM_FIELDS + ["removed_seats", "accessible_seats"])
+        except generation.SeatGenerationError as exc:
+            errors[section_id] = str(exc)
+            continue
 
-@manager_required
-@require_POST
-def section_regenerate(request, chart_pk, section_pk):
-    """"Regenerate seats (same shape)" from the visual editor: re-runs
-    venues.generation.generate_seats with the section's CURRENT layout
-    params (whatever was last saved via the existing section edit-layout
-    form -- dashboard_section_update) and the row/seat-count shape derived
-    from its EXISTING seats, so a manager can tweak rotation/pitch/
-    arc_radius, hit this, and see the new geometry applied to the same
-    logical rows -- then fine-tune by dragging. Same guardrail as the Phase
-    A generate form: refuses outright if any seat has a live ticket.
-    Accessible flags are NOT preserved -- matches the existing "replace"
-    semantics elsewhere in this module (regenerating is a start-over-the-
-    geometry action, not a merge)."""
-    chart, section = _get_org_scoped_section(request, chart_pk, section_pk)
-    existing = list(section.seats.order_by("row_label", "number"))
-    if not existing:
-        messages.error(request, f"{section.name} has no seats yet -- generate seats first.")
-        return redirect("dashboard_chart_editor", pk=chart.pk)
+        saved.append(section.pk)
 
-    counts_by_label = {}
-    seen_labels = []
-    for seat in existing:
-        if seat.row_label not in counts_by_label:
-            counts_by_label[seat.row_label] = 0
-            seen_labels.append(seat.row_label)
-        counts_by_label[seat.row_label] += 1
-    row_counts = [counts_by_label[label] for label in seen_labels]
-
-    try:
-        generation.generate_seats(section, row_counts, replace=True)
-    except generation.SeatGenerationError as exc:
-        messages.error(request, str(exc))
-    else:
-        messages.success(request, f"Regenerated {sum(row_counts)} seat(s) in {section.name}.")
-    return redirect("dashboard_chart_editor", pk=chart.pk)
+    return JsonResponse({"ok": not errors, "saved": saved, "errors": errors})
 
 
 # --- pricing zones (Phase C, docs/SEATING.md) ------------------------------

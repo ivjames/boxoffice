@@ -45,13 +45,21 @@ class Section(TenantScopedModel):
     Phase A (seating-chart epic, docs/SEATING.md) adds the layout params
     that DRIVE seat generation (venues.generation.generate_seats): origin/
     pitch/rotation/arc_radius describe where seats in this section go,
-    numbering_scheme/row_label_scheme describe what they're called. Per the
-    spec's "separate LOGICAL identity from VISUAL geometry" decision, these
-    are authoring inputs only -- once generated, `Seat.x/y` is the
-    authoritative, persisted, hand-editable-in-Phase-B position; changing a
-    Section's layout params after the fact does NOT retroactively move
-    existing seats (regenerate to apply new params -- see generate_seats's
-    docstring for what that does/doesn't allow).
+    numbering_scheme/row_label_scheme describe what they're called.
+
+    docs/EDITOR.md's live rework changes the authoring model: the dashboard
+    chart editor (static/js/chart_editor.js + static/js/seat_geometry.js)
+    renders this section's seats LIVE, client-side, straight from these
+    params -- no server round-trip, no persisted Seat needed to preview a
+    change. `Seat.x/y` (and the rest of the Seat table for this section) is
+    just the last-saved snapshot: Save recomputes and persists it from
+    these exact params via venues.generation.generate_seats, which is the
+    same formula seat_geometry.js mirrors (see that file's header and
+    generation.py's module docstring for the "one place" contract). Per-
+    seat deletions/ADA flags are tracked here (removed_seats/
+    accessible_seats, by (row_label, number) identity, NOT by Seat pk --
+    pks don't survive a regenerate) so they persist across live param
+    changes and are re-applied every Save.
     """
 
     class NumberingScheme(models.TextChoices):
@@ -63,6 +71,10 @@ class Section(TenantScopedModel):
     class RowLabelScheme(models.TextChoices):
         SKIP_IO = "skip_io", "A–Z skipping I/O, then AA, BB…"
         ALL_LETTERS = "all_letters", "A–Z including I/O, then AA, BB…"
+
+    class OffsetMode(models.TextChoices):
+        REPEATED = "repeated", "Repeated (constant shift every row)"
+        ALTERNATING = "alternating", "Alternating (stagger every other row)"
 
     chart = models.ForeignKey(SeatingChart, on_delete=models.CASCADE, related_name="sections")
     name = models.CharField(max_length=255)
@@ -92,22 +104,71 @@ class Section(TenantScopedModel):
     row_x_offset = models.FloatField(
         default=0.0,
         help_text=(
-            "Phase B: extra horizontal offset applied per row (before rotation), growing "
-            "with row_index -- e.g. 0.5 shifts row B 0.5 right of row A, row C 1.0, and so on. "
-            "This is what turns a raked/diagonal side section into a trapezoid/angled block "
-            "(combined with ragged per-row seat counts and/or `rotation`) instead of a plain "
-            "rectangle. 0.0 (default) reproduces Phase A's straight grid exactly."
+            "Offset amount in local x units. Meaning depends on offset_mode: REPEATED applies "
+            "it every row, growing with row_index (0.5 shifts row B 0.5 right of row A, row C "
+            "1.0, and so on -- turns a raked/diagonal side section into a trapezoid). "
+            "ALTERNATING applies the same constant amount to every OTHER row only (brick/"
+            "stadium stagger), row_index 1, 3, 5… -- see venues.generation._row_x_offset, "
+            "mirrored in static/js/seat_geometry.js. 0.0 (default) reproduces a plain grid."
+        ),
+    )
+    offset_mode = models.CharField(
+        max_length=20,
+        choices=OffsetMode.choices,
+        default=OffsetMode.REPEATED,
+        help_text="How row_x_offset is applied across rows -- see its help text.",
+    )
+    alt_row_seat_delta = models.IntegerField(
+        default=0,
+        help_text=(
+            "ALTERNATING offset_mode only: seats added (positive) or dropped (negative) on "
+            "every other row (row_index 1, 3, 5…), on top of seats_per_row -- e.g. +1 for a "
+            "brick-stagger row that's one seat longer, -1 for one shorter. Each row is floored "
+            "at 1 seat. Ignored in REPEATED mode."
         ),
     )
     arc_radius = models.FloatField(
         null=True,
         blank=True,
         help_text=(
-            "Radius (distance from origin to the front row) for a fanned/curved section, e.g. "
-            "a center orchestra block. When set, seats in a row are placed along a circular "
-            "arc of this radius (rows step outward from the origin by row_pitch per row) "
-            "instead of a straight line -- see venues.generation for the trig. Null/blank "
-            "(default) means straight (grid or raked, per rotation/row_x_offset)."
+            "Curvature radius for a fanned/curved section, e.g. a center orchestra block. When "
+            "set, seats in a row are placed along a circular arc of this radius instead of a "
+            "straight line -- the arc curves the rows IN PLACE (the section's front-row-center "
+            "seat always sits at the section's origin regardless of arc_radius; the radius only "
+            "controls how tightly the rows bow, not where the section sits) -- see "
+            "venues.generation._fanned_local, mirrored in static/js/seat_geometry.js. "
+            "Null/blank (default) means straight (grid or raked, per rotation/row_x_offset)."
+        ),
+    )
+
+    # -- live-editor shape (drive venues.generation.compute_row_counts) ---
+    rows = models.PositiveIntegerField(
+        default=4, help_text="Live editor shape: number of rows to generate."
+    )
+    seats_per_row = models.PositiveIntegerField(
+        default=8,
+        help_text=(
+            "Live editor shape: base seats per row. ALTERNATING offset_mode adds "
+            "alt_row_seat_delta to this on every other row."
+        ),
+    )
+
+    # -- per-seat overrides (survive regeneration, see venues.generation) -
+    removed_seats = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "[[row_label, number], ...] seat identities deleted via the editor's seat popover. "
+            "Re-applied on every regenerate so a deleted seat (e.g. an aisle gap) stays gone "
+            "even after live param changes."
+        ),
+    )
+    accessible_seats = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "[[row_label, number], ...] seat identities flagged accessible via the editor's "
+            "seat popover. Re-applied on every regenerate, same as removed_seats."
         ),
     )
 

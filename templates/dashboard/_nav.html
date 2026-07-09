@@ -7,7 +7,7 @@
     {% endif %}
     {% if request.membership.can_manage_events %}
         <a href="{% url 'dashboard_venue_list' %}"
-           class="{% if url_name == 'dashboard_venue_list' or url_name == 'dashboard_chart_list' or url_name == 'dashboard_chart_create' or url_name == 'dashboard_chart_detail' or url_name == 'dashboard_chart_update' or url_name == 'dashboard_section_create' or url_name == 'dashboard_section_update' or url_name == 'dashboard_section_detail' or url_name == 'dashboard_chart_editor' %}is-active{% endif %}">Seating</a>
+           class="{% if url_name == 'dashboard_venue_list' or url_name == 'dashboard_chart_list' or url_name == 'dashboard_chart_create' or url_name == 'dashboard_chart_detail' or url_name == 'dashboard_chart_update' or url_name == 'dashboard_section_create' or url_name == 'dashboard_section_update' or url_name == 'dashboard_chart_editor' %}is-active{% endif %}">Seating</a>
     {% endif %}
     {% if request.membership.can_sell_tickets %}
         <a href="{% url 'dashboard_order_list' %}"

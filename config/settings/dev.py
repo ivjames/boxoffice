@@ -4,7 +4,7 @@ required — just `pip install`, `migrate`, `runserver`.
 """
 
 from .base import *  # noqa: F401,F403
-from .base import BASE_DIR, env
+from .base import BASE_DIR, env, harden_sqlite
 
 DEBUG = env.bool("DEBUG", default=True)
 
@@ -17,10 +17,10 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["*"])
 # via select_for_update, used heavily by the seat-holding logic in later
 # phases — SQLite's locking semantics differ, so do that testing against
 # Postgres even in dev).
-DATABASES = {
+DATABASES = harden_sqlite({
     "default": env.db(
         "DATABASE_URL", default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"
     )
-}
+})
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"

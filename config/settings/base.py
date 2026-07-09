@@ -17,6 +17,24 @@ environ.Env.read_env(BASE_DIR / ".env")
 
 SECRET_KEY = env("SECRET_KEY", default="insecure-dev-key-do-not-use-in-prod")
 
+
+def harden_sqlite(databases):
+    """Make SQLite safe for concurrent booking under the lab980 single-droplet
+    deploy model. For a SQLite `default`, acquire the write lock at BEGIN
+    (transaction_mode=IMMEDIATE) so two simultaneous checkouts serialize instead
+    of racing, and wait rather than error on contention (timeout). Combined with
+    every booking mutation running inside transaction.atomic() + re-checking
+    availability, this makes seat/GA double-booking impossible. No-op for
+    Postgres, where select_for_update() does the real row locking. Requires
+    Django 5.1+ for the transaction_mode option.
+    """
+    default = databases.get("default", {})
+    if default.get("ENGINE", "").endswith("sqlite3"):
+        default.setdefault("OPTIONS", {}).update(
+            {"timeout": 20, "transaction_mode": "IMMEDIATE"}
+        )
+    return databases
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -30,6 +48,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Serves static files directly from the app (no nginx location block), so
+    # the lab980 vhost stays a plain proxy-to-port like every other site.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -81,6 +102,11 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    # WhiteNoise: hashed filenames + gzip/brotli, served by the app.
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"

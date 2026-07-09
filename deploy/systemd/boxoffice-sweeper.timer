@@ -1,0 +1,11 @@
+[Unit]
+Description=Run boxoffice-sweeper.service every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Unit=boxoffice-sweeper.service
+
+[Install]
+WantedBy=timers.target

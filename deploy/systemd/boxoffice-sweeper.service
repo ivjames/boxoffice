@@ -1,0 +1,25 @@
+# Alternative to deploy/boxoffice-sweeper.cron: systemd timer/service pair
+# for the Hold sweeper, if you'd rather use systemd than cron on this
+# droplet. Functionally identical; pick one, not both.
+#
+# Install:
+#   cp deploy/systemd/boxoffice-sweeper.service /etc/systemd/system/
+#   cp deploy/systemd/boxoffice-sweeper.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now boxoffice-sweeper.timer
+#
+# Check it's firing:
+#   systemctl list-timers boxoffice-sweeper.timer
+#   journalctl -u boxoffice-sweeper.service -n 50
+
+[Unit]
+Description=boxoffice: release expired Holds
+# Not After=boxoffice.service on purpose -- this is a one-shot management
+# command against the same SQLite file, not a dependency on gunicorn being up.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/boxoffice
+ExecStart=/var/www/boxoffice/venv/bin/python manage.py release_expired_holds
+# lab980 apps run as root (no dedicated service user) -- see lab980.com/CLAUDE.md.
+User=root

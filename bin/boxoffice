@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# boxoffice — operate CLI for the boxoffice Django app on a lab980 droplet.
+#
+# Intended to be symlinked to /usr/local/bin/boxoffice and run from
+# /var/www/boxoffice (or anywhere — it resolves its own app dir via the
+# script's real path, so `sudo boxoffice deploy` works regardless of cwd).
+#
+# Subcommands: serve, deploy, restart, logs, migrate, backup,
+#              add-tenant, remove-tenant
+#
+# Config comes from the app-dir .env (PORT, WEB_CONCURRENCY, BASE_DOMAIN,
+# DATABASE_URL, ...) — the same file lab980 `provision-site` seeds with PORT.
+set -euo pipefail
+
+# ---- resolve the app dir (repo root) regardless of symlink/cwd ----
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+APP_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+VENV_DIR="$APP_DIR/venv"
+PY="$VENV_DIR/bin/python"
+PIP="$VENV_DIR/bin/pip"
+GUNICORN="$VENV_DIR/bin/gunicorn"
+PM2_APP_NAME="boxoffice"
+
+# ---- logging (matches lab980 provision-site style) ----
+c_blue=$'\033[1;34m'; c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_off=$'\033[0m'
+log()  { printf '%s==>%s %s\n' "$c_blue" "$c_off" "$*"; }
+warn() { printf '%swarn:%s %s\n' "$c_yellow" "$c_off" "$*" >&2; }
+die()  { printf '%serror:%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'USAGE'
+boxoffice — operate CLI for the boxoffice app (lab980 droplet).
+
+Usage:
+  boxoffice <command> [args]
+
+Commands:
+  serve                          exec gunicorn bound to 127.0.0.1:$PORT (this is
+                                  what pm2 runs; do not call directly in normal ops)
+  deploy [ref]                   git fetch + reset --hard <ref> (default origin/main),
+                                  pip install, migrate, collectstatic, pm2 restart
+  restart                        pm2 restart boxoffice
+  logs [pm2-log-args...]         pm2 logs boxoffice [args passed through]
+  migrate                        manage.py migrate
+  backup                         tarball data/+media/ (or pg_dump if DATABASE_URL
+                                  is Postgres) into backups/, timestamped
+  add-tenant <sub> [--name N]    no-wildcard tenant onboarding: Organization row +
+                                  DNS (doctl) + nginx vhost + certbot, all pointed
+                                  at this app's existing PORT
+  remove-tenant <sub> [--purge]  deactivate (or --purge delete) the Organization,
+                                  remove the tenant's nginx vhost; prints the
+                                  certbot/DNS cleanup commands (not run automatically)
+
+Global options:
+  -h, --help                     this help
+
+Config: read from APP_DIR/.env (PORT, WEB_CONCURRENCY, BASE_DOMAIN, DOMAIN,
+DATABASE_URL, DJANGO_SETTINGS_MODULE, ...). APP_DIR is resolved from this
+script's own location, currently:
+USAGE
+  printf '  %s\n' "$APP_DIR"
+}
+
+# ---- load app-dir .env (KEY=VALUE lines) into the environment ----
+load_env() {
+  if [ -f "$APP_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1090,SC1091
+    . "$APP_DIR/.env"
+    set +a
+  else
+    warn "$APP_DIR/.env not found — commands needing PORT/BASE_DOMAIN/etc. will fail."
+  fi
+  export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-config.settings.prod}"
+}
+
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    die "$1 (run as root, e.g. via sudo)."
+  fi
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+manage() {
+  "$PY" "$APP_DIR/manage.py" "$@"
+}
+
+# ============================================================ serve ====
+cmd_serve() {
+  load_env
+  [ -n "${PORT:-}" ] || die "PORT is not set in $APP_DIR/.env"
+  [ -x "$GUNICORN" ] || die "gunicorn not found at $GUNICORN — run 'venv/bin/pip install -r requirements.txt' first"
+  cd "$APP_DIR"
+  exec "$GUNICORN" config.wsgi:application \
+    --bind "127.0.0.1:${PORT}" \
+    --workers "${WEB_CONCURRENCY:-3}" \
+    --access-logfile - \
+    --error-logfile -
+}
+
+# =========================================================== deploy ====
+cmd_deploy() {
+  local ref="${1:-origin/main}"
+  load_env
+  require_cmd git
+  cd "$APP_DIR"
+
+  [ -d .git ] || die "$APP_DIR is not a git checkout; clone the repo here first (see DEPLOY.md)."
+
+  local old_head
+  old_head="$(git rev-parse HEAD 2>/dev/null || echo '(none)')"
+
+  log "git fetch origin"
+  git fetch origin
+
+  log "git reset --hard $ref"
+  git reset --hard "$ref"
+
+  local new_head
+  new_head="$(git rev-parse HEAD)"
+
+  if [ "$old_head" = "$new_head" ]; then
+    log "already up to date at $new_head"
+  else
+    log "updated $old_head -> $new_head"
+    if [ "$old_head" != "(none)" ] && git cat-file -e "$old_head" 2>/dev/null; then
+      log "changed files:"
+      git --no-pager diff --stat "$old_head" "$new_head" | sed 's/^/    /'
+    fi
+  fi
+
+  [ -x "$PIP" ] || die "no venv at $VENV_DIR — create it first: python3 -m venv venv"
+
+  log "pip install -r requirements.txt"
+  "$PIP" install -q -r requirements.txt
+
+  log "manage.py migrate"
+  manage migrate --noinput
+
+  log "manage.py collectstatic --noinput"
+  manage collectstatic --noinput --clear
+
+  restart_pm2
+
+  log "deploy complete ($new_head)"
+}
+
+restart_pm2() {
+  require_cmd pm2
+  if pm2 describe "$PM2_APP_NAME" >/dev/null 2>&1; then
+    log "pm2 restart $PM2_APP_NAME"
+    pm2 restart "$PM2_APP_NAME" >/dev/null
+  else
+    log "pm2 app '$PM2_APP_NAME' not found — starting it from deploy/ecosystem.config.js"
+    pm2 start "$APP_DIR/deploy/ecosystem.config.js" >/dev/null
+  fi
+  pm2 save >/dev/null
+}
+
+# ========================================================== restart ====
+cmd_restart() {
+  load_env
+  restart_pm2
+  log "restarted."
+}
+
+# ============================================================= logs ====
+cmd_logs() {
+  require_cmd pm2
+  pm2 logs "$PM2_APP_NAME" "$@"
+}
+
+# =========================================================== migrate ====
+cmd_migrate() {
+  load_env
+  cd "$APP_DIR"
+  manage migrate
+}
+
+# ============================================================ backup ====
+cmd_backup() {
+  load_env
+  cd "$APP_DIR"
+  mkdir -p backups
+  local ts
+  ts="$(date +%Y%m%d-%H%M%S)"
+
+  if [ -n "${DATABASE_URL:-}" ] && [[ "$DATABASE_URL" == postgres://* || "$DATABASE_URL" == postgresql://* ]]; then
+    require_cmd pg_dump
+    local db_file="backups/db-${ts}.sql.gz"
+    log "pg_dump -> $db_file"
+    pg_dump "$DATABASE_URL" | gzip > "$db_file"
+    if [ -d media ] && [ -n "$(ls -A media 2>/dev/null)" ]; then
+      local media_file="backups/media-${ts}.tar.gz"
+      log "tar media/ -> $media_file"
+      tar czf "$media_file" media/
+    fi
+    log "backup complete: $db_file"
+  else
+    local archive="backups/boxoffice-${ts}.tar.gz"
+    local dirs=()
+    [ -d data ] && dirs+=(data)
+    [ -d media ] && dirs+=(media)
+    if [ "${#dirs[@]}" -eq 0 ]; then
+      die "nothing to back up (no data/ or media/ directory in $APP_DIR)"
+    fi
+    log "tar ${dirs[*]} -> $archive"
+    tar czf "$archive" "${dirs[@]}"
+    log "backup complete: $archive ($(du -h "$archive" | cut -f1))"
+  fi
+}
+
+# ========================================================= add-tenant ====
+nginx_proxy_block() {
+  local fqdn="$1" port="$2"
+  cat <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $fqdn;
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 60s;
+    }
+}
+EOF
+}
+
+cmd_add_tenant() {
+  local sub="" name="" db_only=0 infra_only=0 ip=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2;;
+      --db-only) db_only=1; shift;;
+      --infra-only) infra_only=1; shift;;
+      --ip) ip="$2"; shift 2;;
+      -h|--help) usage; exit 0;;
+      -*) die "unknown option: $1";;
+      *) if [ -z "$sub" ]; then sub="$1"; else die "unexpected arg: $1"; fi; shift;;
+    esac
+  done
+  [ -n "$sub" ] || die "usage: boxoffice add-tenant <subdomain> [--name \"Theater Name\"]"
+
+  load_env
+  local domain="${DOMAIN:-${BASE_DOMAIN:-}}"
+  [ -n "$domain" ] || die "BASE_DOMAIN (or DOMAIN) is not set in .env"
+  [ -n "${PORT:-}" ] || die "PORT is not set in .env"
+  local fqdn="$sub.$domain"
+
+  # ---- (a) DB: create the Organization row. Works without root. ----
+  if [ "$infra_only" -eq 0 ]; then
+    log "provisioning Organization for '$sub'"
+    local args=("$sub")
+    [ -n "$name" ] && args+=(--name "$name")
+    manage provision_tenant "${args[@]}"
+  fi
+
+  if [ "$db_only" -eq 1 ]; then
+    log "--db-only: skipping DNS/nginx/TLS. Re-run without --db-only (as root) to finish onboarding $fqdn."
+    return 0
+  fi
+
+  # ---- (b)-(d) infra: DNS + nginx + TLS. Requires root. ----
+  if [ "$(id -u)" -ne 0 ]; then
+    warn "not running as root — skipping DNS/nginx/TLS for $fqdn."
+    warn "the Organization row is provisioned; re-run as root to finish: sudo $SCRIPT_PATH add-tenant $sub --infra-only"
+    return 0
+  fi
+
+  require_cmd nginx
+
+  # -- (b) DNS via doctl (idempotent, mirrors lab980-provision) --
+  if command -v doctl >/dev/null 2>&1; then
+    if [ -z "$ip" ]; then
+      ip="$(curl -s --max-time 5 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address || true)"
+    fi
+    local existing
+    existing="$(doctl compute domain records list "$domain" --no-header --format Type,Name,Data 2>/dev/null \
+                | awk -v n="$sub" '$1=="A" && $2==n {print $3}' | head -1)"
+    if [ -n "$existing" ]; then
+      log "DNS: A $fqdn -> $existing already exists (leaving as-is)"
+    elif [ -n "$ip" ]; then
+      log "DNS: creating A $fqdn -> $ip (ttl 300)"
+      doctl compute domain records create "$domain" \
+        --record-type A --record-name "$sub" --record-data "$ip" --record-ttl 300 >/dev/null
+    else
+      warn "couldn't determine droplet IP; skipping DNS record (pass --ip). Add it manually via doctl."
+    fi
+  else
+    warn "doctl not found; skipping DNS. Add the A record for $fqdn manually."
+  fi
+
+  # -- (c) nginx vhost, same PORT as the main app --
+  local conf="/etc/nginx/sites-available/$fqdn"
+  if [ -f "$conf" ]; then
+    log "nginx: $conf already exists (leaving as-is)"
+  else
+    log "nginx: writing $conf (proxy -> 127.0.0.1:$PORT)"
+    nginx_proxy_block "$fqdn" "$PORT" > "$conf"
+  fi
+  ln -sf "$conf" "/etc/nginx/sites-enabled/$fqdn"
+  nginx -t && systemctl reload nginx
+  log "nginx: enabled and reloaded"
+
+  # -- (d) TLS via certbot --
+  if command -v certbot >/dev/null 2>&1; then
+    log "TLS: issuing cert for $fqdn"
+    certbot --nginx -d "$fqdn" --redirect -n || warn "certbot failed — DNS may still be propagating; re-run: certbot --nginx -d $fqdn --redirect -n"
+  else
+    warn "certbot not found; skipping TLS. Install it, then: certbot --nginx -d $fqdn --redirect -n"
+  fi
+
+  cat <<DONE
+
+${c_blue}==>${c_off} Onboarded $fqdn
+      port:  $PORT  (same gunicorn process as the main app)
+
+Next: set Stripe keys + branding for this org in /admin.
+DONE
+}
+
+# ====================================================== remove-tenant ====
+cmd_remove_tenant() {
+  local sub="" purge=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --purge) purge=1; shift;;
+      -h|--help) usage; exit 0;;
+      -*) die "unknown option: $1";;
+      *) if [ -z "$sub" ]; then sub="$1"; else die "unexpected arg: $1"; fi; shift;;
+    esac
+  done
+  [ -n "$sub" ] || die "usage: boxoffice remove-tenant <subdomain> [--purge]"
+
+  load_env
+  local domain="${DOMAIN:-${BASE_DOMAIN:-}}"
+  [ -n "$domain" ] || die "BASE_DOMAIN (or DOMAIN) is not set in .env"
+  local fqdn="$sub.$domain"
+
+  # ---- DB step: works without root ----
+  local args=("$sub")
+  [ "$purge" -eq 1 ] && args+=(--purge)
+  manage remove_tenant "${args[@]}"
+
+  # ---- nginx removal: requires root ----
+  local purge_flag=""
+  [ "$purge" -eq 1 ] && purge_flag=" --purge"
+  if [ "$(id -u)" -ne 0 ]; then
+    warn "not running as root — skipping nginx vhost removal for $fqdn."
+    warn "re-run as root to finish: sudo $SCRIPT_PATH remove-tenant $sub$purge_flag"
+    return 0
+  fi
+
+  local removed=0
+  for f in "/etc/nginx/sites-enabled/$fqdn" "/etc/nginx/sites-available/$fqdn"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f"; removed=1; fi
+  done
+  if [ "$removed" -eq 1 ]; then
+    nginx -t && systemctl reload nginx
+    log "nginx: vhost removed for $fqdn"
+  else
+    log "nginx: no vhost for $fqdn (nothing to remove)"
+  fi
+
+  cat <<DONE
+
+${c_blue}==>${c_off} $fqdn's nginx vhost removed. Not run automatically — do these
+      by hand once you're sure the tenant is really going away:
+
+      certbot delete --cert-name $fqdn -n
+      doctl compute domain records list $domain --format ID,Type,Name \\
+        | awk -v n=$sub '\$2=="A" && \$3==n {print \$1}' \\
+        | xargs -I{} doctl compute domain records delete $domain {} -f
+DONE
+}
+
+# =============================================================== main ====
+[ $# -ge 1 ] || { usage; exit 1; }
+cmd="$1"; shift
+case "$cmd" in
+  serve)          cmd_serve "$@";;
+  deploy)         cmd_deploy "$@";;
+  restart)        cmd_restart "$@";;
+  logs)           cmd_logs "$@";;
+  migrate)        cmd_migrate "$@";;
+  backup)         cmd_backup "$@";;
+  add-tenant)     cmd_add_tenant "$@";;
+  remove-tenant)  cmd_remove_tenant "$@";;
+  -h|--help|help) usage;;
+  *) die "unknown command: $cmd (see --help)";;
+esac

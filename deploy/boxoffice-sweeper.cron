@@ -1,0 +1,16 @@
+# Cron sample: sweep expired Holds every minute so seat/GA inventory frees up
+# promptly. See orders/management/commands/release_expired_holds.py for what
+# this does and why it's safe to run this often (idempotent, cheap DELETE).
+#
+# Install (as root, since lab980 apps run as root and there's no dedicated
+# service user):
+#
+#   crontab -e
+#   # paste the line below, adjusting the path if boxoffice isn't at
+#   # /var/www/boxoffice
+#
+# Or non-interactively:
+#
+#   (crontab -l 2>/dev/null; cat deploy/boxoffice-sweeper.cron | grep -v '^#') | crontab -
+
+* * * * * cd /var/www/boxoffice && venv/bin/python manage.py release_expired_holds >> data/release_expired_holds.log 2>&1

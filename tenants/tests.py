@@ -1,4 +1,4 @@
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from events.models import Event, GAAllocation, Performance, PriceTier
@@ -59,3 +59,78 @@ class CreateDemoTenantCommandTests(TestCase):
     def test_custom_subdomain(self):
         call_command("create_demo_tenant", "--subdomain=globe")
         self.assertTrue(Organization.objects.filter(subdomain="globe").exists())
+
+
+class ProvisionTenantCommandTests(TestCase):
+    """Covers the DB half of `bin/boxoffice add-tenant` (no-wildcard onboarding)."""
+
+    def test_creates_organization(self):
+        call_command("provision_tenant", "roxy", "--name", "The Roxy Theater")
+
+        org = Organization.objects.get(subdomain="roxy")
+        self.assertEqual(org.name, "The Roxy Theater")
+        self.assertEqual(org.slug, "roxy")
+        self.assertTrue(org.is_active)
+        self.assertEqual(org.contact_email, "boxoffice@roxy.localhost")
+
+    def test_default_name_derived_from_subdomain(self):
+        call_command("provision_tenant", "the-globe")
+        org = Organization.objects.get(subdomain="the-globe")
+        self.assertEqual(org.name, "The Globe")
+
+    def test_idempotent_on_rerun(self):
+        call_command("provision_tenant", "roxy", "--name", "The Roxy Theater")
+        first_count = Organization.objects.count()
+
+        # Re-running with a different --name does not rename the existing org.
+        call_command("provision_tenant", "roxy", "--name", "Something Else")
+
+        self.assertEqual(Organization.objects.count(), first_count)
+        self.assertEqual(Organization.objects.get(subdomain="roxy").name, "The Roxy Theater")
+
+    def test_rejects_reserved_subdomain(self):
+        with self.assertRaises(CommandError):
+            call_command("provision_tenant", "www")
+        self.assertFalse(Organization.objects.filter(subdomain="www").exists())
+
+    def test_rejects_invalid_subdomain(self):
+        with self.assertRaises(CommandError):
+            call_command("provision_tenant", "Not_Valid!")
+
+    def test_custom_contact_email(self):
+        call_command("provision_tenant", "roxy", "--contact-email", "box@roxy.example")
+        self.assertEqual(
+            Organization.objects.get(subdomain="roxy").contact_email, "box@roxy.example"
+        )
+
+
+class RemoveTenantCommandTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name="The Roxy Theater",
+            slug="roxy",
+            subdomain="roxy",
+            contact_email="box@roxy.example",
+        )
+
+    def test_default_deactivates_without_deleting(self):
+        call_command("remove_tenant", "roxy")
+
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.is_active)
+        self.assertTrue(Organization.objects.filter(subdomain="roxy").exists())
+
+    def test_deactivate_is_idempotent(self):
+        call_command("remove_tenant", "roxy")
+        call_command("remove_tenant", "roxy")
+
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.is_active)
+
+    def test_purge_deletes_the_organization(self):
+        call_command("remove_tenant", "roxy", "--purge")
+        self.assertFalse(Organization.objects.filter(subdomain="roxy").exists())
+
+    def test_unknown_subdomain_raises(self):
+        with self.assertRaises(CommandError):
+            call_command("remove_tenant", "does-not-exist")

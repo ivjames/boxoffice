@@ -75,9 +75,12 @@ load_env() {
       key=${line%%=*}; val=${line#*=}
       key=${key#export }; key=${key# }; key=${key% }
       case "$key" in [!A-Za-z_]*|*[!A-Za-z0-9_]*) continue ;; esac
-      case "$val" in                           # strip one layer of matching quotes
+      case "$val" in                           # quoted: literal; unquoted: honor inline comment
         \'*\') val=${val#\'}; val=${val%\'} ;;
         \"*\") val=${val#\"}; val=${val%\"} ;;
+        *) val=${val%%[[:space:]]#*}           # drop a trailing " # inline comment"
+           val=${val%"${val##*[![:space:]]}"}  # then trim trailing whitespace
+           ;;
       esac
       export "$key=$val"
     done < "$APP_DIR/.env"

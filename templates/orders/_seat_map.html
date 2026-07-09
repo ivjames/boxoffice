@@ -1,38 +1,54 @@
 {% comment %}
 Interactive reserved-seat map. Seat data is passed via json_script (safe
 HTML-escaping) so Alpine can read it client-side; seat.x/seat.y (from
-venues.models.Seat) drive an SVG layout. Progressive-enhancement note: the
-form still works with JS off in the sense that the "Reserve selected seats"
-button posts whatever hidden seat_id inputs exist, but seat *selection*
-itself requires Alpine (click-to-toggle), matching the brief's allowance
-that click-to-select is JS-driven.
+venues.models.Seat) place each seat on a CSS grid. Progressive-enhancement
+note: the form still works with JS off in the sense that the "Reserve
+selected seats" button posts whatever hidden seat_id inputs exist, but seat
+*selection* itself requires Alpine (click-to-toggle), matching the brief's
+allowance that click-to-select is JS-driven.
+
+Rendered as real HTML <button> elements on a CSS grid rather than an SVG:
+a `<template x-for>` whose root element sits inside an <svg> gets parsed
+with the SVG namespace by the browser, which strips its `.content`
+(HTMLTemplateElement-only) and breaks Alpine's clone-based x-for entirely
+(confirmed against Chromium — this is a browser/Alpine limitation, not a
+choice). Real buttons also get keyboard/focus/screen-reader support for
+free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
 {% endcomment %}
 {{ seats_json|json_script:"seats-data" }}
 {{ held_by_you_ids|json_script:"held-by-you-data" }}
 
 <div x-data="seatMap()" class="seat-map">
-    <div class="seat-map__legend">
-        <span class="seat-legend seat-legend--available"><i class="seat-swatch seat-swatch--available"></i> Available</span>
-        <span class="seat-legend seat-legend--selected"><i class="seat-swatch seat-swatch--selected"></i> Selected</span>
-        <span class="seat-legend seat-legend--unavailable"><i class="seat-swatch seat-swatch--unavailable"></i> Unavailable</span>
+    <ul class="seat-map__legend">
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--available"></i> Available</li>
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--selected"></i> Selected</li>
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--unavailable"></i> Unavailable / sold</li>
+    </ul>
+
+    <div class="seat-map__grid" :style="gridStyle" role="group" aria-label="Seat map">
+        <template x-for="seat in seats" :key="seat.id">
+            <button type="button" class="seat-btn" :class="seatClass(seat)"
+                    :style="'grid-column:' + (seat.x + 1) + '; grid-row:' + (seat.y + 1) + ';'"
+                    :disabled="seat.state === 'unavailable'"
+                    :aria-pressed="selected.includes(seat.id).toString()"
+                    :title="seat.section + ' — ' + seat.row + seat.number + (seat.price ? (' — $' + seat.price) : '') + (seat.state === 'unavailable' ? ' (unavailable)' : '')"
+                    @click="toggle(seat)">
+                <span x-text="seat.row + seat.number"></span>
+            </button>
+        </template>
     </div>
 
-    <svg :viewBox="viewBox" class="seat-map__svg" preserveAspectRatio="xMidYMid meet">
-        <template x-for="seat in seats" :key="seat.id">
-            <g @click="toggle(seat)" :class="seatClass(seat)" class="seat">
-                <title x-text="seat.section + ' ' + seat.row + seat.number + (seat.price ? (' — $' + seat.price) : '')"></title>
-                <circle :cx="seat.x * 40 + 30" :cy="seat.y * 40 + 30" r="14"></circle>
-                <text :x="seat.x * 40 + 30" :y="seat.y * 40 + 34" text-anchor="middle" x-text="seat.row + seat.number"></text>
-            </g>
-        </template>
-    </svg>
-
-    <form method="post" action="{% url 'hold_create' performance.pk %}">
+    <form method="post" action="{% url 'hold_create' performance.pk %}" class="seat-map__form">
         {% csrf_token %}
         <template x-for="id in selected" :key="id">
             <input type="hidden" name="seat_id" :value="id">
         </template>
-        <p>Selected: <span x-text="selected.length"></span> seat(s) — <strong><span x-text="'$' + total.toFixed(2)"></span></strong></p>
+        <p class="seat-map__summary">
+            <span x-show="selected.length === 0">No seats selected yet — click a seat above.</span>
+            <span x-show="selected.length > 0">
+                Selected: <span x-text="selected.length"></span> seat(s) — <strong><span x-text="'$' + total.toFixed(2)"></span></strong>
+            </span>
+        </p>
         <button type="submit" class="button" :disabled="selected.length === 0">Reserve selected seats</button>
     </form>
 </div>
@@ -49,7 +65,7 @@ that click-to-select is JS-driven.
         return {
             seats: seats,
             selected: [...heldByYou],
-            viewBox: `0 0 ${maxX * 40 + 80} ${maxY * 40 + 80}`,
+            gridStyle: `grid-template-columns: repeat(${maxX + 1}, 2.5rem); grid-template-rows: repeat(${maxY + 1}, 2.5rem);`,
             toggle(seat) {
                 if (seat.state === 'unavailable') return;
                 const i = this.selected.indexOf(seat.id);
@@ -60,8 +76,8 @@ that click-to-select is JS-driven.
                 }
             },
             seatClass(seat) {
-                if (seat.state === 'unavailable') return 'seat--unavailable';
-                return this.selected.includes(seat.id) ? 'seat--selected' : 'seat--available';
+                if (seat.state === 'unavailable') return 'seat-btn--unavailable';
+                return this.selected.includes(seat.id) ? 'seat-btn--selected' : 'seat-btn--available';
             },
             get total() {
                 return this.selected.reduce((sum, id) => {

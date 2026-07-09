@@ -4,6 +4,7 @@
 
 {% block content %}
 {% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_order_list' %}">&larr; All orders</a>
 <h1>Order {{ order.token }}</h1>
 <p><span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
 <p><strong>Buyer:</strong> {{ order.buyer_name }} — {{ order.buyer_email }}</p>
@@ -12,6 +13,7 @@
 <p class="muted">Placed {{ order.created_at|date:"M j Y g:i A" }}</p>
 
 <h2>Tickets</h2>
+<div class="dash-table-wrap">
 <table class="dash-table">
     <thead><tr><th>Token</th><th>Holder</th><th>Seat</th><th>Status</th><th>Used</th></tr></thead>
     <tbody>
@@ -26,4 +28,5 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 {% endblock %}

@@ -13,6 +13,7 @@
     <button type="submit" class="button">Search</button>
 </form>
 
+<div class="dash-table-wrap">
 <table class="dash-table">
     <thead><tr><th>Order</th><th>Buyer</th><th>Performance</th><th>Total</th><th>Status</th><th>Placed</th></tr></thead>
     <tbody>
@@ -30,6 +31,7 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 
 {% if is_paginated %}
     <p>

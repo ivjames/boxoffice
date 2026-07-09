@@ -1,11 +1,36 @@
 {% extends "base.html" %}
 
-{% block title %}Boxo.show{% endblock %}
+{% block title %}Boxo.show — white-label box office software{% endblock %}
 
 {% block content %}
-    <section class="hero">
-        <h1>Boxo.show</h1>
-        <p>White-label box office software for theaters. Sign up your venue to get a branded storefront on its own subdomain.</p>
-        <p><em>Tenant signup lands in a later phase.</em></p>
+    <section class="hero hero--landing">
+        <h1>Box office software for real theaters.</h1>
+        <p class="hero__lede">
+            Boxo.show is a white-label box office: browse-to-buy storefronts, Stripe
+            checkout, emailed QR tickets, and a staff dashboard for managing events,
+            orders, and door scanning — one deployment, branded per venue.
+        </p>
+        <div class="hero__actions">
+            <a class="button" href="/admin/">Platform admin</a>
+            <a class="button button--secondary" href="{% url 'login' %}">Staff sign in</a>
+        </div>
+    </section>
+
+    <section class="landing-section">
+        <h2>What it is</h2>
+        <div class="landing-grid">
+            <div class="landing-card">
+                <h3>Browse &amp; buy</h3>
+                <p>General-admission or reserved-seat performances, live availability, a held cart with a countdown, and Stripe Checkout.</p>
+            </div>
+            <div class="landing-card">
+                <h3>Tickets that scan</h3>
+                <p>Every paid order gets emailed QR tickets; door staff scan and redeem them from the dashboard's scanner.</p>
+            </div>
+            <div class="landing-card">
+                <h3>A staff dashboard</h3>
+                <p>Role-gated event/performance management, pricing, order lookup, and sales reporting per venue.</p>
+            </div>
+        </div>
     </section>
 {% endblock %}

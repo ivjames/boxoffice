@@ -10,20 +10,35 @@
 
     {% if events_with_upcoming %}
         <div class="event-grid">
-            {% for event, performances in events_with_upcoming %}
-                <a class="event-card" href="{% url 'event_detail' event.slug %}">
-                    {% if event.image %}
-                        <img src="{{ event.image.url }}" alt="{{ event.title }}" class="event-card__image">
+            {% for row in events_with_upcoming %}
+                <a class="event-card" href="{% url 'event_detail' row.event.slug %}">
+                    {% if row.event.image %}
+                        <img src="{{ row.event.image.url }}" alt="{{ row.event.title }}" class="event-card__image">
+                    {% else %}
+                        <div class="event-card__image event-card__image--placeholder" aria-hidden="true"></div>
                     {% endif %}
                     <div class="event-card__body">
-                        <h2>{{ event.title }}</h2>
-                        {% if event.category %}<p class="event-card__category">{{ event.category }}</p>{% endif %}
-                        <p class="event-card__next">Next: {{ performances.0.starts_at|date:"D, M j Y — g:i A" }}</p>
+                        <h2>{{ row.event.title }}</h2>
+                        {% if row.event.category %}<p class="event-card__category">{{ row.event.category }}</p>{% endif %}
+                        <p class="event-card__next">Next: {{ row.performances.0.starts_at|date:"D, M j Y — g:i A" }}</p>
+                        <div class="event-card__meta">
+                            {% if row.min_price is not None %}
+                                <span class="event-card__price">from ${{ row.min_price }}</span>
+                            {% endif %}
+                            {% if row.available > 0 %}
+                                <span class="badge badge--available">{{ row.available }} available</span>
+                            {% else %}
+                                <span class="badge badge--soldout">Sold out</span>
+                            {% endif %}
+                        </div>
                     </div>
                 </a>
             {% endfor %}
         </div>
     {% else %}
-        <p>No upcoming shows right now — check back soon.</p>
+        <div class="empty-state">
+            <p>No upcoming events yet.</p>
+            <p class="muted">Check back soon — new shows are added regularly.</p>
+        </div>
     {% endif %}
 {% endblock %}

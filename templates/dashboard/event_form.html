@@ -4,6 +4,7 @@
 
 {% block content %}
 {% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% if object %}{% url 'dashboard_event_detail' object.pk %}{% else %}{% url 'dashboard_event_list' %}{% endif %}">&larr; {% if object %}{{ object.title }}{% else %}All events{% endif %}</a>
 <h1>{% if object %}Edit “{{ object.title }}”{% else %}New event{% endif %}</h1>
 <form method="post" enctype="multipart/form-data" class="dash-form">
     {% csrf_token %}

@@ -4,6 +4,7 @@
 {% block title %}Scan tickets — {{ organization.name }}{% endblock %}
 
 {% block content %}
+{% include "dashboard/_nav.html" %}
 <div x-data="qrScanner()" x-init="start()">
     <div class="dash-header">
         <h1>Scan tickets</h1>

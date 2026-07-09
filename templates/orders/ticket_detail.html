@@ -3,30 +3,35 @@
 {% block title %}Your tickets — {{ organization.name }}{% endblock %}
 
 {% block content %}
+    <a class="back-link" href="{% url 'home' %}">&larr; Back to {{ organization.name }}</a>
     <h1>Your tickets</h1>
     <h2>{{ order.performance.event.title }}</h2>
     <p>
         {{ order.performance.starts_at|date:"D, M j Y — g:i A" }} ·
         {{ order.performance.venue.name }}
     </p>
-    <p>Order total: ${{ order.total }} · Status: {{ order.get_status_display }}</p>
+    <p>Order total: ${{ order.total }} · Status: <span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
     <p class="muted">Order confirmation: {{ order.token }}</p>
 
     {% if not ticket_rows %}
-        <p>No tickets on this order yet — if you just paid, check back in a moment.</p>
+        <div class="empty-state">
+            <p>No tickets on this order yet — if you just paid, check back in a moment.</p>
+        </div>
     {% endif %}
 
-    {% for row in ticket_rows %}
-        <div class="ticket">
-            <h3>
-                Ticket {{ forloop.counter }}
-                {% if row.ticket.seat %}
-                    — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}
-                {% endif %}
-            </h3>
-            <p>Status: {{ row.ticket.get_status_display }}</p>
-            <img src="{{ row.qr_data_uri }}" alt="Ticket QR code" width="220" height="220">
-            <p class="muted">{{ row.ticket.token }}</p>
-        </div>
-    {% endfor %}
+    <div class="ticket-grid">
+        {% for row in ticket_rows %}
+            <div class="ticket">
+                <h3>
+                    Ticket {{ forloop.counter }}
+                    {% if row.ticket.seat %}
+                        — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}
+                    {% endif %}
+                </h3>
+                <p><span class="badge badge--{{ row.ticket.status }}">{{ row.ticket.get_status_display }}</span></p>
+                <img src="{{ row.qr_data_uri }}" alt="Ticket QR code" width="220" height="220" class="ticket__qr">
+                <p class="muted">{{ row.ticket.token }}</p>
+            </div>
+        {% endfor %}
+    </div>
 {% endblock %}

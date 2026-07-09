@@ -30,12 +30,26 @@ class TenantMiddleware:
 
     This override is intentionally gated on DEBUG so it can never activate in
     production regardless of what a client sends.
+
+    Default-tenant mode (settings.DEFAULT_TENANT):
+    Client subdomains are deferred for now, so the platform host needs to be
+    able to serve a real storefront on its own. This does NOT change any of
+    the subdomain-resolution logic above — a request that resolves to a real
+    tenant subdomain behaves exactly as it always has. It only changes what
+    happens for a request that would otherwise land on the platform host
+    (reserved subdomain / bare host / unmatched host): if
+    settings.DEFAULT_TENANT names an existing, active Organization,
+    request.organization is set to that Organization (request.is_default_tenant
+    = True) instead of None, so `/`, `/login`, `/dashboard`, `/scan` etc. all
+    serve that org. Empty/unset/invalid DEFAULT_TENANT: behaves exactly as
+    before (request.organization = None, platform landing).
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
+        request.is_default_tenant = False
         request.organization = self._resolve(request)
         return self.get_response(request)
 
@@ -45,7 +59,7 @@ class TenantMiddleware:
             subdomain = self._subdomain_from_host(request.get_host())
 
         if not subdomain or subdomain in settings.RESERVED_SUBDOMAINS:
-            return None
+            return self._resolve_platform_host(request)
 
         try:
             organization = Organization.objects.get(subdomain=subdomain)
@@ -55,6 +69,24 @@ class TenantMiddleware:
         if not organization.is_active:
             raise Http404("This tenant is not active.")
 
+        return organization
+
+    def _resolve_platform_host(self, request):
+        """The platform host resolution path: None unless DEFAULT_TENANT
+        names an existing, active Organization, in which case that org's
+        storefront is served on the platform host instead of the landing
+        page. See the class docstring's "Default-tenant mode" note."""
+        subdomain = (settings.DEFAULT_TENANT or "").strip()
+        if not subdomain:
+            return None
+
+        organization = Organization.objects.filter(
+            subdomain=subdomain, is_active=True
+        ).first()
+        if organization is None:
+            return None
+
+        request.is_default_tenant = True
         return organization
 
     def _dev_override_subdomain(self, request):

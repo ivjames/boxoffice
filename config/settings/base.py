@@ -83,6 +83,10 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 # Exposes request.organization to every template as `organization`.
                 "tenants.context_processors.organization",
+                # Exposes the current staff Membership (or None) as `staff_membership`.
+                "accounts.context_processors.staff_membership",
+                # Exposes the session's live cart item count as `cart_count`.
+                "orders.context_processors.cart_count",
             ],
         },
     },
@@ -138,3 +142,16 @@ RESERVED_SUBDOMAINS = set(
 # "roxy.lab980.com" resolves to the "roxy" tenant. TenantMiddleware strips
 # this suffix off the Host header to find the subdomain.
 BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
+
+# Optional. Client subdomains are deferred for now — this lets ONE
+# Organization (by subdomain) serve its storefront directly on the platform
+# host, so the site is usable without provisioning any tenant subdomains.
+# When set to an existing, active Organization's subdomain, TenantMiddleware
+# resolves the platform host (a reserved subdomain / bare BASE_DOMAIN / an
+# unrecognized host) to that Organization instead of leaving
+# request.organization None, and sets request.is_default_tenant = True.
+# Empty (default) or naming a nonexistent/inactive Organization: no change in
+# behavior, the platform host still serves the landing page. Real subdomain
+# resolution (an explicit tenant subdomain in the Host header) is completely
+# unaffected either way — this only changes the platform-host fallback.
+DEFAULT_TENANT = env("DEFAULT_TENANT", default="")

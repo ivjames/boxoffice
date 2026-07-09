@@ -3,6 +3,7 @@
 {% block title %}Checkout — {{ organization.name }}{% endblock %}
 
 {% block content %}
+    <a class="back-link" href="{% url 'cart' %}">&larr; Back to cart</a>
     <h1>Checkout</h1>
 
     {% if items %}
@@ -29,11 +30,14 @@
                     <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
                     <button type="submit" class="button">Proceed to payment</button>
                 </form>
-                <p class="muted">Payment isn't wired up yet — Phase 4 adds Stripe Checkout here. Submitting just confirms and refreshes your hold.</p>
+                <p class="muted">You'll be redirected to Stripe's secure checkout to pay — your hold stays reserved until it expires above.</p>
             </div>
         {% endfor %}
         <p class="cart-total"><strong>Order total: ${{ grand_total }}</strong></p>
     {% else %}
-        <p>Your cart is empty. <a href="{% url 'home' %}">Browse shows</a>.</p>
+        <div class="empty-state">
+            <p>Your cart is empty.</p>
+            <p class="muted"><a href="{% url 'home' %}">Browse shows</a> to find something to see.</p>
+        </div>
     {% endif %}
 {% endblock %}

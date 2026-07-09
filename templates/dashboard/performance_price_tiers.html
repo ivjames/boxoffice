@@ -4,9 +4,11 @@
 
 {% block content %}
 {% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_event_detail' performance.event.pk %}">&larr; {{ performance.event.title }}</a>
 <h1>Pricing — {{ performance.event.title }}</h1>
 <p class="muted">{{ performance.starts_at|date:"D, M j Y — g:i A" }} · {{ performance.get_seating_mode_display }}</p>
 
+<div class="dash-table-wrap">
 <table class="dash-table">
     <thead><tr><th>Name</th><th>Section</th><th>Amount</th></tr></thead>
     <tbody>
@@ -21,6 +23,7 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 
 <h2>Add price tier</h2>
 <form method="post" class="dash-form">

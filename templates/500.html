@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title %}Something went wrong — {% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}
+
+{% block content %}
+    <div class="error-page">
+        <p class="error-page__code">500</p>
+        <h1>Something went wrong</h1>
+        <p>We hit an unexpected error. Nothing was charged or lost — try again in a moment.</p>
+        <p><a class="button" href="{% url 'home' %}">Back to {% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}</a></p>
+    </div>
+{% endblock %}

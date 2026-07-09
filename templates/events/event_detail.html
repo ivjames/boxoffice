@@ -3,7 +3,10 @@
 {% block title %}{{ event.title }} — {{ organization.name }}{% endblock %}
 
 {% block content %}
-    <p><a href="{% url 'home' %}">&larr; All shows</a></p>
+    <ol class="breadcrumbs">
+        <li><a href="{% url 'home' %}">Home</a></li>
+        <li>{{ event.title }}</li>
+    </ol>
 
     <section class="hero">
         <h1>{{ event.title }}</h1>
@@ -26,7 +29,7 @@
                         {% endif %}
                     </div>
                     {% if row.available > 0 %}
-                        <a class="button" href="{% url 'performance_detail' row.performance.pk %}">Select tickets</a>
+                        <a class="button" href="{% url 'performance_detail' row.performance.pk %}">Select seats/tickets</a>
                     {% else %}
                         <span class="button button--disabled">Sold out</span>
                     {% endif %}
@@ -34,6 +37,9 @@
             {% endfor %}
         </ul>
     {% else %}
-        <p>No upcoming performances scheduled.</p>
+        <div class="empty-state">
+            <p>No upcoming performances scheduled.</p>
+            <p class="muted">Check back soon, or <a href="{% url 'home' %}">browse other shows</a>.</p>
+        </div>
     {% endif %}
 {% endblock %}

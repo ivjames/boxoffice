@@ -3,6 +3,7 @@
 {% block title %}Scan result — {{ organization.name }}{% endblock %}
 
 {% block content %}
+    {% include "dashboard/_nav.html" %}
     <h1>Scan result</h1>
 
     <div class="scan-result {% if result.ok %}scan-result--pass{% else %}scan-result--fail{% endif %}">

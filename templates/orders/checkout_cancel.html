@@ -7,7 +7,7 @@
     <p>No payment was made.</p>
     <p>
         If your hold hasn't expired yet, your seats may still be waiting —
-        <a href="{% url 'cart' %}">return to your cart</a> to finish checking out, or
-        <a href="{% url 'home' %}">browse shows</a> to start over.
+        <a class="button" href="{% url 'cart' %}">Return to your cart</a>
     </p>
+    <p class="muted"><a href="{% url 'home' %}">&larr; Browse shows</a> to start over instead.</p>
 {% endblock %}

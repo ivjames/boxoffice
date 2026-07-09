@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title %}Page not found — {% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}
+
+{% block content %}
+    <div class="error-page">
+        <p class="error-page__code">404</p>
+        <h1>Page not found</h1>
+        <p>That page doesn't exist, or the link is out of date.</p>
+        <p><a class="button" href="{% url 'home' %}">Back to {% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}</a></p>
+    </div>
+{% endblock %}

@@ -4,6 +4,7 @@
 
 {% block content %}
 {% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_event_list' %}">&larr; All events</a>
 <div class="dash-header">
     <h1>{{ event.title }}</h1>
     <p class="muted">
@@ -14,6 +15,7 @@
 
 <h2>Performances</h2>
 <p><a class="button" href="{% url 'dashboard_performance_create' event.pk %}">New performance</a></p>
+<div class="dash-table-wrap">
 <table class="dash-table">
     <thead><tr><th>When</th><th>Venue</th><th>Mode</th><th>Status</th><th></th></tr></thead>
     <tbody>
@@ -33,4 +35,5 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 {% endblock %}

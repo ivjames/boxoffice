@@ -1,17 +1,22 @@
-<nav class="dash-nav">
-    <a href="{% url 'dashboard_overview' %}">Overview</a>
+{% with url_name=request.resolver_match.url_name %}
+<nav class="dash-nav" aria-label="Dashboard section">
+    <a href="{% url 'dashboard_overview' %}" class="{% if url_name == 'dashboard_overview' %}is-active{% endif %}">Overview</a>
     {% if request.membership.can_manage_events %}
-        <a href="{% url 'dashboard_event_list' %}">Events</a>
+        <a href="{% url 'dashboard_event_list' %}"
+           class="{% if url_name == 'dashboard_event_list' or url_name == 'dashboard_event_create' or url_name == 'dashboard_event_detail' or url_name == 'dashboard_event_update' or url_name == 'dashboard_performance_create' or url_name == 'dashboard_performance_update' or url_name == 'dashboard_performance_price_tiers' %}is-active{% endif %}">Events</a>
     {% endif %}
     {% if request.membership.can_sell_tickets %}
-        <a href="{% url 'dashboard_order_list' %}">Orders</a>
+        <a href="{% url 'dashboard_order_list' %}"
+           class="{% if url_name == 'dashboard_order_list' or url_name == 'dashboard_order_detail' %}is-active{% endif %}">Orders</a>
     {% endif %}
     {% if request.membership.can_scan %}
-        <a href="{% url 'scan_home' %}">Scan</a>
+        <a href="{% url 'scan_home' %}" class="{% if url_name == 'scan_home' or url_name == 'scan_redeem' %}is-active{% endif %}">Scan</a>
     {% endif %}
-    <span class="muted">{{ request.user.email }} · {{ request.membership.get_role_display }}</span>
-    <form method="post" action="{% url 'logout' %}" style="display:inline;">
+    <a href="{% url 'home' %}" class="dash-nav__storefront">View storefront</a>
+    <span class="muted dash-nav__whoami">{{ request.user.email }} · {{ request.membership.get_role_display }}</span>
+    <form method="post" action="{% url 'logout' %}" class="dash-nav__logout">
         {% csrf_token %}
         <button type="submit" class="button button--secondary">Log out</button>
     </form>
 </nav>
+{% endwith %}

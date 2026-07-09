@@ -23,10 +23,12 @@
         <p><a class="button" href="{% url 'ticket_detail' order.token %}">View your tickets</a></p>
         <p class="muted">A confirmation email was also sent to {{ order.buyer_email }}.</p>
     {% else %}
-        <p>We're confirming your payment with Stripe — this usually takes just a few seconds.</p>
-        <p class="muted">
-            This page refreshes automatically. If it hasn't updated after a minute or two, check your
-            email for your tickets, or contact the box office with your payment confirmation.
-        </p>
+        <div class="empty-state">
+            <p>We're confirming your payment with Stripe — this usually takes just a few seconds.</p>
+            <p class="muted">
+                This page refreshes automatically. If it hasn't updated after a minute or two, check your
+                email for your tickets, or contact the box office with your payment confirmation.
+            </p>
+        </div>
     {% endif %}
 {% endblock %}

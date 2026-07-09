@@ -334,6 +334,20 @@ def set_reserved_hold(*, organization, performance, session_key, user, seat_ids)
     return hold
 
 
+def cart_item_count(organization, session_key):
+    """Total ticket count across the session's active (unexpired) holds --
+    GA quantity plus one per held reserved seat. Read-only, cheap aggregate
+    queries; used for the nav cart badge (see orders.context_processors)."""
+    if not session_key:
+        return 0
+    holds = Hold.objects.filter(
+        organization=organization, session_key=session_key, expires_at__gt=timezone.now()
+    )
+    ga_qty = holds.aggregate(total=Sum("quantity"))["total"] or 0
+    seat_qty = HoldSeat.objects.filter(hold__in=holds).count()
+    return ga_qty + seat_qty
+
+
 def hold_total(hold):
     """Dollar total for a Hold: quantity * tier for GA, sum of per-seat
     tiers for reserved."""

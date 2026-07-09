@@ -3,7 +3,11 @@
 {% block title %}{{ performance.event.title }} — {{ organization.name }}{% endblock %}
 
 {% block content %}
-    <p><a href="{% url 'event_detail' performance.event.slug %}">&larr; {{ performance.event.title }}</a></p>
+    <ol class="breadcrumbs">
+        <li><a href="{% url 'home' %}">Home</a></li>
+        <li><a href="{% url 'event_detail' performance.event.slug %}">{{ performance.event.title }}</a></li>
+        <li>Select tickets</li>
+    </ol>
 
     <section class="hero">
         <h1>{{ performance.event.title }}</h1>

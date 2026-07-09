@@ -3,6 +3,7 @@
 {% block title %}Your cart — {{ organization.name }}{% endblock %}
 
 {% block content %}
+    <a class="back-link" href="{% url 'home' %}">&larr; Continue browsing</a>
     <h1>Your cart</h1>
 
     {% if items %}
@@ -40,7 +41,10 @@
         {% endfor %}
         <p class="cart-total"><strong>Cart total: ${{ grand_total }}</strong></p>
     {% else %}
-        <p>Your cart is empty. <a href="{% url 'home' %}">Browse shows</a>.</p>
+        <div class="empty-state">
+            <p>Your cart is empty.</p>
+            <p class="muted"><a href="{% url 'home' %}">Browse shows</a> to find something to see.</p>
+        </div>
     {% endif %}
 {% endblock %}
 

@@ -8,7 +8,8 @@
     <style>
         :root {
             /* Per-tenant branding. Falls back to the platform defaults when
-               request.organization is None (reserved subdomain / bare host). */
+               request.organization is None (reserved subdomain / bare host,
+               no DEFAULT_TENANT configured). */
             --primary-color: {% if organization %}{{ organization.primary_color }}{% else %}#111111{% endif %};
             --accent-color: {% if organization %}{{ organization.accent_color }}{% else %}#e11d48{% endif %};
         }
@@ -16,18 +17,61 @@
     {% block extra_head %}{% endblock %}
 </head>
 <body>
-    <header class="site-header">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" x-data="{ navOpen: false }">
         <div class="site-header__inner">
-            <a class="site-header__brand" href="/">
+            <a class="site-header__brand" href="{% url 'home' %}">
                 {% if organization and organization.logo %}
-                    <img src="{{ organization.logo.url }}" alt="{{ organization.name }}" class="site-header__logo">
+                    <img src="{{ organization.logo.url }}" alt="" class="site-header__logo">
                 {% endif %}
                 <span>{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}</span>
             </a>
+
+            <button type="button" class="site-header__toggle" @click="navOpen = !navOpen"
+                    :aria-expanded="navOpen.toString()" aria-controls="site-nav" aria-label="Toggle menu">
+                <span class="site-header__toggle-bar"></span>
+                <span class="site-header__toggle-bar"></span>
+                <span class="site-header__toggle-bar"></span>
+            </button>
+
+            <nav id="site-nav" class="site-nav" :class="{ 'site-nav--open': navOpen }">
+                {% if organization %}
+                    <a href="{% url 'home' %}" class="site-nav__link{% if request.resolver_match.url_name == 'home' %} is-active{% endif %}">Events</a>
+                    <a href="{% url 'cart' %}" class="site-nav__link site-nav__cart{% if request.resolver_match.url_name == 'cart' %} is-active{% endif %}">
+                        Cart
+                        {% if cart_count %}<span class="site-nav__badge">{{ cart_count }}</span>{% endif %}
+                    </a>
+                {% endif %}
+
+                {% if staff_membership %}
+                    <div class="site-nav__account" x-data="{ open: false }" @click.outside="open = false">
+                        <button type="button" class="site-nav__link site-nav__account-toggle" @click="open = !open"
+                                :aria-expanded="open.toString()">
+                            {{ request.user.get_short_name|default:request.user.email }}
+                        </button>
+                        <div class="site-nav__account-menu" x-show="open" x-cloak @click="open = false">
+                            <a href="{% url 'dashboard_overview' %}">Dashboard</a>
+                            <form method="post" action="{% url 'logout' %}">
+                                {% csrf_token %}
+                                <button type="submit">Log out</button>
+                            </form>
+                        </div>
+                    </div>
+                {% elif organization %}
+                    <a href="{% url 'login' %}?next={{ request.path|urlencode }}"
+                       class="site-nav__link{% if request.resolver_match.url_name == 'login' %} is-active{% endif %}">Staff login</a>
+                {% else %}
+                    {# Platform host, no tenant/default-tenant resolved -- staff sign-in is
+                       tenant-scoped (accounts.views.login_view) and has nothing to sign in
+                       to here, so the nav only offers what actually works at this host. #}
+                    <a href="/admin/" class="site-nav__link">Admin</a>
+                {% endif %}
+            </nav>
         </div>
     </header>
 
-    <main class="site-main">
+    <main class="site-main" id="main-content">
         {% if messages %}
             <ul class="messages">
                 {% for message in messages %}
@@ -40,11 +84,17 @@
 
     <footer class="site-footer">
         <div class="site-footer__inner">
-            {% if organization %}
-                &copy; {{ organization.name }}
-            {% else %}
-                &copy; Boxo.show
-            {% endif %}
+            <span>
+                {% if organization %}
+                    &copy; {% now "Y" %} {{ organization.name }}
+                {% else %}
+                    &copy; {% now "Y" %} Boxo.show
+                {% endif %}
+            </span>
+            <nav class="site-footer__nav">
+                <a href="{% url 'home' %}">Home</a>
+                {% if not organization %}<a href="/admin/">Admin</a>{% endif %}
+            </nav>
         </div>
     </footer>
 

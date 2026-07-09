@@ -25,6 +25,7 @@
 
 <h2>Upcoming performances</h2>
 {% if upcoming_performances %}
+<div class="dash-table-wrap">
 <table class="dash-table">
     <thead><tr><th>Event</th><th>When</th><th>Venue</th><th>Mode</th></tr></thead>
     <tbody>
@@ -38,11 +39,13 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 {% else %}
     <p class="muted">No upcoming performances.</p>
 {% endif %}
 
 <h2>Sold / capacity by performance</h2>
+<div class="dash-table-wrap">
 <table class="dash-table">
     <thead><tr><th>Event</th><th>When</th><th>Sold</th><th>Capacity</th></tr></thead>
     <tbody>
@@ -58,4 +61,5 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 {% endblock %}

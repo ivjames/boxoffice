@@ -1386,3 +1386,113 @@ class PricingZoneEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
                 HTTP_HOST=host_for("roxy"),
             )
             self.assertEqual(resp.status_code, expected, f"{role} -> clone zones")
+
+
+class PricingZoneExportTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """Phase D (docs/SEATING.md "D"): the PNG/PDF export view --
+    manager-gated and org-scoped exactly like the rest of the zone editor
+    (PricingZoneEditorTests above), plus the download-specific bits
+    (content-type, `Content-Disposition: attachment`, format/size/labels/
+    legend query params). The renderer itself (events.zone_export) has its
+    own thorough tests in events/test_zone_export.py -- these only check
+    the HTTP layer wires it up correctly."""
+
+    def setUp(self):
+        from events.zones import apply_zone
+
+        self.org, self.venue = self.build_org("roxy")
+        self.other_org, self.other_venue = self.build_org("other")
+        self.event, self.performance, self.section, self.seats = self.build_reserved_event(
+            self.org, self.venue, n_seats=4
+        )
+        for i, seat in enumerate(self.seats):
+            seat.x, seat.y = float(i), 0.0
+            seat.save(update_fields=["x", "y"])
+        PriceTier.objects.create(
+            organization=self.org, section=self.section, name="Orchestra", amount=Decimal("65.00")
+        )
+        self.template = ZoneTemplate.objects.create(
+            organization=self.org, name="Premium", color="#c1121f"
+        )
+        apply_zone(
+            organization=self.org,
+            performance=self.performance,
+            seat_ids=[self.seats[0].pk],
+            amount=Decimal("95.00"),
+            template=self.template,
+        )
+        self.roles = {
+            "owner": self.make_staff(self.org, Membership.Role.OWNER)[0],
+            "manager": self.make_staff(self.org, Membership.Role.MANAGER)[0],
+            "box_office": self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0],
+            "scanner": self.make_staff(self.org, Membership.Role.SCANNER)[0],
+        }
+
+    def _login_as(self, role):
+        self.client.logout()
+        self.client.force_login(self.roles[role])
+
+    def _export_url(self, pk=None):
+        return f"/dashboard/performances/{pk or self.performance.pk}/pricing-zones/export/"
+
+    def test_export_manager_and_above_only(self):
+        for role, expected in [("owner", 200), ("manager", 200), ("box_office", 403), ("scanner", 403)]:
+            self._login_as(role)
+            resp = self.client.get(self._export_url(), HTTP_HOST=host_for("roxy"))
+            self.assertEqual(resp.status_code, expected, f"{role} -> zone export")
+
+    def test_export_anonymous_redirected_to_login(self):
+        resp = self.client.get(self._export_url(), HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login/", resp.headers["Location"])
+
+    def test_export_cross_org_performance_404s(self):
+        self._login_as("manager")
+        other_event, other_performance, _, _ = self.build_reserved_event(self.other_org, self.other_venue)
+        resp = self.client.get(self._export_url(other_performance.pk), HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_default_download_is_png_with_attachment_header(self):
+        self._login_as("manager")
+        resp = self.client.get(self._export_url(), HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "image/png")
+        self.assertIn("attachment;", resp["Content-Disposition"])
+        self.assertIn(".png", resp["Content-Disposition"])
+        self.assertTrue(resp.content.startswith(b"\x89PNG"))
+
+    def test_format_pdf_query_param(self):
+        self._login_as("manager")
+        resp = self.client.get(self._export_url() + "?format=pdf", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "application/pdf")
+        self.assertIn(".pdf", resp["Content-Disposition"])
+        self.assertTrue(resp.content.startswith(b"%PDF-"))
+
+    def test_size_and_toggle_query_params_accepted(self):
+        self._login_as("manager")
+        resp = self.client.get(
+            self._export_url() + "?format=pdf&size=legal&labels=0&legend=0", HTTP_HOST=host_for("roxy")
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.content.startswith(b"%PDF-"))
+
+    def test_ga_performance_still_renders_a_mostly_blank_sheet(self):
+        # Unlike the JSON zone-editor endpoints, export doesn't reject a GA
+        # performance outright -- it just has no seats to draw (see
+        # performance_zone_export's docstring).
+        self._login_as("manager")
+        ga_event, ga_performance, _ = self.build_ga_event(self.org, self.venue, slug="ga-show-export")
+        resp = self.client.get(self._export_url(ga_performance.pk), HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "image/png")
+
+    def test_zoneless_reserved_performance_renders(self):
+        self._login_as("manager")
+        second_venue = Venue.objects.create(organization=self.org, name="Second Stage")
+        event2, performance2, section2, seats2 = self.build_reserved_event(
+            self.org, second_venue, slug="zoneless-show"
+        )
+        resp = self.client.get(self._export_url(performance2.pk), HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.content.startswith(b"\x89PNG"))

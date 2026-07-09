@@ -122,4 +122,9 @@ urlpatterns = [
         views.performance_zone_clone,
         name="dashboard_performance_zone_clone",
     ),
+    path(
+        "dashboard/performances/<int:pk>/pricing-zones/export/",
+        views.performance_zone_export,
+        name="dashboard_performance_zone_export",
+    ),
 ]

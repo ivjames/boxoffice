@@ -30,6 +30,7 @@
                 · <a href="{% url 'dashboard_performance_price_tiers' performance.pk %}">Pricing</a>
                 {% if performance.seating_mode == "RESERVED" %}
                     · <a href="{% url 'dashboard_performance_pricing_zones' performance.pk %}">Pricing zones</a>
+                    · <a href="{% url 'dashboard_performance_zone_export' performance.pk %}">Export map</a>
                 {% endif %}
             </td>
         </tr>

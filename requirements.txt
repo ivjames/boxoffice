@@ -16,3 +16,8 @@ Pillow>=10.0,<11.0
 # range so patch/minor upgrades land automatically without a surprise
 # next-major break.
 stripe>=11,<16
+# Phase D of the seating-chart epic (docs/SEATING.md "D"): PNG/PDF export of
+# a performance's pricing-zone map. Pure-Python, no system deps (no
+# Chromium/Cairo/etc) so it needs nothing extra on the droplet beyond `pip
+# install -r requirements.txt` -- see events/zone_export.py.
+reportlab>=4.0,<5.0

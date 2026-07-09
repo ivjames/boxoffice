@@ -4,16 +4,18 @@ from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
 from django.db.models import Count, Q, Sum
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.text import slugify
 from django.views.decorators.http import require_POST
 from django.views.generic import CreateView, DetailView, ListView, UpdateView
 
 from accounts.permissions import BoxOfficeRequiredMixin, ManagerRequiredMixin, manager_required, tenant_staff_required
 from events import zones as zone_services
 from events.models import Event, Performance, PriceTier, PricingZone, ZoneTemplate
+from events.zone_export import ZoneExportError, render_zone_map
 from orders.models import Order, Ticket
 from orders.services import get_seating_chart, performance_seats
 from venues import generation
@@ -807,26 +809,17 @@ def performance_pricing_zones(request, pk):
         messages.error(request, "Pricing zones are only for reserved-seating performances.")
         return redirect("dashboard_event_detail", pk=performance.event_id)
 
-    chart = get_seating_chart(performance)
-    sections = list(chart.sections.order_by("ordering", "name")) if chart is not None else []
-    seats = list(performance_seats(performance).select_related("section"))
+    # Shared with events.zone_export (Phase D's PNG/PDF export) so the two
+    # can never visually drift -- see zone_services.zone_map_geometry.
+    sections, seats, seat_radius, (view_min_x, view_min_y, view_w, view_h) = (
+        zone_services.zone_map_geometry(performance)
+    )
 
     section_color_by_id = {section.pk: _section_color(i) for i, section in enumerate(sections)}
     for seat in seats:
         seat.editor_color = section_color_by_id.get(seat.section_id, "#6b7280")
 
-    xs = [seat.x for seat in seats]
-    ys = [seat.y for seat in seats]
-    pitches = [section.seat_pitch for section in sections if section.seat_pitch] or [1.0]
-    seat_radius = max(0.15, min(pitches) * 0.35)
-    pad = seat_radius * 4 + 1
-    if xs and ys:
-        view_min_x, view_max_x = min(xs) - pad, max(xs) + pad
-        view_min_y, view_max_y = min(ys) - pad, max(ys) + pad
-    else:
-        view_min_x = view_min_y = 0.0
-        view_max_x = view_max_y = 10.0
-    view_box = f"{view_min_x} {view_min_y} {view_max_x - view_min_x} {view_max_y - view_min_y}"
+    view_box = f"{view_min_x} {view_min_y} {view_w} {view_h}"
 
     templates = ZoneTemplate.objects.filter(organization=request.organization).order_by("name")
     templates_json = [{"id": t.pk, "name": t.name, "color": t.color} for t in templates]
@@ -860,6 +853,7 @@ def performance_pricing_zones(request, pk):
                 : -len("1/delete/")
             ],
             "clone_url": reverse("dashboard_performance_zone_clone", args=[performance.pk]),
+            "export_url": reverse("dashboard_performance_zone_export", args=[performance.pk]),
         },
     )
 
@@ -1017,3 +1011,48 @@ def performance_zone_clone(request, pk):
         source_performance=source_performance,
     )
     return JsonResponse({"ok": True, "zones": _zones_payload(performance)})
+
+
+_EXPORT_CONTENT_TYPES = {"png": "image/png", "pdf": "application/pdf"}
+
+
+@manager_required
+def performance_zone_export(request, pk):
+    """GET-only: renders `performance`'s pricing-zone map to PNG or PDF
+    (Phase D, docs/SEATING.md "D") and returns it as a download. Org-scoped
+    via _get_org_scoped_performance -- a cross-org performance pk 404s
+    before any rendering happens, same as every other endpoint on this
+    page. Query params (all optional, matching the zone-editor export
+    form's field names):
+
+    - `format`: "png" (default) or "pdf".
+    - `size`: "letter" (default) or "legal".
+    - `labels`: "0" to omit seat row/number labels (default on).
+    - `legend`: "0" to omit the zone/price legend (default on).
+
+    Unlike the JSON mutation endpoints above, this isn't restricted to
+    RESERVED performances at the HTTP layer -- events.zone_export.render_zone_map
+    just renders whatever seats/zones exist (none, for a GA performance)
+    and events.zones.zone_map_geometry already falls back to an empty box,
+    so a manager who follows a stale link gets a mostly-blank sheet instead
+    of a confusing error."""
+    performance = _get_org_scoped_performance(request, pk)
+
+    fmt = (request.GET.get("format") or "png").strip().lower()
+    size = (request.GET.get("size") or "letter").strip().lower()
+    labels = request.GET.get("labels", "1") != "0"
+    legend = request.GET.get("legend", "1") != "0"
+
+    try:
+        content = render_zone_map(performance, fmt=fmt, size=size, labels=labels, legend=legend)
+    except ZoneExportError as exc:
+        messages.error(request, str(exc))
+        return redirect("dashboard_performance_pricing_zones", pk=performance.pk)
+
+    ext = "pdf" if fmt == "pdf" else "png"
+    slug = slugify(f"{performance.event.title}-{performance.starts_at:%Y-%m-%d}") or "performance"
+    filename = f"{slug}-pricing-zones.{ext}"
+
+    response = HttpResponse(content, content_type=_EXPORT_CONTENT_TYPES[ext])
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response

@@ -150,6 +150,47 @@ def clone_zones_from_performance(*, organization, target_performance, source_per
     return created
 
 
+def zone_map_geometry(performance):
+    """(sections, seats, seat_radius, view_box) for `performance`'s seating
+    chart -- the exact view-box/seat-radius computation
+    dashboard.views.performance_pricing_zones turns into the live SVG
+    editor's `viewBox`, extracted here so events.zone_export (Phase D's
+    static PNG/PDF renderer, docs/SEATING.md "D") computes seat pixel/point
+    positions from the SAME numbers and can never visually drift from what
+    staff see in the editor. `seats` is every bookable Seat on the chart
+    (select_related("section"), ordered); `sections` is the chart's
+    Sections in display order; `view_box` is `(min_x, min_y, width,
+    height)` in Seat.x/y's own coordinate units (y increases downward, same
+    convention the SVG/editor uses), `seat_radius` in those same units.
+    Falls back to a fixed 0..10 box when there are no seats yet (a brand
+    new/empty chart or a performance with no chart at all), matching the
+    editor's own fallback."""
+    # Local import: orders.services -> events.pricing is already an
+    # existing top-level dependency (orders depends on events); see
+    # clone_zones_from_performance above for why this stays call-time
+    # instead of a module-level import.
+    from orders.services import get_seating_chart, performance_seats
+
+    chart = get_seating_chart(performance)
+    sections = list(chart.sections.order_by("ordering", "name")) if chart is not None else []
+    seats = list(performance_seats(performance).select_related("section"))
+
+    pitches = [section.seat_pitch for section in sections if section.seat_pitch] or [1.0]
+    seat_radius = max(0.15, min(pitches) * 0.35)
+    pad = seat_radius * 4 + 1
+
+    xs = [seat.x for seat in seats]
+    ys = [seat.y for seat in seats]
+    if xs and ys:
+        min_x, max_x = min(xs) - pad, max(xs) + pad
+        min_y, max_y = min(ys) - pad, max(ys) + pad
+    else:
+        min_x = min_y = 0.0
+        max_x = max_y = 10.0
+    view_box = (min_x, min_y, max_x - min_x, max_y - min_y)
+    return sections, seats, seat_radius, view_box
+
+
 def get_or_create_template(*, organization, name, color):
     """get_or_create a ZoneTemplate by (organization, name) -- used when
     staff type a brand-new name/color on the fly in the zone editor instead

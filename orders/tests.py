@@ -75,7 +75,11 @@ class HoldModelTests(OrdersFixtureMixin, TestCase):
             organization=self.org, performance=self.performance, session_key="sess-2"
         )
         HoldSeat.objects.create(
-            organization=self.org, hold=hold, seat=self.seat, price_tier=self.price_tier
+            organization=self.org,
+            hold=hold,
+            seat=self.seat,
+            price_tier=self.price_tier,
+            unit_amount=self.price_tier.amount,
         )
         self.assertEqual(list(hold.seats.all()), [self.seat])
 
@@ -96,11 +100,21 @@ class HoldModelTests(OrdersFixtureMixin, TestCase):
         hold = Hold.objects.create(
             organization=self.org, performance=self.performance, session_key="sess-4"
         )
-        HoldSeat.objects.create(organization=self.org, hold=hold, seat=self.seat, price_tier=self.price_tier)
+        HoldSeat.objects.create(
+            organization=self.org,
+            hold=hold,
+            seat=self.seat,
+            price_tier=self.price_tier,
+            unit_amount=self.price_tier.amount,
+        )
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 HoldSeat.objects.create(
-                    organization=self.org, hold=hold, seat=self.seat, price_tier=self.price_tier
+                    organization=self.org,
+                    hold=hold,
+                    seat=self.seat,
+                    price_tier=self.price_tier,
+                    unit_amount=self.price_tier.amount,
                 )
 
 

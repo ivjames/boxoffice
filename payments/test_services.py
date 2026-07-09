@@ -12,6 +12,7 @@ from django.db import IntegrityError, transaction
 from django.test import RequestFactory, TestCase
 from django.utils import timezone
 
+from events.models import PricingZone, ZoneTemplate
 from orders import services as order_services
 from orders.models import Hold, Order, Payment, Ticket
 from orders.tests import OrdersFixtureMixin
@@ -475,3 +476,139 @@ class StripeSessionIdempotencyRaceTests(OrdersFixtureMixin, TestCase):
         self.performance.ga_allocation.refresh_from_db()
         self.assertEqual(self.performance.ga_allocation.sold, 0)
         self.assertTrue(Hold.objects.filter(pk=self.hold.pk).exists())
+
+
+class ZonePricingCheckoutAndFulfillmentTests(OrdersFixtureMixin, TestCase):
+    """Phase C (docs/SEATING.md "C") end-to-end money-path proof: a seat in
+    a PricingZone charges the zone price all the way from hold creation
+    through the Stripe line item to the fulfilled OrderItem/Ticket, and a
+    zone/template edit -- or the zone being deleted outright -- AFTER the
+    hold was created never changes what actually gets charged, because
+    every read past hold-creation goes through HoldSeat.unit_amount (the
+    snapshot), never a live zone/tier lookup."""
+
+    def setUp(self):
+        self.build_reserved_performance()  # section default tier: $65.00
+        self.org.stripe_secret_key = "sk_test_org_a_secret"
+        self.org.save(update_fields=["stripe_secret_key"])
+        self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
+        self.template = ZoneTemplate.objects.create(
+            organization=self.org, name="Premium", color="#c1121f"
+        )
+        self.zone = PricingZone.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            template=self.template,
+            name="Premium",
+            color="#c1121f",
+            amount=Decimal("95.00"),
+        )
+        self.zone.seats.add(self.seat, through_defaults={"organization": self.org})
+
+    def _session(self, hold, session_id="cs_test_zone", email="buyer@example.com", name="Buyer Person"):
+        return {
+            "id": session_id,
+            "payment_intent": "pi_test_zone",
+            "metadata": {"hold_id": str(hold.pk), "organization_id": str(hold.organization_id)},
+            "customer_details": {"email": email, "name": name},
+        }
+
+    def test_checkout_line_item_charges_the_zone_price(self):
+        hold = order_services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-zone",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = FakeStripeSession()
+            services.create_checkout_session(hold, self.request)
+            _, kwargs = mock_create.call_args
+
+        line_items = kwargs["line_items"]
+        self.assertEqual(len(line_items), 1)
+        self.assertEqual(line_items[0]["price_data"]["unit_amount"], 9500)  # $95.00 zone price
+
+    def test_fulfillment_creates_order_item_with_zone_provenance_and_snapshot_amount(self):
+        hold = order_services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-zone",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        session = self._session(hold)
+
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("95.00"))
+        item = order.items.get()
+        self.assertEqual(item.unit_amount, Decimal("95.00"))
+        self.assertEqual(item.pricing_zone_id, self.zone.pk)
+        self.assertIsNone(item.price_tier_id)
+        self.assertEqual(order.tickets.get().seat_id, self.seat.id)
+
+    def test_editing_the_zone_after_hold_creation_does_not_change_the_charge(self):
+        hold = order_services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-zone",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        # The price changes AFTER the hold snapshotted it, before payment.
+        self.zone.amount = Decimal("500.00")
+        self.zone.save(update_fields=["amount"])
+
+        session = self._session(hold)
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("95.00"))
+        self.assertEqual(order.items.get().unit_amount, Decimal("95.00"))
+
+    def test_deleting_the_zone_after_hold_creation_does_not_change_the_charge(self):
+        hold = order_services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-zone",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        self.zone.delete()
+
+        session = self._session(hold)
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("95.00"))
+        item = order.items.get()
+        self.assertEqual(item.unit_amount, Decimal("95.00"))
+        self.assertIsNone(item.pricing_zone_id)
+        self.assertIsNone(item.price_tier_id)
+
+    def test_unzoned_seat_on_same_performance_still_charges_section_default(self):
+        second_seat = Seat.objects.create(
+            organization=self.org, section=self.section, row_label="A", number="2"
+        )
+        hold = order_services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-mixed",
+            user=None,
+            seat_ids=[self.seat.id, second_seat.id],
+        )
+        session = self._session(hold, session_id="cs_test_mixed")
+
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("160.00"))  # $95 zone + $65 section default
+        zoned_item = order.items.get(seat=self.seat)
+        unzoned_item = order.items.get(seat=second_seat)
+        self.assertEqual(zoned_item.unit_amount, Decimal("95.00"))
+        self.assertEqual(unzoned_item.unit_amount, Decimal("65.00"))
+        self.assertIsNotNone(unzoned_item.price_tier_id)
+        self.assertIsNone(unzoned_item.pricing_zone_id)

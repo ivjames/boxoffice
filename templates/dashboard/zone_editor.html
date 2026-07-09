@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Pricing zones — {{ performance.event.title }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_event_detail' performance.event.pk %}">&larr; {{ performance.event.title }}</a>
+<h1>Pricing zones — {{ performance.event.title }}</h1>
+<p class="muted">{{ performance.starts_at|date:"D, M j Y — g:i A" }} · {{ performance.venue.name }}</p>
+<p class="muted">
+    Drag a rectangle to select a block of seats (marquee); shift-click to add/remove individual
+    seats. Then apply a zone below. Seats already sold/held can still be zoned -- pricing is
+    forward-looking, and any hold already placed keeps its own snapshot price.
+</p>
+
+{{ zones_json|json_script:"zone-editor-zones-data" }}
+{{ templates_json|json_script:"zone-editor-templates-data" }}
+
+<div class="chart-editor zone-editor"
+     x-data="zoneEditor({
+         applyUrl: '{{ apply_url|escapejs }}',
+         removeUrl: '{{ remove_url|escapejs }}',
+         deleteUrlPrefix: '{{ delete_url_prefix|escapejs }}',
+         cloneUrl: '{{ clone_url|escapejs }}',
+     })">
+    <div class="chart-editor__stage">
+        <div class="chart-editor__toolbar">
+            <span x-show="selectedCount > 0" x-cloak><span x-text="selectedCount"></span> seat(s) selected</span>
+            <button type="button" class="button button--secondary" x-show="selectedCount > 0" x-cloak @click="clearSelection()">Clear selection</button>
+            <span class="chart-editor__error" x-show="error" x-text="error" x-cloak></span>
+            <span class="chart-editor__saved" x-show="notice && !error" x-text="notice" x-cloak></span>
+        </div>
+
+        <div class="chart-editor__svg-wrap zone-editor__svg-wrap" style="position: relative;">
+            <svg class="chart-editor__svg zone-editor__svg" x-ref="svg" viewBox="{{ view_box }}"
+                 preserveAspectRatio="xMidYMid meet" role="img" aria-label="Pricing zone map"
+                 @pointerdown="onBackgroundPointerDown($event)"
+                 @pointermove.window="onDrag($event)"
+                 @pointerup.window="endDrag()"
+                 @pointercancel.window="endDrag()">
+                {% for seat in seats %}
+                    <circle class="editor-seat zone-editor-seat"
+                            data-seat-id="{{ seat.pk }}" data-section-id="{{ seat.section_id }}"
+                            :class="seatClass({{ seat.pk }})"
+                            cx="{{ seat.x }}" cy="{{ seat.y }}"
+                            r="{{ seat_radius }}" :fill="seatFill({{ seat.pk }})"
+                            @pointerdown.stop="onSeatPointerDown({{ seat.pk }}, $event)">
+                        <title>{{ seat.section.name }} {{ seat.row_label }}{{ seat.number }}</title>
+                    </circle>
+                {% endfor %}
+            </svg>
+            <div class="zone-editor__marquee" :style="marqueeStyle"></div>
+        </div>
+        {% if not seats %}
+            <p class="muted">This performance's chart has no seats yet.</p>
+        {% endif %}
+    </div>
+
+    <div class="chart-editor__sidebar zone-editor__sidebar">
+        <h2>Zones</h2>
+        <ul class="zone-editor__legend">
+            <template x-for="zone in zones" :key="zone.id">
+                <li class="zone-editor__legend-row">
+                    <i class="chart-editor__swatch" :style="'background:' + zone.color"></i>
+                    <span class="zone-editor__legend-name" x-text="zone.name"></span>
+                    <span class="muted">$<span x-text="zone.amount"></span> · <span x-text="zone.seat_ids.length"></span> seat(s)</span>
+                    <span class="zone-editor__legend-actions">
+                        <button type="button" class="button button--secondary" :disabled="selectedCount === 0 || saving"
+                                @click="removeSelectedFromZone(zone.id)">Remove selected</button>
+                        <button type="button" class="button button--secondary" :disabled="saving"
+                                @click="deleteZone(zone.id)">Delete zone</button>
+                    </span>
+                </li>
+            </template>
+            <li x-show="zones.length === 0" x-cloak class="muted">No zones on this performance yet.</li>
+        </ul>
+
+        <h2>Apply a zone</h2>
+        <div class="zone-editor__panel">
+            <p class="muted" x-show="selectedCount === 0" x-cloak>Select seats above first.</p>
+            <div class="field">
+                <label><input type="radio" value="template" x-model="applyMode"> Existing template</label>
+                <label><input type="radio" value="new" x-model="applyMode"> New name + color</label>
+            </div>
+            <div class="field" x-show="applyMode === 'template'">
+                <label for="zone-template-select">Template</label>
+                <select id="zone-template-select" x-model="applyTemplateId">
+                    <option value="">Choose one…</option>
+                    <template x-for="t in templatesJson" :key="t.id">
+                        <option :value="t.id" x-text="t.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div x-show="applyMode === 'new'">
+                <div class="field">
+                    <label for="zone-new-name">Name</label>
+                    <input type="text" id="zone-new-name" x-model="applyName" placeholder="Premium">
+                </div>
+                <div class="field">
+                    <label for="zone-new-color">Color</label>
+                    <input type="color" id="zone-new-color" x-model="applyColor">
+                </div>
+            </div>
+            <div class="field">
+                <label for="zone-amount">Price ($)</label>
+                <input type="number" id="zone-amount" x-model="applyAmount" min="0" step="0.01">
+            </div>
+            <button type="button" class="button" :disabled="selectedCount === 0 || saving" @click="applyZone()">
+                Apply to <span x-text="selectedCount"></span> selected seat(s)
+            </button>
+        </div>
+
+        <h2>Clone zones from another performance</h2>
+        <div class="zone-editor__panel">
+            <div class="field">
+                <label for="clone-source">Source performance</label>
+                <select id="clone-source" x-model="cloneSourceId">
+                    <option value="">Choose one…</option>
+                    {% for p in other_performances %}
+                        <option value="{{ p.pk }}">{{ p.event.title }} — {{ p.starts_at|date:"M j Y g:i A" }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="button" class="button button--secondary" :disabled="!cloneSourceId || saving" @click="cloneZones()">
+                Clone zones onto this performance
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/zone_editor.js' %}"></script>
+{% endblock %}

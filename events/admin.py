@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Event, GAAllocation, Performance, PriceTier
+from .models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
 
 
 class PerformanceInline(admin.TabularInline):
@@ -61,3 +61,17 @@ class PriceTierAdmin(admin.ModelAdmin):
 class GAAllocationAdmin(admin.ModelAdmin):
     list_display = ("performance", "capacity", "sold", "organization")
     list_filter = ("organization",)
+
+
+@admin.register(ZoneTemplate)
+class ZoneTemplateAdmin(admin.ModelAdmin):
+    list_display = ("name", "color", "organization")
+    list_filter = ("organization",)
+    search_fields = ("name",)
+
+
+@admin.register(PricingZone)
+class PricingZoneAdmin(admin.ModelAdmin):
+    list_display = ("name", "amount", "color", "performance", "template", "organization")
+    list_filter = ("organization", "performance")
+    search_fields = ("name", "performance__event__title")

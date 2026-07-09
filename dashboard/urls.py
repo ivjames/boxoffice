@@ -96,4 +96,30 @@ urlpatterns = [
         views.section_regenerate,
         name="dashboard_section_regenerate",
     ),
+    # -- pricing zones (Phase C, docs/SEATING.md) ----------------------------
+    path(
+        "dashboard/performances/<int:pk>/pricing-zones/",
+        views.performance_pricing_zones,
+        name="dashboard_performance_pricing_zones",
+    ),
+    path(
+        "dashboard/performances/<int:pk>/pricing-zones/apply/",
+        views.performance_zone_apply,
+        name="dashboard_performance_zone_apply",
+    ),
+    path(
+        "dashboard/performances/<int:pk>/pricing-zones/remove-seats/",
+        views.performance_zone_remove_seats,
+        name="dashboard_performance_zone_remove_seats",
+    ),
+    path(
+        "dashboard/performances/<int:pk>/pricing-zones/<int:zone_pk>/delete/",
+        views.performance_zone_delete,
+        name="dashboard_performance_zone_delete",
+    ),
+    path(
+        "dashboard/performances/<int:pk>/pricing-zones/clone/",
+        views.performance_zone_clone,
+        name="dashboard_performance_zone_clone",
+    ),
 ]

@@ -29,7 +29,7 @@ from django.test import TestCase
 from django.utils import timezone
 from datetime import timedelta
 
-from events.models import GAAllocation, Performance, PriceTier
+from events.models import GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
 from orders import services
 from orders.models import Hold, HoldSeat, Ticket
 from orders.tests import OrdersFixtureMixin
@@ -253,7 +253,11 @@ class ReservedSeatAvailabilityTests(OrdersFixtureMixin, TestCase):
             organization=self.org, performance=self.performance, session_key="sess-a"
         )
         HoldSeat.objects.create(
-            organization=self.org, hold=hold, seat=self.seat, price_tier=self.price_tier
+            organization=self.org,
+            hold=hold,
+            seat=self.seat,
+            price_tier=self.price_tier,
+            unit_amount=self.price_tier.amount,
         )
         hold.expires_at = timezone.now() - timedelta(minutes=1)
         hold.save(update_fields=["expires_at"])
@@ -557,6 +561,109 @@ class ReservedSeatPricingOverrideTests(OrdersFixtureMixin, TestCase):
                 user=None,
                 seat_ids=[self.seat.id],
             )
+
+
+class ReservedSeatZonePricingTests(OrdersFixtureMixin, TestCase):
+    """Phase C (docs/SEATING.md "C"): a PricingZone wins over the section
+    PriceTier for resolve_reserved_prices/set_reserved_hold, and the
+    resulting HoldSeat snapshots price_tier=None/pricing_zone/unit_amount
+    correctly -- see HoldSeat's docstring for why unit_amount is the
+    snapshot money-path callers must read, not a live FK."""
+
+    def setUp(self):
+        self.build_reserved_performance()  # section default tier: $65.00
+        self.template = ZoneTemplate.objects.create(
+            organization=self.org, name="Premium", color="#c1121f"
+        )
+        self.zone = PricingZone.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            template=self.template,
+            name="Premium",
+            color="#c1121f",
+            amount=Decimal("95.00"),
+        )
+        self.zone.seats.add(self.seat, through_defaults={"organization": self.org})
+
+    def test_resolve_reserved_prices_zone_wins_over_section_default(self):
+        resolved = services.resolve_reserved_prices(self.performance)
+        self.assertEqual(resolved[self.seat.id].amount, Decimal("95.00"))
+        self.assertTrue(resolved[self.seat.id].is_zone)
+
+    def test_set_reserved_hold_snapshots_zone_price_on_holdseat(self):
+        hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        hold_seat = hold.hold_seats.get(seat=self.seat)
+        self.assertEqual(hold_seat.unit_amount, Decimal("95.00"))
+        self.assertEqual(hold_seat.pricing_zone_id, self.zone.pk)
+        self.assertIsNone(hold_seat.price_tier_id)
+        self.assertEqual(services.hold_total(hold), Decimal("95.00"))
+
+    def test_unzoned_seat_on_same_performance_still_uses_section_default(self):
+        second_seat = Seat.objects.create(
+            organization=self.org, section=self.section, row_label="A", number="2"
+        )
+        hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id, second_seat.id],
+        )
+        zoned = hold.hold_seats.get(seat=self.seat)
+        unzoned = hold.hold_seats.get(seat=second_seat)
+        self.assertEqual(zoned.unit_amount, Decimal("95.00"))
+        self.assertEqual(unzoned.unit_amount, Decimal("65.00"))
+        self.assertEqual(unzoned.price_tier_id, self.price_tier.pk)
+        self.assertIsNone(unzoned.pricing_zone_id)
+
+    def test_zone_can_price_a_seat_with_no_section_tier_at_all(self):
+        self.price_tier.delete()
+        hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        hold_seat = hold.hold_seats.get(seat=self.seat)
+        self.assertEqual(hold_seat.unit_amount, Decimal("95.00"))
+
+    def test_editing_the_zone_after_hold_creation_does_not_change_the_snapshot(self):
+        hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        self.zone.amount = Decimal("500.00")
+        self.zone.save(update_fields=["amount"])
+
+        hold_seat = hold.hold_seats.get(seat=self.seat)
+        self.assertEqual(hold_seat.unit_amount, Decimal("95.00"))
+        self.assertEqual(services.hold_total(hold), Decimal("95.00"))
+
+    def test_deleting_the_zone_after_hold_creation_does_not_change_the_snapshot(self):
+        hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        self.zone.delete()
+
+        hold_seat = hold.hold_seats.get(seat=self.seat)
+        hold_seat.refresh_from_db()
+        self.assertEqual(hold_seat.unit_amount, Decimal("95.00"))
+        self.assertIsNone(hold_seat.pricing_zone_id)
+        self.assertEqual(services.hold_total(hold), Decimal("95.00"))
 
 
 class HoldTotalTests(OrdersFixtureMixin, TestCase):

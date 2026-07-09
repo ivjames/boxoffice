@@ -770,6 +770,22 @@ textarea:focus-visible,
     pointer-events: none;
 }
 
+/* Phase C: a zoned seat's border/background tints toward its PricingZone's
+   color (set via the --zone-color custom property inline, per-seat --
+   templates/orders/_seat_map.html's seatStyle()); a selected zoned seat
+   fills solid with the zone color instead of the generic accent so the
+   picked seats visually match the legend swatch they came from. */
+.seat-btn--zoned {
+    border-color: var(--zone-color);
+    background: color-mix(in srgb, var(--zone-color) 20%, #fff);
+}
+
+.seat-btn--zoned.seat-btn--selected {
+    background: var(--zone-color);
+    border-color: var(--zone-color);
+    color: #fff;
+}
+
 /* -- cart / checkout ---------------------------------------------------- */
 
 .cart-item,
@@ -1195,6 +1211,83 @@ table.dash-table th {
     .chart-editor__svg {
         height: 60vh;
     }
+}
+
+/* -- pricing-zone visual editor (Phase C, docs/SEATING.md) ---------------- */
+
+.zone-editor__svg-wrap {
+    user-select: none;
+}
+
+.zone-editor__svg {
+    cursor: crosshair;
+}
+
+.zone-editor-seat {
+    cursor: pointer;
+    stroke: #fff;
+    stroke-width: 0.05;
+}
+
+.zone-editor-seat.editor-seat--selected {
+    stroke: #111827;
+    stroke-width: 0.14;
+}
+
+/* Marquee rubber-band overlay -- positioned in screen (client) coordinates,
+   sized in zone_editor.js's marqueeStyle getter; this element itself has no
+   default position/size (both are set inline) and is invisible until a drag
+   is in progress. */
+.zone-editor__marquee {
+    display: none;
+    border: 1.5px dashed var(--accent-color);
+    background: rgba(37, 99, 235, 0.12);
+    pointer-events: none;
+    z-index: 5;
+}
+
+.zone-editor__legend {
+    list-style: none;
+    margin: 0 0 1.5rem;
+    padding: 0;
+    font-size: 0.875rem;
+}
+
+.zone-editor__legend-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.zone-editor__legend-name {
+    font-weight: 600;
+    margin-right: 0.25rem;
+}
+
+.zone-editor__legend-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+}
+
+.zone-editor__panel {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1.25rem;
+}
+
+.zone-editor__panel .field {
+    margin-bottom: 0.6rem;
+}
+
+.zone-editor__panel input[type="color"] {
+    width: 3rem;
+    height: 2rem;
+    padding: 0.1rem;
 }
 
 .search-form {

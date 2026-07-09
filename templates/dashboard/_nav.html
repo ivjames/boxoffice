@@ -3,7 +3,7 @@
     <a href="{% url 'dashboard_overview' %}" class="{% if url_name == 'dashboard_overview' %}is-active{% endif %}">Overview</a>
     {% if request.membership.can_manage_events %}
         <a href="{% url 'dashboard_event_list' %}"
-           class="{% if url_name == 'dashboard_event_list' or url_name == 'dashboard_event_create' or url_name == 'dashboard_event_detail' or url_name == 'dashboard_event_update' or url_name == 'dashboard_performance_create' or url_name == 'dashboard_performance_update' or url_name == 'dashboard_performance_price_tiers' %}is-active{% endif %}">Events</a>
+           class="{% if url_name == 'dashboard_event_list' or url_name == 'dashboard_event_create' or url_name == 'dashboard_event_detail' or url_name == 'dashboard_event_update' or url_name == 'dashboard_performance_create' or url_name == 'dashboard_performance_update' or url_name == 'dashboard_performance_price_tiers' or url_name == 'dashboard_performance_pricing_zones' %}is-active{% endif %}">Events</a>
     {% endif %}
     {% if request.membership.can_manage_events %}
         <a href="{% url 'dashboard_venue_list' %}"

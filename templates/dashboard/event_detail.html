@@ -28,6 +28,9 @@
             <td>
                 <a href="{% url 'dashboard_performance_update' performance.pk %}">Edit</a>
                 · <a href="{% url 'dashboard_performance_price_tiers' performance.pk %}">Pricing</a>
+                {% if performance.seating_mode == "RESERVED" %}
+                    · <a href="{% url 'dashboard_performance_pricing_zones' performance.pk %}">Pricing zones</a>
+                {% endif %}
             </td>
         </tr>
     {% empty %}

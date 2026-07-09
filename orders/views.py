@@ -54,7 +54,11 @@ def performance_detail(request, pk):
     else:
         seats = list(services.performance_seats(performance))
         states = services.reserved_seat_states(performance, session_key=session_key)
-        tiers_by_section = services.price_tiers_by_section(performance)
+        # Phase C (docs/SEATING.md): a PricingZone wins over the section
+        # PriceTier -- resolve_reserved_prices implements that in bulk (see
+        # its docstring) so the storefront seat map's price/color always
+        # matches what set_reserved_hold will actually charge.
+        resolved_prices = services.resolve_reserved_prices(performance)
 
         seats_json = [
             {
@@ -65,9 +69,9 @@ def performance_detail(request, pk):
                 "y": seat.y,
                 "section": seat.section.name,
                 "state": states.get(seat.id, "unavailable"),
-                "price": str(tiers_by_section[seat.section_id].amount)
-                if seat.section_id in tiers_by_section
-                else None,
+                "price": str(resolved_prices[seat.id].amount) if seat.id in resolved_prices else None,
+                "zone_name": resolved_prices[seat.id].label if seat.id in resolved_prices and resolved_prices[seat.id].is_zone else None,
+                "zone_color": resolved_prices[seat.id].color if seat.id in resolved_prices and resolved_prices[seat.id].is_zone else None,
                 "accessible": seat.is_accessible,
             }
             for seat in seats
@@ -148,7 +152,7 @@ def _active_holds(organization, session_key):
             expires_at__gt=timezone.now(),
         )
         .select_related("performance", "performance__event", "performance__venue", "price_tier")
-        .prefetch_related("hold_seats__seat__section")
+        .prefetch_related("hold_seats__seat__section", "hold_seats__pricing_zone", "hold_seats__price_tier")
         .order_by("expires_at")
     )
 

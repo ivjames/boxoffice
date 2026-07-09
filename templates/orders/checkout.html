@@ -17,7 +17,7 @@
                 {% else %}
                     <ul>
                         {% for hs in item.hold.hold_seats.all %}
-                            <li>{{ hs.seat.section.name }} — {{ hs.seat.row_label }}{{ hs.seat.number }} (${{ hs.price_tier.amount }})</li>
+                            <li>{{ hs.seat.section.name }} — {{ hs.seat.row_label }}{{ hs.seat.number }}{% if hs.pricing_zone %} ({{ hs.pricing_zone.name }}){% endif %} (${{ hs.unit_amount }})</li>
                         {% endfor %}
                     </ul>
                 {% endif %}

@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from accounts.models import Membership
 from accounts.tests import StaffFixtureMixin, host_for
-from events.models import Event, GAAllocation, Performance, PriceTier
+from events.models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
 from orders.models import Order, Ticket
 from venues.generation import generate_seats
 from venues.models import Seat, SeatingChart, Section, Venue
@@ -1010,3 +1010,379 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(other_section.seats.count(), 2)
+
+
+class PricingZoneEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """Phase C (docs/SEATING.md "C"): the per-performance zone editor page
+    and its apply/remove-seats/delete/clone JSON endpoints -- manager-gated,
+    org-scoped exactly like the Phase B chart editor, plus the zone-specific
+    invariants (a seat in at most one zone per performance, template edits
+    don't retroactively change an applied zone, clone creates independent
+    instances)."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("roxy")
+        self.other_org, self.other_venue = self.build_org("other")
+        self.event, self.performance, self.section, self.seats = self.build_reserved_event(
+            self.org, self.venue, n_seats=4
+        )
+        PriceTier.objects.create(
+            organization=self.org, section=self.section, name="Orchestra", amount=Decimal("65.00")
+        )
+        self.template = ZoneTemplate.objects.create(
+            organization=self.org, name="Premium", color="#c1121f"
+        )
+        self.roles = {
+            "owner": self.make_staff(self.org, Membership.Role.OWNER)[0],
+            "manager": self.make_staff(self.org, Membership.Role.MANAGER)[0],
+            "box_office": self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0],
+            "scanner": self.make_staff(self.org, Membership.Role.SCANNER)[0],
+        }
+
+    def _login_as(self, role):
+        self.client.logout()
+        self.client.force_login(self.roles[role])
+
+    def _post_json(self, url, payload, **extra):
+        return self.client.post(
+            url, data=json.dumps(payload), content_type="application/json", **extra
+        )
+
+    def _zones_url(self):
+        return f"/dashboard/performances/{self.performance.pk}/pricing-zones/"
+
+    def _apply_url(self):
+        return f"/dashboard/performances/{self.performance.pk}/pricing-zones/apply/"
+
+    def _remove_url(self):
+        return f"/dashboard/performances/{self.performance.pk}/pricing-zones/remove-seats/"
+
+    def _delete_url(self, zone_pk):
+        return f"/dashboard/performances/{self.performance.pk}/pricing-zones/{zone_pk}/delete/"
+
+    def _clone_url(self):
+        return f"/dashboard/performances/{self.performance.pk}/pricing-zones/clone/"
+
+    # -- editor page: role gate + renders --------------------------------
+
+    def test_editor_page_manager_and_above_only(self):
+        for role, expected in [("owner", 200), ("manager", 200), ("box_office", 403), ("scanner", 403)]:
+            self._login_as(role)
+            resp = self.client.get(self._zones_url(), HTTP_HOST=host_for("roxy"))
+            self.assertEqual(resp.status_code, expected, f"{role} -> zone editor")
+
+    def test_editor_anonymous_redirected_to_login(self):
+        resp = self.client.get(self._zones_url(), HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login/", resp.headers["Location"])
+
+    def test_editor_cross_org_performance_404s(self):
+        self._login_as("manager")
+        other_event, other_performance, _, _ = self.build_reserved_event(self.other_org, self.other_venue)
+        resp = self.client.get(
+            f"/dashboard/performances/{other_performance.pk}/pricing-zones/", HTTP_HOST=host_for("roxy")
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_editor_redirects_for_ga_performance(self):
+        self._login_as("manager")
+        ga_event, ga_performance, _ = self.build_ga_event(self.org, self.venue, slug="ga-show-2")
+        resp = self.client.get(
+            f"/dashboard/performances/{ga_performance.pk}/pricing-zones/", HTTP_HOST=host_for("roxy")
+        )
+        self.assertRedirects(
+            resp, f"/dashboard/events/{ga_event.pk}/", fetch_redirect_response=False
+        )
+
+    def test_editor_renders_every_seat_and_the_existing_template(self):
+        self._login_as("manager")
+        resp = self.client.get(self._zones_url(), HTTP_HOST=host_for("roxy"))
+        content = resp.content.decode()
+        self.assertEqual(content.count("zone-editor-seat"), 4)
+        for seat in self.seats:
+            self.assertIn(f'data-seat-id="{seat.pk}"', content)
+        self.assertIn("Premium", content)
+
+    # -- apply: role gate ---------------------------------------------------
+
+    def test_apply_manager_and_above_only(self):
+        payload = {"seat_ids": [self.seats[0].pk], "amount": "95.00", "template_id": self.template.pk}
+        for role, expected in [("box_office", 403), ("scanner", 403), ("owner", 200), ("manager", 200)]:
+            self._login_as(role)
+            resp = self._post_json(self._apply_url(), payload, HTTP_HOST=host_for("roxy"))
+            self.assertEqual(resp.status_code, expected, f"{role} -> apply zone")
+
+    def test_apply_anonymous_redirected_to_login(self):
+        resp = self._post_json(
+            self._apply_url(),
+            {"seat_ids": [self.seats[0].pk], "amount": "95.00", "template_id": self.template.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login/", resp.headers["Location"])
+
+    # -- apply: behavior ------------------------------------------------------
+
+    def test_apply_with_existing_template_creates_zone_and_assigns_seats(self):
+        self._login_as("manager")
+        resp = self._post_json(
+            self._apply_url(),
+            {
+                "seat_ids": [self.seats[0].pk, self.seats[1].pk],
+                "amount": "95.00",
+                "template_id": self.template.pk,
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(len(data["zones"]), 1)
+        zone = data["zones"][0]
+        self.assertEqual(zone["name"], "Premium")
+        self.assertEqual(zone["amount"], "95.00")
+        self.assertCountEqual(zone["seat_ids"], [self.seats[0].pk, self.seats[1].pk])
+
+    def test_apply_with_new_name_and_color_creates_a_reusable_template(self):
+        self._login_as("manager")
+        resp = self._post_json(
+            self._apply_url(),
+            {
+                "seat_ids": [self.seats[0].pk],
+                "amount": "40.00",
+                "name": "Standard",
+                "color": "#1d4ed8",
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(ZoneTemplate.objects.filter(organization=self.org, name="Standard").exists())
+        zone = PricingZone.objects.get(performance=self.performance, name="Standard")
+        self.assertEqual(zone.amount, Decimal("40.00"))
+
+    def test_a_seat_can_only_be_in_one_zone_per_performance(self):
+        self._login_as("manager")
+        other_template = ZoneTemplate.objects.create(organization=self.org, name="Standard", color="#1d4ed8")
+        self._post_json(
+            self._apply_url(),
+            {"seat_ids": [self.seats[0].pk], "amount": "95.00", "template_id": self.template.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        resp = self._post_json(
+            self._apply_url(),
+            {"seat_ids": [self.seats[0].pk], "amount": "40.00", "template_id": other_template.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        data = resp.json()
+        zones_by_name = {z["name"]: z for z in data["zones"]}
+        self.assertNotIn(self.seats[0].pk, zones_by_name["Premium"]["seat_ids"])
+        self.assertIn(self.seats[0].pk, zones_by_name["Standard"]["seat_ids"])
+
+    def test_apply_rejects_seats_from_another_org(self):
+        self._login_as("manager")
+        other_event, other_performance, other_section, other_seats = self.build_reserved_event(
+            self.other_org, self.other_venue
+        )
+        resp = self._post_json(
+            self._apply_url(),
+            {"seat_ids": [other_seats[0].pk], "amount": "95.00", "template_id": self.template.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(PricingZone.objects.filter(performance=self.performance).exists())
+
+    def test_apply_cross_org_performance_404s(self):
+        self._login_as("manager")
+        other_event, other_performance, other_section, other_seats = self.build_reserved_event(
+            self.other_org, self.other_venue
+        )
+        resp = self._post_json(
+            f"/dashboard/performances/{other_performance.pk}/pricing-zones/apply/",
+            {"seat_ids": [other_seats[0].pk], "amount": "95.00", "template_id": self.template.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_apply_invalid_amount_rejected(self):
+        self._login_as("manager")
+        resp = self._post_json(
+            self._apply_url(),
+            {"seat_ids": [self.seats[0].pk], "amount": "not-a-number", "template_id": self.template.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    # -- remove seats / delete ------------------------------------------------
+
+    def test_remove_selected_seats_from_zone(self):
+        self._login_as("manager")
+        self._post_json(
+            self._apply_url(),
+            {
+                "seat_ids": [self.seats[0].pk, self.seats[1].pk],
+                "amount": "95.00",
+                "template_id": self.template.pk,
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        zone = PricingZone.objects.get(performance=self.performance)
+        resp = self._post_json(
+            self._remove_url(),
+            {"zone_id": zone.pk, "seat_ids": [self.seats[0].pk]},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        zone.refresh_from_db()
+        self.assertCountEqual(zone.seats.values_list("pk", flat=True), [self.seats[1].pk])
+
+    def test_remove_seats_cross_org_zone_404s(self):
+        self._login_as("manager")
+        other_event, other_performance, other_section, other_seats = self.build_reserved_event(
+            self.other_org, self.other_venue
+        )
+        other_template = ZoneTemplate.objects.create(
+            organization=self.other_org, name="Premium", color="#c1121f"
+        )
+        other_zone = PricingZone.objects.create(
+            organization=self.other_org,
+            performance=other_performance,
+            template=other_template,
+            name="Premium",
+            color="#c1121f",
+            amount=Decimal("95.00"),
+        )
+        other_zone.seats.add(other_seats[0], through_defaults={"organization": self.other_org})
+
+        resp = self._post_json(
+            self._remove_url(),
+            {"zone_id": other_zone.pk, "seat_ids": [other_seats[0].pk]},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 404)
+        other_zone.refresh_from_db()
+        self.assertEqual(other_zone.seats.count(), 1)  # untouched
+
+    def test_delete_zone(self):
+        self._login_as("manager")
+        self._post_json(
+            self._apply_url(),
+            {"seat_ids": [self.seats[0].pk], "amount": "95.00", "template_id": self.template.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        zone = PricingZone.objects.get(performance=self.performance)
+        resp = self._post_json(self._delete_url(zone.pk), {}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(PricingZone.objects.filter(pk=zone.pk).exists())
+
+    def test_delete_zone_cross_org_404s_and_does_not_mutate(self):
+        self._login_as("manager")
+        other_event, other_performance, other_section, other_seats = self.build_reserved_event(
+            self.other_org, self.other_venue
+        )
+        other_template = ZoneTemplate.objects.create(
+            organization=self.other_org, name="Premium", color="#c1121f"
+        )
+        other_zone = PricingZone.objects.create(
+            organization=self.other_org,
+            performance=other_performance,
+            template=other_template,
+            name="Premium",
+            color="#c1121f",
+            amount=Decimal("95.00"),
+        )
+        resp = self._post_json(
+            f"/dashboard/performances/{self.performance.pk}/pricing-zones/{other_zone.pk}/delete/",
+            {},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(PricingZone.objects.filter(pk=other_zone.pk).exists())
+
+    def test_delete_manager_and_above_only(self):
+        zone = PricingZone.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            template=self.template,
+            name="Premium",
+            color="#c1121f",
+            amount=Decimal("95.00"),
+        )
+        for role, expected in [("box_office", 403), ("scanner", 403)]:
+            self._login_as(role)
+            resp = self._post_json(self._delete_url(zone.pk), {}, HTTP_HOST=host_for("roxy"))
+            self.assertEqual(resp.status_code, expected, f"{role} -> delete zone")
+        self._login_as("manager")
+        resp = self._post_json(self._delete_url(zone.pk), {}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+
+    # -- clone from another performance ----------------------------------------
+
+    def test_clone_zones_from_another_performance(self):
+        self._login_as("manager")
+        # A second Venue in the same org -- build_reserved_event always names
+        # its chart "Standard", which would collide with self.performance's
+        # own chart if reused on the same Venue.
+        source_venue = Venue.objects.create(organization=self.org, name="Second Stage")
+        source_event, source_performance, source_section, source_seats = self.build_reserved_event(
+            self.org, source_venue, slug="source-show", n_seats=2
+        )
+        source_zone = PricingZone.objects.create(
+            organization=self.org,
+            performance=source_performance,
+            template=self.template,
+            name="Premium",
+            color="#c1121f",
+            amount=Decimal("95.00"),
+        )
+        # Cloning only carries over seats that exist on the TARGET
+        # performance's own chart (events.zones.clone_zones_from_performance)
+        # -- put one of self.performance's own seats in source_zone so it's
+        # guaranteed to transfer regardless of source_performance's chart.
+        source_zone.seats.add(self.seats[0], through_defaults={"organization": self.org})
+
+        resp = self._post_json(
+            self._clone_url(),
+            {"source_performance_id": source_performance.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(len(data["zones"]), 1)
+        cloned = PricingZone.objects.get(performance=self.performance)
+        self.assertNotEqual(cloned.pk, source_zone.pk)
+        self.assertEqual(cloned.amount, Decimal("95.00"))
+        self.assertIn(self.seats[0].pk, cloned.seats.values_list("pk", flat=True))
+
+        # Editing the clone never mutates the source.
+        cloned.amount = Decimal("1.00")
+        cloned.save(update_fields=["amount"])
+        source_zone.refresh_from_db()
+        self.assertEqual(source_zone.amount, Decimal("95.00"))
+
+    def test_clone_cross_org_source_scoped_to_requesting_org(self):
+        self._login_as("manager")
+        other_event, other_performance, other_section, other_seats = self.build_reserved_event(
+            self.other_org, self.other_venue
+        )
+        resp = self._post_json(
+            self._clone_url(),
+            {"source_performance_id": other_performance.pk},
+            HTTP_HOST=host_for("roxy"),
+        )
+        # source_performance is looked up scoped to request.organization --
+        # another org's performance id 404s, never leaking its zones.
+        self.assertEqual(resp.status_code, 404)
+
+    def test_clone_manager_and_above_only(self):
+        source_venue = Venue.objects.create(organization=self.org, name="Second Stage")
+        source_event, source_performance, _, _ = self.build_reserved_event(
+            self.org, source_venue, slug="source-show-2"
+        )
+        for role, expected in [("box_office", 403), ("scanner", 403), ("manager", 200)]:
+            self._login_as(role)
+            resp = self._post_json(
+                self._clone_url(),
+                {"source_performance_id": source_performance.pk},
+                HTTP_HOST=host_for("roxy"),
+            )
+            self.assertEqual(resp.status_code, expected, f"{role} -> clone zones")

@@ -23,15 +23,18 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
         <li class="seat-legend"><i class="seat-swatch seat-swatch--available"></i> Available</li>
         <li class="seat-legend"><i class="seat-swatch seat-swatch--selected"></i> Selected</li>
         <li class="seat-legend"><i class="seat-swatch seat-swatch--unavailable"></i> Unavailable / sold</li>
+        <template x-for="zone in zones" :key="zone.name">
+            <li class="seat-legend"><i class="seat-swatch" :style="'background:' + zone.color + '; border-color:' + zone.color + ';'"></i> <span x-text="zone.name + ' — $' + zone.price"></span></li>
+        </template>
     </ul>
 
     <div class="seat-map__grid" :style="gridStyle" role="group" aria-label="Seat map">
         <template x-for="seat in seats" :key="seat.id">
             <button type="button" class="seat-btn" :class="seatClass(seat)"
-                    :style="'grid-column:' + (seat.x + 1) + '; grid-row:' + (seat.y + 1) + ';'"
+                    :style="seatStyle(seat)"
                     :disabled="!isSelectable(seat)"
                     :aria-pressed="selected.includes(seat.id).toString()"
-                    :title="seat.section + ' — ' + seat.row + seat.number + (seat.price ? (' — $' + seat.price) : '') + (seat.state === 'blocked' ? ' (not available for this performance)' : (seat.state === 'unavailable' ? ' (unavailable)' : ''))"
+                    :title="seat.section + ' — ' + seat.row + seat.number + (seat.zone_name ? (' — ' + seat.zone_name) : '') + (seat.price ? (' — $' + seat.price) : '') + (seat.state === 'blocked' ? ' (not available for this performance)' : (seat.state === 'unavailable' ? ' (unavailable)' : ''))"
                     @click="toggle(seat)">
                 <span x-text="seat.row + seat.number"></span>
             </button>
@@ -66,6 +69,22 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
             seats: seats,
             selected: [...heldByYou],
             gridStyle: `grid-template-columns: repeat(${maxX + 1}, 2.5rem); grid-template-rows: repeat(${maxY + 1}, 2.5rem);`,
+            // Phase C (docs/SEATING.md): dedup the zones actually present on
+            // this performance's seats (server already resolved zone-then-
+            // tier per seat -- see orders.services.resolve_reserved_prices)
+            // for the legend, keyed by name+color+price so two differently-
+            // priced zones sharing a template name never collapse into one.
+            get zones() {
+                const seen = new Map();
+                for (const seat of this.seats) {
+                    if (!seat.zone_name) continue;
+                    const key = seat.zone_name + '|' + seat.zone_color + '|' + seat.price;
+                    if (!seen.has(key)) {
+                        seen.set(key, { name: seat.zone_name, color: seat.zone_color, price: seat.price });
+                    }
+                }
+                return [...seen.values()];
+            },
             // 'blocked' (a house kill -- PerformanceSeatBlock) is exactly as
             // unselectable as 'unavailable' (sold/held by someone else); it
             // just gets its own state name so callers/labels can tell them
@@ -84,7 +103,15 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
             },
             seatClass(seat) {
                 if (!this.isSelectable(seat)) return 'seat-btn--unavailable';
-                return this.selected.includes(seat.id) ? 'seat-btn--selected' : 'seat-btn--available';
+                const zoned = seat.zone_color ? ' seat-btn--zoned' : '';
+                return (this.selected.includes(seat.id) ? 'seat-btn--selected' : 'seat-btn--available') + zoned;
+            },
+            seatStyle(seat) {
+                let style = 'grid-column:' + (seat.x + 1) + '; grid-row:' + (seat.y + 1) + ';';
+                if (seat.zone_color && this.isSelectable(seat)) {
+                    style += ' --zone-color:' + seat.zone_color + ';';
+                }
+                return style;
             },
             get total() {
                 return this.selected.reduce((sum, id) => {

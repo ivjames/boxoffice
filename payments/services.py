@@ -133,15 +133,19 @@ def _line_items_for_hold(hold):
         ]
 
     line_items = []
-    for hold_seat in hold.hold_seats.select_related("seat__section", "price_tier"):
+    for hold_seat in hold.hold_seats.select_related("seat__section", "price_tier", "pricing_zone"):
         seat = hold_seat.seat
-        tier = hold_seat.price_tier
+        # Phase C: hold_seat.unit_amount is the snapshot to charge regardless
+        # of source (PricingZone or PriceTier -- see HoldSeat's docstring).
+        # Currency isn't a PricingZone concept (only PriceTier has one), so
+        # a zone-priced seat falls back to the organization's own currency.
+        currency = hold_seat.price_tier.currency if hold_seat.price_tier_id else hold.organization.currency
         line_items.append(
             {
                 "quantity": 1,
                 "price_data": {
-                    "currency": tier.currency.lower(),
-                    "unit_amount": _to_minor_units(tier.amount),
+                    "currency": currency.lower(),
+                    "unit_amount": _to_minor_units(hold_seat.unit_amount),
                     "product_data": {
                         "name": (
                             f"{hold.performance.event.title} — {seat.section.name} "
@@ -361,7 +365,9 @@ def _fulfill_ga(organization, hold, order):
 
 
 def _fulfill_reserved(organization, hold, order):
-    hold_seats = list(hold.hold_seats.select_related("seat", "price_tier").order_by("seat_id"))
+    hold_seats = list(
+        hold.hold_seats.select_related("seat", "price_tier", "pricing_zone").order_by("seat_id")
+    )
     seat_ids = [hold_seat.seat_id for hold_seat in hold_seats]
 
     # Lock the same Seat rows orders.services.set_reserved_hold locks,
@@ -381,13 +387,19 @@ def _fulfill_reserved(organization, hold, order):
         )
 
     for hold_seat in hold_seats:
+        # Phase C: OrderItem.unit_amount is copied straight from the
+        # HoldSeat's own snapshot (never re-resolved here), so a zone/tier
+        # price edit between hold creation and fulfillment can never change
+        # what this order actually gets charged -- see HoldSeat's and
+        # OrderItem's docstrings.
         OrderItem.objects.create(
             organization=organization,
             order=order,
             price_tier=hold_seat.price_tier,
+            pricing_zone=hold_seat.pricing_zone,
             seat=hold_seat.seat,
             quantity=1,
-            unit_amount=hold_seat.price_tier.amount,
+            unit_amount=hold_seat.unit_amount,
         )
         Ticket.objects.create(
             organization=organization,

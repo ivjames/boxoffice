@@ -5,7 +5,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from events.models import Performance, PriceTier
+from events.models import Performance, PriceTier, PricingZone
 from tenants.models import TenantScopedModel
 from venues.models import Seat
 
@@ -66,12 +66,40 @@ class Hold(TenantScopedModel):
 
 
 class HoldSeat(TenantScopedModel):
-    """Through row for a reserved-seat Hold: one row per held Seat, carrying
-    the PriceTier that applied when it was selected."""
+    """Through row for a reserved-seat Hold: one row per held Seat.
+
+    Phase C (seating-chart epic, docs/SEATING.md) money-path note: a seat's
+    price can now come from a `PricingZone` instead of a `PriceTier` (see
+    events.pricing.resolve_seat_price), and zones don't have a PriceTier at
+    all -- so `price_tier` is now nullable, `pricing_zone` is added
+    (nullable, SET_NULL) alongside it, and `unit_amount` SNAPSHOTS the
+    resolved price at hold-creation time (orders.services.set_reserved_hold)
+    instead of being read live off whichever of the two FKs is set. That
+    snapshot is what makes fulfillment (payments.services._fulfill_reserved)
+    and hold_total() immune to a zone/template price edit -- or the zone
+    being deleted outright -- happening after this hold was created but
+    before it's paid. `price_tier`/`pricing_zone` are provenance only, set
+    to whichever source `resolve_seat_price` actually used at hold-creation
+    time -- there is deliberately NO check constraint requiring one of them
+    to stay non-null, because deleting a PricingZone (allowed even with
+    active holds -- see events.zones.delete_zone) SET_NULLs `pricing_zone`
+    on every HoldSeat that referenced it, which would otherwise leave a
+    perfectly valid, already-priced (via `unit_amount`) HoldSeat unable to
+    satisfy such a constraint."""
 
     hold = models.ForeignKey(Hold, on_delete=models.CASCADE, related_name="hold_seats")
     seat = models.ForeignKey(Seat, on_delete=models.CASCADE, related_name="hold_seats")
-    price_tier = models.ForeignKey(PriceTier, on_delete=models.PROTECT, related_name="hold_seats")
+    price_tier = models.ForeignKey(
+        PriceTier, on_delete=models.PROTECT, null=True, blank=True, related_name="hold_seats"
+    )
+    pricing_zone = models.ForeignKey(
+        PricingZone, on_delete=models.SET_NULL, null=True, blank=True, related_name="hold_seats"
+    )
+    unit_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Snapshot of the resolved price at hold-creation time -- see class docstring.",
+    )
 
     class Meta(TenantScopedModel.Meta):
         indexes = TenantScopedModel.Meta.indexes + [
@@ -84,6 +112,16 @@ class HoldSeat(TenantScopedModel):
 
     def __str__(self):
         return f"{self.seat} on hold #{self.hold_id}"
+
+    @property
+    def price_label(self):
+        """Display label for whichever priced this seat -- the zone's name
+        if one applied, else the PriceTier's name."""
+        if self.pricing_zone_id:
+            return self.pricing_zone.name
+        if self.price_tier_id:
+            return self.price_tier.name
+        return ""
 
 
 class PerformanceSeatBlock(TenantScopedModel):
@@ -171,8 +209,24 @@ class Order(TenantScopedModel):
 
 
 class OrderItem(TenantScopedModel):
+    """Phase C note: `price_tier` is nullable -- a zone-priced reserved
+    seat's OrderItem carries `pricing_zone` instead (whichever of the two
+    priced it at fulfillment time, mirroring HoldSeat -- see its docstring,
+    including why there's deliberately no check constraint requiring one of
+    them to stay set: a zone can be deleted after an order that used it was
+    already fulfilled, SET_NULLing `pricing_zone` here too). `unit_amount`
+    is copied verbatim from the fulfilled HoldSeat's own snapshot
+    (payments.services._fulfill_reserved), so an OrderItem's price is fixed
+    the moment payment is fulfilled and immune to any later zone/template/
+    tier edit -- or the zone/tier being deleted outright."""
+
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
-    price_tier = models.ForeignKey(PriceTier, on_delete=models.PROTECT, related_name="order_items")
+    price_tier = models.ForeignKey(
+        PriceTier, on_delete=models.PROTECT, null=True, blank=True, related_name="order_items"
+    )
+    pricing_zone = models.ForeignKey(
+        PricingZone, on_delete=models.SET_NULL, null=True, blank=True, related_name="order_items"
+    )
     seat = models.ForeignKey(
         Seat, on_delete=models.PROTECT, null=True, blank=True, related_name="order_items"
     )
@@ -183,7 +237,13 @@ class OrderItem(TenantScopedModel):
         indexes = TenantScopedModel.Meta.indexes + [models.Index(fields=["order"])]
 
     def __str__(self):
-        return f"{self.quantity} x {self.price_tier} on order {self.order_id}"
+        if self.pricing_zone_id:
+            label = self.pricing_zone.name
+        elif self.price_tier_id:
+            label = self.price_tier
+        else:
+            label = f"${self.unit_amount}"  # source since deleted -- unit_amount is still authoritative
+        return f"{self.quantity} x {label} on order {self.order_id}"
 
 
 class Ticket(TenantScopedModel):

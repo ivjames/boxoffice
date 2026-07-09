@@ -17,9 +17,16 @@ for the full rule this implements:
 GA pricing (`resolve_ga_tier`) is unaffected by any of this -- a GA
 performance's price tiers are still looked up directly by `performance`
 with `section` null, exactly as before.
+
+Phase C (seating-chart epic, docs/SEATING.md) adds `PricingZone` as a MORE
+specific override that wins over everything above: `resolve_seat_price`
+below is the entry point reserved-seat call sites should use going forward
+-- it checks for a zone first, then falls back to `resolve_seat_tier`'s
+override-then-default PriceTier rule. It returns a `ResolvedPrice` so
+callers never need to branch on where the price came from.
 """
 
-from .models import PriceTier
+from .models import PriceTier, PricingZone
 
 
 class PricingError(Exception):
@@ -64,3 +71,71 @@ def resolve_ga_tier(performance):
     if tier is not None:
         return tier
     raise PricingError(f"No GA price tier is set for performance {performance.pk}.")
+
+
+# --- Phase C: zone-aware resolution (docs/SEATING.md "C") ----------------
+
+
+class ResolvedPrice:
+    """The uniform result of `resolve_seat_price`: exposes `.amount` plus a
+    display `.label`/`.color`, regardless of whether the price came from a
+    `PricingZone` or a `PriceTier` -- so callers (hold creation, the
+    storefront seat map, checkout line items) never need to branch on the
+    source. `zone`/`tier` carry whichever underlying row actually applied
+    (exactly one is set) for callers that need provenance, e.g. snapshotting
+    `HoldSeat.pricing_zone`/`HoldSeat.price_tier` at hold time."""
+
+    def __init__(self, *, amount, label, color=None, zone=None, tier=None):
+        self.amount = amount
+        self.label = label
+        self.color = color
+        self.zone = zone
+        self.tier = tier
+
+    @property
+    def is_zone(self):
+        return self.zone is not None
+
+    def __repr__(self):
+        source = "zone" if self.is_zone else "tier"
+        return f"ResolvedPrice(amount={self.amount!r}, label={self.label!r}, source={source!r})"
+
+
+def resolve_seat_price(performance, seat):
+    """The effective price for `seat` on `performance`, in priority order:
+
+    1. A `PricingZone` for `performance` whose seats include `seat` (Phase
+       C's visual pricing zones -- most specific, always server-side).
+    2. Else `resolve_seat_tier(performance, seat.section)` (the existing
+       override-then-section-default `PriceTier` rule, unchanged).
+
+    Returns a `ResolvedPrice`. Raises `PricingError` if neither a zone nor a
+    tier resolves (nothing has been priced yet for this seat)."""
+    zone = (
+        PricingZone.objects.filter(
+            organization=performance.organization_id, performance=performance, seats=seat
+        )
+        .first()
+    )
+    if zone is not None:
+        return ResolvedPrice(amount=zone.amount, label=zone.name, color=zone.color, zone=zone)
+    tier = resolve_seat_tier(performance, seat.section)
+    return ResolvedPrice(amount=tier.amount, label=tier.name, color=None, tier=tier)
+
+
+def zones_by_seat_id(performance):
+    """{seat_id: PricingZone} for every seat currently assigned to a zone on
+    `performance`. The bulk form of `resolve_seat_price`'s zone lookup, for
+    call sites that resolve a whole chart's worth of seats at once instead
+    of one at a time -- see orders.services.resolve_reserved_prices, which
+    combines this with the existing `price_tiers_by_section` helper to
+    implement the full zone-then-tier rule in bulk (one zone query + one
+    PriceTier resolution per section, not per seat)."""
+    result = {}
+    zones = PricingZone.objects.filter(
+        organization=performance.organization_id, performance=performance
+    ).prefetch_related("seats")
+    for zone in zones:
+        for seat in zone.seats.all():
+            result[seat.id] = zone
+    return result

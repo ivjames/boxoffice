@@ -1,7 +1,7 @@
 from django.db import models
 
 from tenants.models import TenantScopedModel
-from venues.models import SeatingChart, Section, Venue
+from venues.models import Seat, SeatingChart, Section, Venue
 
 
 class Event(TenantScopedModel):
@@ -173,3 +173,115 @@ class GAAllocation(TenantScopedModel):
 
     def __str__(self):
         return f"{self.performance} — {self.sold}/{self.capacity}"
+
+
+# --- Phase C: visual pricing zones (seating-chart epic, docs/SEATING.md) --
+#
+# Two-layer shape, per the epic's locked "reusable templates vs. per-
+# performance instances" decision:
+#
+# - `ZoneTemplate` is a reusable, org-scoped named/colored palette entry
+#   (e.g. "Premium" / #c1121f) -- defined once, offered on every
+#   performance's zone editor.
+# - `PricingZone` is the actual per-performance zone: it snapshots
+#   `name`/`color` from its template AT APPLY TIME (not a live FK read), and
+#   carries its own `amount` (a price only ever makes sense for one
+#   performance at a time). Editing a ZoneTemplate later, or a different
+#   performance's PricingZone, never mutates an already-applied zone --
+#   there is no live reference back to the template for display purposes,
+#   only `template` (nullable, SET_NULL) kept around for provenance/"clone
+#   from this template again" convenience. See events/pricing.py for how a
+#   zone wins over a PriceTier when resolving a reserved seat's price, and
+#   events/zones.py for the CRUD/clone service functions that create and
+#   mutate these.
+
+
+class ZoneTemplate(TenantScopedModel):
+    """A reusable, org-scoped named/colored pricing-zone palette entry
+    (e.g. "Premium"/#c1121f, "Standard"/#1d4ed8). Define once, apply/clone
+    onto any performance via events.zones.apply_zone -- this row itself
+    carries no price; the price is set per-performance on the PricingZone
+    instance created from it."""
+
+    name = models.CharField(max_length=255)
+    color = models.CharField(max_length=7, default="#2563eb", help_text="Hex color, e.g. #2563eb.")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta(TenantScopedModel.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "name"], name="unique_zone_template_name_per_org"
+            ),
+        ]
+        ordering = ["organization", "name"]
+
+    def __str__(self):
+        return self.name
+
+
+class PricingZone(TenantScopedModel):
+    """A named, colored, priced group of seats on ONE Performance -- the
+    per-performance INSTANCE created by applying a ZoneTemplate (or an
+    ad-hoc name/color typed on the fly). `name`/`color` are snapshotted at
+    apply time (see events.zones.apply_zone), never read live off
+    `template`, so a later template edit -- or a zone edit on some other
+    performance -- can never retroactively change this row. `amount` is
+    this zone's price for this performance only.
+
+    A seat belongs to at most one zone per performance -- enforced in
+    events.zones' service functions (which route every seat/zone
+    assignment through a single "remove from any other zone on this
+    performance, then add" step), not at the DB level, since the M2M
+    through model (PricingZoneSeat) can't express "unique per performance"
+    directly (a seat legitimately belongs to different zones across
+    different performances)."""
+
+    performance = models.ForeignKey(Performance, on_delete=models.CASCADE, related_name="pricing_zones")
+    template = models.ForeignKey(
+        ZoneTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="zones",
+        help_text="The template this zone was applied/cloned from, if any -- provenance only.",
+    )
+    name = models.CharField(max_length=255)
+    color = models.CharField(max_length=7)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    seats = models.ManyToManyField(
+        Seat, through="PricingZoneSeat", related_name="pricing_zones", blank=True
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta(TenantScopedModel.Meta):
+        indexes = TenantScopedModel.Meta.indexes + [
+            models.Index(fields=["organization", "performance"]),
+        ]
+        ordering = ["performance", "name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.amount}) — {self.performance}"
+
+
+class PricingZoneSeat(TenantScopedModel):
+    """Through row for PricingZone.seats: one row per seat assigned to a
+    zone for that zone's one Performance. See PricingZone's docstring for
+    the "at most one zone per performance" rule this participates in."""
+
+    zone = models.ForeignKey(PricingZone, on_delete=models.CASCADE, related_name="zone_seats")
+    seat = models.ForeignKey(Seat, on_delete=models.CASCADE, related_name="zone_seats")
+
+    class Meta(TenantScopedModel.Meta):
+        indexes = TenantScopedModel.Meta.indexes + [
+            models.Index(fields=["zone"]),
+            models.Index(fields=["seat"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["zone", "seat"], name="unique_seat_per_zone"),
+        ]
+
+    def __str__(self):
+        return f"{self.seat} in {self.zone}"

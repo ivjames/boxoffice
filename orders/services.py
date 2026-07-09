@@ -151,8 +151,9 @@ def price_tiers_by_section(performance):
     resolved through events.pricing.resolve_seat_tier -- so a per-performance
     override (see PriceTier's docstring) wins over the section's chart-wide
     default automatically. A section with neither an override nor a default
-    priced yet is simply omitted (callers, e.g. set_reserved_hold, already
-    treat "section not in this dict" as "no price set yet")."""
+    priced yet is simply omitted (callers, e.g. resolve_reserved_prices,
+    already treat "section not in this dict" as "no PriceTier set yet" --
+    that seat may still be priced via a PricingZone)."""
     chart = get_seating_chart(performance)
     if chart is None:
         return {}
@@ -163,6 +164,37 @@ def price_tiers_by_section(performance):
             result[section.id] = pricing.resolve_seat_tier(performance, section)
         except pricing.PricingError:
             continue
+    return result
+
+
+def resolve_reserved_prices(performance):
+    """{seat_id: pricing.ResolvedPrice} for every priced seat on
+    `performance` -- the bulk, seat-map-scale form of
+    events.pricing.resolve_seat_price's zone-then-tier rule. Computed from
+    two bulk queries (one PricingZone query via pricing.zones_by_seat_id,
+    one PriceTier resolution per SECTION via price_tiers_by_section above),
+    not one query per seat, so this stays cheap on a chart with hundreds of
+    seats. A seat with neither a zone nor a resolvable tier is simply
+    omitted -- callers (set_reserved_hold, the storefront seat map) already
+    treat "seat not in this dict" as "nothing priced yet for this seat."
+
+    Every reserved-seat money-path call site (hold creation, the storefront
+    price display) should go through this instead of price_tiers_by_section
+    directly, per docs/SEATING.md Phase C -- see events/pricing.py's module
+    docstring."""
+    tiers_by_section = price_tiers_by_section(performance)
+    zones_by_seat = pricing.zones_by_seat_id(performance)
+    result = {}
+    for seat in performance_seats(performance):
+        zone = zones_by_seat.get(seat.id)
+        if zone is not None:
+            result[seat.id] = pricing.ResolvedPrice(
+                amount=zone.amount, label=zone.name, color=zone.color, zone=zone
+            )
+            continue
+        tier = tiers_by_section.get(seat.section_id)
+        if tier is not None:
+            result[seat.id] = pricing.ResolvedPrice(amount=tier.amount, label=tier.name, tier=tier)
     return result
 
 
@@ -339,8 +371,8 @@ def set_reserved_hold(*, organization, performance, session_key, user, seat_ids)
             f"Sorry — {labels} {verb} just taken by someone else. Please choose different seats."
         )
 
-    tiers_by_section = price_tiers_by_section(performance)
-    if any(seat.section_id not in tiers_by_section for seat in seats):
+    resolved_prices = resolve_reserved_prices(performance)
+    if any(seat.id not in resolved_prices for seat in seats):
         raise HoldError("Some selected seats don't have a price set yet; contact the box office.")
 
     _clear_session_hold(organization, performance, session_key)
@@ -357,7 +389,9 @@ def set_reserved_hold(*, organization, performance, session_key, user, seat_ids)
                 organization=organization,
                 hold=hold,
                 seat=seat,
-                price_tier=tiers_by_section[seat.section_id],
+                price_tier=resolved_prices[seat.id].tier,
+                pricing_zone=resolved_prices[seat.id].zone,
+                unit_amount=resolved_prices[seat.id].amount,
             )
             for seat in seats
         ]
@@ -380,11 +414,15 @@ def cart_item_count(organization, session_key):
 
 
 def hold_total(hold):
-    """Dollar total for a Hold: quantity * tier for GA, sum of per-seat
-    tiers for reserved."""
+    """Dollar total for a Hold: quantity * tier for GA, sum of each
+    HoldSeat's own snapshotted unit_amount for reserved (Phase C -- a
+    reserved seat's price may have come from a PricingZone, which doesn't
+    have a PriceTier to read .amount off of; unit_amount is the one field
+    that's always populated regardless of source -- see HoldSeat's
+    docstring)."""
     if hold.price_tier_id and hold.quantity:
         return hold.price_tier.amount * hold.quantity
     total = Decimal("0.00")
-    for hold_seat in hold.hold_seats.select_related("price_tier").all():
-        total += hold_seat.price_tier.amount
+    for hold_seat in hold.hold_seats.all():
+        total += hold_seat.unit_amount
     return total

@@ -43,6 +43,10 @@ function qrScanner() {
         multiple: false,
         MULTI_CLEAR_MS: 600,
         lastMultipleAt: 0,
+        // One QR code shows exactly 3 finder patterns; seeing this many or
+        // more on a frame means a second code is in view (jsQR path only --
+        // see decodeWithJsQR). 4 = "any evidence of a second code refuses".
+        MULTI_PATTERN_MIN: 4,
         stream: null,
         useBarcodeDetector: typeof window.BarcodeDetector !== "undefined",
         detector: null,
@@ -151,18 +155,19 @@ function qrScanner() {
                 this.lastAttemptAt = now;
                 const video = this.$refs.video;
                 if (video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth) {
-                    let codes = null; // decoded strings this frame, or null if we skipped
+                    let result = null; // { codes, multiple } for this frame, or null if we skipped
                     if (this.useBarcodeDetector && this.detector) {
                         try {
                             const found = await this.detector.detect(video);
-                            codes = found.map((c) => c.rawValue);
+                            const codes = found.map((c) => c.rawValue);
+                            result = { codes, multiple: codes.length > 1 };
                         } catch (e) {
                             // Transient decode error -- just try the next frame.
                         }
                     } else {
-                        codes = this.decodeWithJsQR(video);
+                        result = this.decodeWithJsQR(video);
                     }
-                    if (codes) this.considerCodes(codes);
+                    if (result) this.considerCodes(result);
                 }
             }
 
@@ -170,71 +175,64 @@ function qrScanner() {
         },
 
         decodeWithJsQR(video) {
-            if (typeof window.jsQR !== "function") return [];
+            // Returns { codes, multiple } like the BarcodeDetector path.
+            //
+            // jsQR decodes at most ONE code per call, and a second ticket in
+            // frame often won't fully decode anyway (small, angled, or moiré
+            // from a code shown on a monitor) -- so any "decode it again"
+            // scheme misses real multiples. Instead we DETECT extra codes
+            // without decoding them: every QR has three finder squares
+            // (1:1:3:1:1 pattern), which stay visible long after the code
+            // itself is too degraded to read. countQrFinderPatterns
+            // (static/js/qr-multi.js) counts distinct finder centers on the
+            // same frame: 3 belong to one code, 4+ means another code is in
+            // view and the frame is ambiguous.
+            if (typeof window.jsQR !== "function") return { codes: [], multiple: false };
+            const canvas = this.$refs.canvas;
             const vw = video.videoWidth;
             const vh = video.videoHeight;
-            if (!vw || !vh) return [];
+            if (!vw || !vh) return { codes: [], multiple: false };
 
-            // Primary decode over the whole frame, downscaled -- jsQR's cost
-            // scales with pixel count and a QR filling a held-up ticket decodes
-            // fine at 480px, so the common single-ticket path stays cheap.
-            const primary = this.decodeRegion(video, 0, 0, vw, vh, 480);
-            if (!primary) return [];
-
-            // A code decoded, but door staff are on iOS (no BarcodeDetector),
-            // so this is our only chance to notice a SECOND ticket in frame --
-            // e.g. a monitor or sheet showing several codes at once. A single
-            // full-frame decode can't: jsQR returns just the sharpest code and
-            // the rest are too small at 480px to surface. So re-decode
-            // overlapping halves, where each code is larger (and thus more
-            // likely to decode) and two codes tend to fall in different halves.
-            // Any DISTINCT second code means the frame is ambiguous and
-            // considerCodes() must refuse it. Skip this probe while busy --
-            // we won't redeem anyway, so don't pay for it.
-            if (this.busy) return [primary];
-
-            const seen = new Set([primary]);
-            // Left / right / top / bottom, each 60% of the frame so a code near
-            // the middle still lands whole in at least one probe.
-            const halves = [
-                [0, 0, vw * 0.6, vh],
-                [vw * 0.4, 0, vw * 0.6, vh],
-                [0, 0, vw, vh * 0.6],
-                [0, vh * 0.4, vw, vh * 0.6],
-            ];
-            for (const [sx, sy, sw, sh] of halves) {
-                const code = this.decodeRegion(video, sx, sy, sw, sh, 512);
-                if (code) seen.add(code);
-                if (seen.size > 1) return Array.from(seen).slice(0, 2); // enough to know it's multiple
-            }
-            return [primary];
-        },
-
-        decodeRegion(video, sx, sy, sw, sh, maxDim) {
-            // Decode a rectangular crop of the video (source px sx,sy,sw,sh),
-            // scaled so its longest side is maxDim, and return the code string
-            // or null. Cropping lets each code fill more of the decoded image
-            // than it would in a downscaled full frame.
-            const canvas = this.$refs.canvas;
-            const scale = Math.min(1, maxDim / Math.max(sw, sh));
-            const w = Math.max(1, Math.round(sw * scale));
-            const h = Math.max(1, Math.round(sh * scale));
+            // Downscale before decoding -- jsQR's cost scales with pixel
+            // count, and QR codes fill a printed/e-ticket frame generously
+            // enough that a 480px-max-dimension image decodes fine while
+            // being much cheaper per attempt on a phone.
+            const maxDim = 480;
+            const scale = Math.min(1, maxDim / Math.max(vw, vh));
+            const w = Math.max(1, Math.round(vw * scale));
+            const h = Math.max(1, Math.round(vh * scale));
             canvas.width = w;
             canvas.height = h;
+
             const ctx = canvas.getContext("2d", { willReadFrequently: true });
-            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
-            const code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
-            return code ? code.data : null;
+            ctx.drawImage(video, 0, 0, w, h);
+            const imageData = ctx.getImageData(0, 0, w, h);
+
+            const code = window.jsQR(imageData.data, w, h, { inversionAttempts: "dontInvert" });
+
+            // Count finder patterns on the SAME frame. This runs even when
+            // nothing decoded, so a screenful of codes raises the "show one at
+            // a time" hint before any of them is readable.
+            let multiple = false;
+            if (typeof window.countQrFinderPatterns === "function") {
+                const patterns = window.countQrFinderPatterns(imageData.data, w, h);
+                multiple = patterns >= this.MULTI_PATTERN_MIN;
+            }
+
+            return { codes: code ? [code.data] : [], multiple };
         },
 
-        considerCodes(codes) {
+        considerCodes(result) {
             // Refuse to scan when more than one QR is in frame. With several
             // tickets fanned out we can't tell which one the staffer means, so
             // we scan none of them and wait for a single code to be isolated.
             // (BarcodeDetector reports multiples natively; the jsQR fallback
-            // gets there by decoding overlapping halves -- see decodeWithJsQR.)
+            // detects them by counting finder patterns -- see decodeWithJsQR.
+            // Either way `result.multiple` can be true even when fewer than
+            // two codes actually DECODED this frame.)
+            const codes = result.codes;
             const now = performance.now();
-            if (codes.length > 1) {
+            if (result.multiple || codes.length > 1) {
                 this.multiple = true;
                 this.lastMultipleAt = now;
                 return;

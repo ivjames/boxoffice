@@ -2246,7 +2246,9 @@ table.dash-table th {
 }
 
 .scan-verdict--pass { background: #166534; }
-.scan-verdict--used { background: #92400e; }
+/* Vivid amber matching the full-screen flash; dark text since amber this bright
+   doesn't carry white legibly. */
+.scan-verdict--used { background: #f59e0b; color: #451a03; }
 .scan-verdict--fail { background: #991b1b; }
 
 .scan-verdict__headline {

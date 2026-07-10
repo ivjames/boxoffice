@@ -1545,16 +1545,25 @@ table.dash-table th {
     pointer-events: none;
 }
 
+/* Round 6 ("the grid behind them is basically invisible"): the old lines
+   were 0.015/0.025 SVG USER units in a near-white --border-color (#e5e7eb),
+   which at a typical fit zoom render as a sub-pixel, washed-out ghost. Both
+   are now a much stronger slate color at a visibly heavier user-unit width
+   (still comfortably thinner than a seat: SEAT_RADIUS is 0.35), so the grid
+   reads clearly at fit and holds up zoomed in/out. Kept in user units (not
+   vector-effect: non-scaling-stroke) on purpose -- inside an SVG <pattern>
+   older iPad WebKit ignores non-scaling-stroke, which would fall back to a
+   1-unit-wide stroke that floods each 1-unit tile into a solid block. */
 .chart-editor__grid-line--minor {
-    stroke: var(--border-color);
-    stroke-width: 0.015;
-    opacity: 0.35;
+    stroke: #94a3b8;
+    stroke-width: 0.04;
+    opacity: 0.55;
 }
 
 .chart-editor__grid-line--major {
-    stroke: var(--border-color);
-    stroke-width: 0.025;
-    opacity: 0.6;
+    stroke: #475569;
+    stroke-width: 0.07;
+    opacity: 0.7;
 }
 
 /* -- live editor: per-seat popover ----------------------------------------- */

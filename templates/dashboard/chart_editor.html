@@ -8,9 +8,9 @@
 <a class="back-link" href="{% url 'dashboard_chart_detail' chart.pk %}">&larr; {{ chart.name }}</a>
 <h1>{{ chart.name }} — visual editor</h1>
 <p class="muted">
-    Live editor -- every control updates the seat map immediately, no regenerate step. Select a
-    section (click a seat, or pick it in the list), shape it with the sliders/steppers or drag its
-    on-canvas handles, click a seat for accessible/delete, then Save.
+    Live editor -- every control updates the seat map immediately, no regenerate step. Tap a
+    section to select it and drag it to move it; tap a single seat for accessible/delete. Shape the
+    selected section with the sliders/steppers (or the on-canvas handles on desktop), then Save.
 </p>
 
 {{ sections_json|json_script:"editor-sections-data" }}
@@ -36,7 +36,7 @@
             <span class="chart-editor__dirty" x-show="dirty" x-cloak>Unsaved changes</span>
             <span class="chart-editor__saved" x-show="!dirty &amp;&amp; savedAt" x-cloak>Saved.</span>
             <span class="chart-editor__error" x-show="error" x-text="error" x-cloak></span>
-            <span class="muted chart-editor__hint">Pinch or scroll to zoom · drag background to pan</span>
+            <span class="muted chart-editor__hint">Pinch or scroll to zoom · drag background to pan · drag a section to move it</span>
         </div>
 
         <div class="chart-editor__svg-wrap">

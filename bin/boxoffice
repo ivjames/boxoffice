@@ -159,6 +159,14 @@ cmd_deploy() {
   log "manage.py collectstatic --noinput"
   manage collectstatic --noinput --clear
 
+  # Deploy stamp for the footer (config/version.py reads this). Written after a
+  # successful build so what the footer shows is what's actually serving.
+  local short_sha commit_date
+  short_sha="$(git rev-parse --short HEAD)"
+  commit_date="$(git show -s --format=%cI HEAD)"
+  printf '%s %s\n' "$short_sha" "$commit_date" > "$APP_DIR/VERSION"
+  log "wrote VERSION ($short_sha $commit_date)"
+
   restart_pm2
 
   log "deploy complete ($new_head)"

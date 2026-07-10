@@ -18,6 +18,7 @@ from django.utils import timezone
 from orders.models import Hold, Order
 from orders.test_views import StorefrontFixtureMixin, TenantClientMixin
 
+from . import services
 from .models import GuestAccount, normalize_email
 from .tokens import make_login_token, read_login_token
 
@@ -175,6 +176,52 @@ class GuestPortalTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         resp = self.post_as("org-a", "/account/link/", {"email": "nobody@example.com"})
         self.assertRedirects(resp, "/account/", fetch_redirect_response=False)
         self.assertEqual(len(mail.outbox), 0)  # anti-enumeration: silent
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend", EMAIL_HOST=""
+    )
+    def test_request_link_shows_link_on_page_when_smtp_unconfigured(self):
+        """SMTP not set up yet: rather than send an email that goes nowhere,
+        the portal renders the magic link on screen so the buyer can still
+        reach their tickets."""
+        self._buy("buyer@example.com")
+        self.post_as("org-a", "/account/logout/")
+        mail.outbox.clear()
+
+        resp = self.post_as("org-a", "/account/link/", {"email": "buyer@example.com"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)  # nothing emailed
+        self.assertContains(resp, "/account/verify/?token=")
+
+        # And the shown link actually signs the guest in.
+        guest = GuestAccount.objects.get(email="buyer@example.com")
+        token = make_login_token(guest)
+        self.assertContains(resp, token)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend", EMAIL_HOST=""
+    )
+    def test_request_link_no_link_shown_for_unknown_email_when_smtp_unconfigured(self):
+        mail.outbox.clear()
+        resp = self.post_as("org-a", "/account/link/", {"email": "nobody@example.com"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertNotContains(resp, "/account/verify/?token=")
+
+    def test_email_delivery_configured_detects_smtp_setup(self):
+        """The on-screen fallback keys off email_delivery_configured(): only
+        an SMTP backend with no host counts as "not set up". A host (or any
+        non-SMTP backend, like the locmem one tests use) flips it back to the
+        emailed, anti-enumeration path automatically."""
+        smtp = "django.core.mail.backends.smtp.EmailBackend"
+        with override_settings(EMAIL_BACKEND=smtp, EMAIL_HOST=""):
+            self.assertFalse(services.email_delivery_configured())
+        with override_settings(EMAIL_BACKEND=smtp, EMAIL_HOST="smtp.example.com"):
+            self.assertTrue(services.email_delivery_configured())
+        with override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"
+        ):
+            self.assertTrue(services.email_delivery_configured())
 
     def test_verify_signs_guest_in(self):
         guest, _ = GuestAccount.objects.get_or_create_for_email(self.org, "buyer@example.com")

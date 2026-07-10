@@ -47,6 +47,8 @@
                 <span class="muted">{{ available }} available</span>
             </div>
 
+            {% include "orders/_email_capture_field.html" %}
+
             <button type="submit" class="button" {% if available == 0 %}disabled{% endif %}>
                 {% if available == 0 %}Sold out{% else %}Hold tickets{% endif %}
             </button>

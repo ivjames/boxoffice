@@ -11,6 +11,8 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from events.models import Performance, PriceTier
+from guests import services as guest_services
+from guests.models import normalize_email
 from payments import services as payment_services
 from tenants.decorators import require_tenant
 
@@ -21,12 +23,38 @@ from .qr import ticket_qr_data_uri
 
 logger = logging.getLogger(__name__)
 
+# Session key for the buyer's email captured during ticket selection (before
+# payment). Pre-fills the checkout forms; the durable account link is made at
+# fulfillment off whatever email actually pays.
+GUEST_EMAIL_SESSION_KEY = "guest_email"
+
+
+def _prefill_email(request):
+    """Best-known email for pre-filling a checkout form: a signed-in guest's
+    own address wins, else whatever was captured during selection, else ''."""
+    guest = guest_services.get_current_guest(request)
+    if guest is not None:
+        return guest.email
+    return request.session.get(GUEST_EMAIL_SESSION_KEY, "")
+
 
 def _parse_int(value, default=0):
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _sign_in_buyer(order, request):
+    """Sign the buyer into their guest account on this same request, so a
+    first-time buyer lands on their tickets already able to see (and later
+    return to) every order under this email -- no round-trip through the
+    magic-link email needed. No-op if the order has no linked guest (e.g. no
+    email captured). Only used on the paths where fulfillment happens on the
+    buyer's own request (stub/test checkout, and the Stripe success landing);
+    the Stripe webhook has no buyer session to sign in."""
+    if order.guest_id:
+        guest_services.login_guest(request, order.guest)
 
 
 def _send_tickets_best_effort(order, request):
@@ -66,7 +94,11 @@ def performance_detail(request, pk):
     session_key = services.get_session_key(request)
     existing_hold = services.get_active_hold(request.organization, performance, session_key)
 
-    context = {"performance": performance, "existing_hold": existing_hold}
+    context = {
+        "performance": performance,
+        "existing_hold": existing_hold,
+        "prefill_email": _prefill_email(request),
+    }
 
     if performance.seating_mode == Performance.SeatingMode.GA:
         available = services.ga_available(performance, exclude_session_key=session_key)
@@ -184,6 +216,15 @@ def hold_create(request, pk):
         messages.error(request, str(exc))
         return redirect("performance_detail", pk=performance.pk)
 
+    # Capture the buyer's email at selection time (optional field on the
+    # selection form). Stashed on the session so it pre-fills the checkout
+    # forms and is remembered as "who's buying" before payment -- the account
+    # itself is created/linked at fulfillment (payments.services.fulfill_hold),
+    # keyed off whatever email actually pays.
+    captured_email = normalize_email(request.POST.get("buyer_email", ""))
+    if captured_email:
+        request.session[GUEST_EMAIL_SESSION_KEY] = captured_email
+
     messages.success(request, "Your selection is on hold for 10 minutes.")
     return redirect("cart")
 
@@ -252,7 +293,11 @@ def checkout_view(request):
     holds = _active_holds(request.organization, session_key)
     items = [{"hold": h, "total": services.hold_total(h)} for h in holds]
     grand_total = sum((item["total"] for item in items), Decimal("0.00"))
-    return render(request, "orders/checkout.html", {"items": items, "grand_total": grand_total})
+    return render(
+        request,
+        "orders/checkout.html",
+        {"items": items, "grand_total": grand_total, "prefill_email": _prefill_email(request)},
+    )
 
 
 @require_tenant
@@ -310,6 +355,7 @@ def checkout_test(request):
         messages.error(request, str(exc))
         return redirect("cart")
 
+    _sign_in_buyer(order, request)
     _send_tickets_best_effort(order, request)
     return redirect("ticket_detail", token=order.token)
 
@@ -364,11 +410,16 @@ def checkout_stub(request):
             messages.error(request, str(exc))
             return redirect("cart")
 
+        _sign_in_buyer(order, request)
         _send_tickets_best_effort(order, request)
         return redirect("ticket_detail", token=order.token)
 
     total = services.hold_total(hold)
-    return render(request, "orders/checkout_stub.html", {"hold": hold, "total": total})
+    return render(
+        request,
+        "orders/checkout_stub.html",
+        {"hold": hold, "total": total, "prefill_email": _prefill_email(request)},
+    )
 
 
 @require_tenant
@@ -384,10 +435,16 @@ def checkout_success(request):
     if session_id:
         order = (
             Order.objects.for_organization(request.organization)
-            .select_related("performance", "performance__event", "performance__venue")
+            .select_related("performance", "performance__event", "performance__venue", "guest")
             .filter(stripe_checkout_session_id=session_id)
             .first()
         )
+    # The webhook (not this request) created the order + its guest link, so
+    # this success landing is where we sign the buyer into their guest
+    # account for the Stripe path -- once the order has appeared. If it hasn't
+    # yet (webhook lag), the template auto-refreshes and we catch it next load.
+    if order is not None:
+        _sign_in_buyer(order, request)
     return render(request, "orders/checkout_success.html", {"order": order})
 
 
@@ -417,3 +474,26 @@ def ticket_detail(request, token):
     )
     ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket, request)} for ticket in tickets]
     return render(request, "orders/ticket_detail.html", {"order": order, "ticket_rows": ticket_rows})
+
+
+@require_tenant
+def ticket_pdf(request, token):
+    """Downloadable PDF of an order's tickets. Same access model as
+    ticket_detail: scoped to this org and reachable only by the unguessable
+    Order.token (the token IS the capability -- no login required), so the
+    link works straight from the confirmation page, the ticket email, and
+    the guest portal alike. See orders.pdf.render_order_pdf."""
+    from django.http import HttpResponse
+
+    from .pdf import render_order_pdf
+
+    order = get_object_or_404(
+        Order.objects.for_organization(request.organization).select_related(
+            "performance", "performance__event", "performance__venue"
+        ),
+        token=token,
+    )
+    pdf_bytes = render_order_pdf(order, request)
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="tickets-{order.token}.pdf"'
+    return response

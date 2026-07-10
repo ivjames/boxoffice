@@ -13,6 +13,14 @@
     <p>Order total: ${{ order.total }} · Status: <span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
     <p class="muted">Order confirmation: {{ order.token }}</p>
 
+    {% if ticket_rows %}
+        <div class="ticket-actions ticket-actions--no-print">
+            <a class="button button--secondary" href="{% url 'ticket_pdf' token=order.token %}">Download PDF</a>
+            <button type="button" class="button button--secondary" onclick="window.print()">Print</button>
+            <a class="button button--secondary" href="{% url 'guest_portal' %}">All my tickets</a>
+        </div>
+    {% endif %}
+
     {% if not ticket_rows %}
         <div class="empty-state">
             <p>No tickets on this order yet — if you just paid, check back in a moment.</p>

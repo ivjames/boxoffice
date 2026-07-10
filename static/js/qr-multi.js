@@ -207,6 +207,36 @@
     }
 
     /*
+     * Diagonal crosscheck through (centerX, centerY): walk up-left and
+     * down-right counting the same 5-run pattern. A true finder square is
+     * concentric, so the 1:1:3:1:1 cross holds along the diagonal too (the
+     * runs are sqrt(2) longer, but the RATIO is scale-free). Random blobs in a
+     * QR's data region -- the main phantom source when counting patterns on a
+     * single code -- frequently pass the two axis checks yet die here.
+     * Returns true on match.
+     */
+    function crossCheckDiagonal(bitmap, width, height, centerX, centerY, maxCount) {
+        var r0 = 0, r1 = 0, r2 = 0, r3 = 0, r4 = 0;
+        var i;
+        // Up-left from center while dark.
+        i = 0;
+        while (px(bitmap, width, height, centerX - i, centerY - i) === 1) { r2++; i++; }
+        if (r2 === 0) return false;
+        while (px(bitmap, width, height, centerX - i, centerY - i) === 0 && r1 <= maxCount) { r1++; i++; }
+        if (r1 === 0 || r1 > maxCount) return false;
+        while (px(bitmap, width, height, centerX - i, centerY - i) === 1 && r0 <= maxCount) { r0++; i++; }
+        if (r0 === 0 || r0 > maxCount) return false;
+        // Down-right from just past center.
+        i = 1;
+        while (px(bitmap, width, height, centerX + i, centerY + i) === 1) { r2++; i++; }
+        while (px(bitmap, width, height, centerX + i, centerY + i) === 0 && r3 <= maxCount) { r3++; i++; }
+        if (r3 === 0 || r3 > maxCount) return false;
+        while (px(bitmap, width, height, centerX + i, centerY + i) === 1 && r4 <= maxCount) { r4++; i++; }
+        if (r4 === 0 || r4 > maxCount) return false;
+        return checkRatio(r0, r1, r2, r3, r4) > 0;
+    }
+
+    /*
      * Horizontal crosscheck at row centerY around column centerX -- mirror image
      * of crossCheckVertical. Run after the vertical check refined centerY, to
      * re-center X precisely and reject strokes that only line up one way.
@@ -271,17 +301,21 @@
     }
 
     /*
-     * Count distinct QR finder-pattern centers in an RGBA frame.
+     * Find confirmed, deduplicated finder-pattern centers in an RGBA frame.
      *
      * data:   Uint8ClampedArray of RGBA pixels (length width*height*4), exactly
      *         as returned by CanvasRenderingContext2D.getImageData().data.
      * width,
      * height: frame dimensions in pixels.
-     * Returns the integer number of confirmed, deduplicated finder centers.
-     *         3 => one QR in view; >=4 => multiple codes (caller should refuse).
+     * Returns an array of { x, y, moduleSize, hits } in frame pixel coords.
+     * Only centers confirmed on >= MIN_HITS scan rows are returned: a real
+     * finder square several pixels tall is crossed by multiple scan rows that
+     * all converge on the same center, while one-row noise never repeats.
      */
-    function countQrFinderPatterns(data, width, height) {
-        if (!data || width < 7 || height < 7) return 0;
+    var MIN_HITS = 2;
+
+    function findQrFinderPatterns(data, width, height) {
+        if (!data || width < 7 || height < 7) return [];
 
         var bitmap = binarize(data, width, height);
         var centers = [];
@@ -332,7 +366,19 @@
             }
         }
 
-        return centers.length;
+        var strong = [];
+        for (var i = 0; i < centers.length; i++) {
+            if (centers[i].hits >= MIN_HITS) strong.push(centers[i]);
+        }
+        return strong;
+    }
+
+    /*
+     * Count distinct QR finder-pattern centers in an RGBA frame.
+     * 3 => one QR in view; >= 4 => more than one code (caller should refuse).
+     */
+    function countQrFinderPatterns(data, width, height) {
+        return findQrFinderPatterns(data, width, height).length;
     }
 
     // Shift the 5-run window left by one and append the newest run length.
@@ -372,10 +418,24 @@
         var refinedX = crossCheckHorizontal(bitmap, width, height, Math.round(centerX), Math.round(centerY), maxCount, total);
         if (isNaN(refinedX)) return;
 
+        // Diagonal crosscheck last -- the cheapest-to-fake direction for a
+        // phantom is already gone, and true concentric squares pass this too.
+        if (!crossCheckDiagonal(bitmap, width, height, Math.round(refinedX), Math.round(centerY), maxCount)) return;
+
         addCenter(centers, refinedX, centerY, moduleSize);
     }
 
     // ---- Exports (both browser global and CommonJS, per the API contract) ----
-    if (typeof window !== "undefined") window.countQrFinderPatterns = countQrFinderPatterns;
-    if (typeof module !== "undefined" && module.exports) module.exports = countQrFinderPatterns;
+    // countQrFinderPatterns keeps its original signature; findQrFinderPatterns
+    // exposes the centers so scanner.js can ignore patterns that belong to a
+    // code jsQR already decoded and located.
+    if (typeof window !== "undefined") {
+        window.countQrFinderPatterns = countQrFinderPatterns;
+        window.findQrFinderPatterns = findQrFinderPatterns;
+    }
+    if (typeof module !== "undefined" && module.exports) {
+        module.exports = countQrFinderPatterns;
+        module.exports.count = countQrFinderPatterns;
+        module.exports.find = findQrFinderPatterns;
+    }
 })();

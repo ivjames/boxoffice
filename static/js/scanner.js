@@ -222,16 +222,48 @@ function qrScanner() {
 
             const code = window.jsQR(imageData.data, w, h, { inversionAttempts: "dontInvert" });
 
-            // Count finder patterns on the SAME frame. This runs even when
-            // nothing decoded, so a screenful of codes raises the "show one at
-            // a time" hint before any of them is readable.
+            // Look for OTHER codes on the SAME frame via finder patterns.
+            // This runs even when nothing decoded, so a screenful of codes
+            // raises the "show one at a time" hint before any is readable.
             let multiple = false;
-            if (typeof window.countQrFinderPatterns === "function") {
-                const patterns = window.countQrFinderPatterns(imageData.data, w, h);
-                multiple = patterns >= this.MULTI_PATTERN_MIN;
+            if (typeof window.findQrFinderPatterns === "function") {
+                const centers = window.findQrFinderPatterns(imageData.data, w, h);
+                if (code && code.location) {
+                    // The decoded code's own three finder squares (and any
+                    // residual phantom inside it) don't count as "another
+                    // code": only centers outside its padded bounding box do,
+                    // and we want two of them -- a second code that's really
+                    // in frame shows 2-3, while a stray phantom shows 1.
+                    multiple = this.centersOutsideBox(centers, code.location, w, h) >= 2;
+                } else {
+                    // Nothing decoded: 3 patterns belong to one (unreadable)
+                    // code; more means several codes are in view.
+                    multiple = centers.length >= this.MULTI_PATTERN_MIN;
+                }
+            } else if (typeof window.countQrFinderPatterns === "function") {
+                // Older qr-multi.js (count only) -- e.g. a half-cached deploy.
+                multiple = window.countQrFinderPatterns(imageData.data, w, h) >= this.MULTI_PATTERN_MIN;
             }
 
             return { codes: code ? [code.data] : [], multiple };
+        },
+
+        centersOutsideBox(centers, location, w, h) {
+            // Bounding box of the decoded code from jsQR's corner points,
+            // padded by ~15% of its size to cover the quiet zone and a bit of
+            // perspective slack, then clamped to the frame.
+            const xs = [location.topLeftCorner.x, location.topRightCorner.x, location.bottomLeftCorner.x, location.bottomRightCorner.x];
+            const ys = [location.topLeftCorner.y, location.topRightCorner.y, location.bottomLeftCorner.y, location.bottomRightCorner.y];
+            const pad = 0.15 * Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+            const x0 = Math.max(0, Math.min(...xs) - pad);
+            const y0 = Math.max(0, Math.min(...ys) - pad);
+            const x1 = Math.min(w, Math.max(...xs) + pad);
+            const y1 = Math.min(h, Math.max(...ys) + pad);
+            let outside = 0;
+            for (const c of centers) {
+                if (c.x < x0 || c.x > x1 || c.y < y0 || c.y > y1) outside++;
+            }
+            return outside;
         },
 
         considerCodes(result) {

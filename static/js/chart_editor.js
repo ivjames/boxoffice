@@ -234,6 +234,8 @@ function chartEditor(config) {
         dragMode: null,
         _dragSectionId: null,
         _dragStart: null,
+        _captureTarget: null,
+        _capturePointerId: null,
         _bgStart: null,
         popover: null, // {sectionId, row, number, accessible, screenX, screenY}
         dirty: false,
@@ -427,6 +429,15 @@ function chartEditor(config) {
                 label.setAttribute("y", seat.y);
                 label.setAttribute("font-size", SEAT_RADIUS * 0.9);
                 label.setAttribute("class", "editor-seat-label");
+                // Center the number on the seat via SVG presentation ATTRIBUTES,
+                // not just the CSS rule in app.css: iOS/desktop Safari (WebKit)
+                // ignores `text-anchor`/`dominant-baseline` when they're set as
+                // CSS properties on SVG <text>, so on the real iPad the CSS-only
+                // version rendered numbers anchored at the top-left of (x, y) --
+                // the "numbers off center" report. Attributes are honored
+                // everywhere; the CSS stays as a harmless belt-and-suspenders.
+                label.setAttribute("text-anchor", "middle");
+                label.setAttribute("dominant-baseline", "central");
                 label.textContent = seat.number;
                 g.appendChild(label);
             }
@@ -732,11 +743,21 @@ function chartEditor(config) {
         // guarantees clearance for ANY geometry (same box every other
         // handle uses) while still rotating naturally with the block.
         originMarkerXY() {
+            // Round 5 (declutter): the move-section marker now hugs the LEFT
+            // edge at the box's mid-height, not flung diagonally out past the
+            // top-left corner. At mid-height it clears the corner resize
+            // handles (top/bottom) and sits just outside the seats, so it
+            // reads as part of the frame and needs NO long dashed leader line
+            // back to the block -- those cross-canvas connector lines were the
+            // "stray lines on controls" the user flagged. Drag math is
+            // unchanged (onHandleDrag's 'origin' case is a pure pointer delta,
+            // independent of where this marker is drawn).
             const s = this.selected;
             if (!s) return [0, 0];
             const b = this.paddedLocalBBox(s);
-            const extra = this.handlePadding(s) * 0.6;
-            return this.worldFromLocal(s, b.minX - extra, b.minY - extra);
+            const extra = this.handlePadding(s) * 0.35;
+            const cy = (b.minY + b.maxY) / 2;
+            return this.worldFromLocal(s, b.minX - extra, cy);
         },
 
         // The ROTATION PIVOT marker (Round 2, docs/EDITOR.md #2): same
@@ -754,11 +775,32 @@ function chartEditor(config) {
         // case) -- it's the one control that works regardless of which
         // mode is currently selected in the Center/Origin/Custom toggle.
         rotationPivotMarkerXY() {
+            // Round 5 (declutter): mirror of originMarkerXY -- hugs the RIGHT
+            // edge at mid-height, opposite the move marker, so the two never
+            // collide and neither needs a long connector line. The true pivot
+            // (pivotWorldXY, possibly deep inside the block at a CENTER pivot)
+            // is still shown by a small non-interactive dot; this draggable
+            // marker just lives out on the frame. 'move_pivot' drag math reads
+            // the pointer's world position, not this marker, so it's unchanged.
             const s = this.selected;
             if (!s) return [0, 0];
             const b = this.paddedLocalBBox(s);
-            const extra = this.handlePadding(s) * 0.6;
-            return this.worldFromLocal(s, b.maxX + extra, b.maxY + extra);
+            const extra = this.handlePadding(s) * 0.35;
+            const cy = (b.minY + b.maxY) / 2;
+            return this.worldFromLocal(s, b.maxX + extra, cy);
+        },
+
+        // Round 5 (declutter): start point of the short rotate-handle stem --
+        // the box's TOP-edge center, NOT the pivot (which for a CENTER pivot
+        // sits mid-block, making the old stem a long line straight through the
+        // seats). Drawn to handleRotate() just above it, so the stem is a
+        // short tick outside the frame instead of a cross-canvas "stray line."
+        rotateStemStart() {
+            const s = this.selected;
+            if (!s) return [0, 0];
+            const b = this.paddedLocalBBox(s);
+            const cx = (b.minX + b.maxX) / 2;
+            return this.worldFromLocal(s, cx, b.minY);
         },
 
         // Round 3 #1/#2, Round 4 #2: the transform box's 4 corners, ALL
@@ -904,6 +946,18 @@ function chartEditor(config) {
             return this.worldFromLocal(s, ...this.handleOffsetLocal(s));
         },
 
+        // Round 5 (declutter): start of the offset handle's short stem -- the
+        // bottom edge directly ABOVE the handle (same local x), so the tick is
+        // a short vertical line down to the handle rather than a diagonal from
+        // the bottom-left corner across to it.
+        offsetStemStart() {
+            const s = this.selected;
+            if (!s) return [0, 0];
+            const b = this.paddedLocalBBox(s);
+            const [lx] = this.handleOffsetLocal(s);
+            return this.worldFromLocal(s, lx, b.maxY);
+        },
+
         // Round 4 (docs/EDITOR.md #3): rotation (degrees) for a corner's
         // diagonal resize-arrow ICON -- just `section.rotation`, NOT an
         // absolute angle computed from the corner's position relative to
@@ -959,7 +1013,22 @@ function chartEditor(config) {
             this.dragMode = mode;
             this._dragSectionId = this.selectedId;
             this._dragStart = { pointer: this.clientToViewBox(evt.clientX, evt.clientY) };
-            if (evt.target.setPointerCapture) evt.target.setPointerCapture(evt.pointerId);
+            // Pointer capture glues the whole drag to this handle even as a
+            // fingertip slides off the small hit target -- essential on touch.
+            // Guarded in try/catch: iOS Safari can throw here (e.g. the pointer
+            // was already released), and a throw at this point would abort the
+            // whole gesture -- exactly the "can't drag things" failure. Stash
+            // the target + id so endHandleDrag() can release capture explicitly
+            // instead of trusting the implicit release, which Safari sometimes
+            // skips (leaving the next tap captured by a stale handle).
+            this._captureTarget = evt.target;
+            this._capturePointerId = evt.pointerId;
+            try {
+                if (evt.target.setPointerCapture) evt.target.setPointerCapture(evt.pointerId);
+            } catch (e) {
+                /* capture is best-effort; the window-level move/up handlers
+                   still drive the drag without it. */
+            }
         },
 
         onCanvasPointerMove(evt) {
@@ -1044,6 +1113,16 @@ function chartEditor(config) {
         },
 
         endHandleDrag() {
+            if (this._captureTarget && this._capturePointerId != null) {
+                try {
+                    if (this._captureTarget.releasePointerCapture)
+                        this._captureTarget.releasePointerCapture(this._capturePointerId);
+                } catch (e) {
+                    /* already released (e.g. pointercancel got here first) */
+                }
+            }
+            this._captureTarget = null;
+            this._capturePointerId = null;
             this.dragMode = null;
             this._dragSectionId = null;
             this._dragStart = null;

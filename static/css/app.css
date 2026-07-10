@@ -23,6 +23,12 @@ body {
     color: var(--text-color);
     background: var(--bg-color);
     line-height: 1.5;
+    /* Pairs with the locked viewport meta (templates/base.html): drops the
+       double-tap-zoom gesture (and its ~300ms click delay) so taps register
+       immediately -- important for the seating editor's on-canvas handles on
+       touch. `pan-x pan-y` still allows normal page scrolling. */
+    touch-action: pan-x pan-y;
+    -webkit-text-size-adjust: 100%;
 }
 
 a {
@@ -726,9 +732,11 @@ textarea:focus-visible,
     background: #d1d5db;
 }
 
+/* Scroll wrapper for the seat canvas. Seats are laid out by their real
+   (continuous) world coordinates inside .seat-map__canvas -- see
+   templates/orders/_seat_map.html -- so a wide chart simply scrolls
+   horizontally instead of being crammed into an integer CSS grid. */
 .seat-map__grid {
-    display: grid;
-    gap: 0.4rem;
     max-width: 100%;
     overflow-x: auto;
     padding: 0.5rem;
@@ -737,9 +745,14 @@ textarea:focus-visible,
     margin-bottom: 1rem;
 }
 
+.seat-map__canvas {
+    position: relative;
+    margin: 0 auto;
+}
+
 .seat-btn {
-    width: 2.25rem;
-    height: 2.25rem;
+    width: 2.1rem;
+    height: 2.1rem;
     border-radius: 50%;
     border: 2px solid var(--accent-color);
     background: #fff;
@@ -1107,6 +1120,16 @@ table.dash-table th {
     background: #fafafa;
     max-width: 100%;
     overflow: auto;
+    /* iOS Safari historically honors `touch-action` reliably only on HTML
+       elements, NOT on the inner <svg> -- so the `touch-action: none` on
+       .chart-editor__svg alone let single-finger handle drags on the real
+       iPad get swallowed by page pan/zoom ("touch patchy, can't drag").
+       Setting it on this HTML wrapper is the version Safari actually
+       respects; the editor supplies its own pan (drag background) + wheel/
+       pinch zoom, so giving up the wrapper's native touch-scroll costs
+       nothing. */
+    touch-action: none;
+    overscroll-behavior: contain;
 }
 
 .chart-editor__svg {

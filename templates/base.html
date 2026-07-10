@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Locked viewport: maximum-scale=1 + user-scalable=no stops iOS Safari's
+         page-level pinch / double-tap zoom, which otherwise fights the seating
+         editor's own zoom/pan and makes one-finger handle drags flaky (iOS
+         reserves the gesture and fires pointercancel). viewport-fit=cover lets
+         the page use the full screen under the notch. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}</title>
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
     <style>

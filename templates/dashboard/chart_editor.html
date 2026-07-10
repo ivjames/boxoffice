@@ -115,7 +115,7 @@
                         <line class="chart-editor__handle-line" :x1="handleTR()[0]" :y1="handleTR()[1]" :x2="handleBR()[0]" :y2="handleBR()[1]"></line>
                         <line class="chart-editor__handle-line" :x1="handleBL()[0]" :y1="handleBL()[1]" :x2="handleBR()[0]" :y2="handleBR()[1]"></line>
                         <line class="chart-editor__handle-line chart-editor__handle-line--offset"
-                              :x1="handleBL()[0]" :y1="handleBL()[1]" :x2="handleOffset()[0]" :y2="handleOffset()[1]"></line>
+                              :x1="offsetStemStart()[0]" :y1="offsetStemStart()[1]" :x2="handleOffset()[0]" :y2="handleOffset()[1]"></line>
 
                         <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleTL()[0]" :cy="handleTL()[1]"></circle>
                         <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleTL()[0]" :cy="handleTL()[1]"
@@ -172,15 +172,19 @@
                 </g>
 
                 <!-- Section origin ("move section") marker + rotate handle: shown for any
-                     selection, arc included. The draggable crosshair sits near (not on top of) the
-                     TRUE origin -- see chart_editor.js's originMarkerXY() doc comment (round 4:
-                     anchored off the padded seat bbox's own corner so it reliably clears arc/
-                     rotated seats, not just a plain grid). A thin connector line ties the marker to
-                     the real origin point (a small dot) so it stays unambiguous. -->
+                     selection, arc included. Round 5: the move marker hugs the frame's LEFT edge at
+                     mid-height (see chart_editor.js's originMarkerXY()) -- clear of the corner
+                     resize handles and the seats -- so it no longer needs the old cross-canvas
+                     leader line back to the raw origin (that line was the "stray line" the user
+                     flagged). The rotate handle sits just above the frame's top edge, joined to it
+                     by a short stem (rotateStemStart()). -->
                 <g class="chart-editor__pivot-group" x-show="selected" x-cloak>
-                        <line class="chart-editor__handle-line chart-editor__handle-line--rotate" :x1="pivotWorldXY()[0]" :y1="pivotWorldXY()[1]" :x2="handleRotate()[0]" :y2="handleRotate()[1]"></line>
-                        <line class="chart-editor__pivot-connector" :x1="handleOrigin()[0]" :y1="handleOrigin()[1]" :x2="originMarkerXY()[0]" :y2="originMarkerXY()[1]"></line>
-                        <circle class="chart-editor__pivot-point" :cx="handleOrigin()[0]" :cy="handleOrigin()[1]" r="0.08"></circle>
+                        <!-- Round 5 (declutter): short rotate stem from the box's top edge (not
+                             the pivot deep inside the block), and the move marker now hugs the
+                             frame's left edge so it needs no leader line -- see chart_editor.js's
+                             rotateStemStart()/originMarkerXY(). The old cross-canvas connector
+                             lines + the raw-origin dot were the "stray lines on controls." -->
+                        <line class="chart-editor__handle-line chart-editor__handle-line--rotate" :x1="rotateStemStart()[0]" :y1="rotateStemStart()[1]" :x2="handleRotate()[0]" :y2="handleRotate()[1]"></line>
                         <circle class="chart-editor__pivot" :cx="originMarkerXY()[0]" :cy="originMarkerXY()[1]"></circle>
                         <circle class="chart-editor__handle-hit chart-editor__handle-hit--pivot" :cx="originMarkerXY()[0]" :cy="originMarkerXY()[1]"
                                 @pointerdown="startHandleDrag('origin', $event)"><title>Move section</title></circle>
@@ -209,7 +213,10 @@
                              origin marker (rotationPivotMarkerXY()) so the two never overlap and the
                              pivot marker reliably clears the seats even when the true pivot (a
                              CENTER pivot, say) sits deep inside the block. -->
-                        <line class="chart-editor__rotation-pivot-connector" :x1="pivotWorldXY()[0]" :y1="pivotWorldXY()[1]" :x2="rotationPivotMarkerXY()[0]" :y2="rotationPivotMarkerXY()[1]"></line>
+                        <!-- Round 5 (declutter): the teal cross-canvas connector line is gone;
+                             the small dot still marks the TRUE rotation center (pivotWorldXY,
+                             which a CENTER pivot puts mid-block) while the draggable marker below
+                             lives out on the frame's right edge (rotationPivotMarkerXY()). -->
                         <circle class="chart-editor__rotation-pivot-point" :cx="pivotWorldXY()[0]" :cy="pivotWorldXY()[1]" r="0.08"></circle>
                         <circle class="chart-editor__rotation-pivot" :cx="rotationPivotMarkerXY()[0]" :cy="rotationPivotMarkerXY()[1]"></circle>
                         <circle class="chart-editor__handle-hit chart-editor__handle-hit--rotation-pivot" :cx="rotationPivotMarkerXY()[0]" :cy="rotationPivotMarkerXY()[1]"

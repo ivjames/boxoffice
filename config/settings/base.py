@@ -66,6 +66,11 @@ MIDDLEWARE = [
     # Must come after auth (request.user) but resolve early enough that views
     # and templates can rely on request.organization being set.
     "tenants.middleware.TenantMiddleware",
+    # Last: stamps `no-store` on HTML responses so Safari can't serve a stale
+    # page on refresh (static assets stay hash-cached). See the middleware's
+    # docstring. Innermost, so it wraps only real view responses -- WhiteNoise's
+    # static responses short-circuit above it.
+    "config.middleware.NoCacheHTMLMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -89,6 +94,8 @@ TEMPLATES = [
                 "orders.context_processors.cart_count",
                 # Exposes settings.ENABLE_TEST_CHECKOUT as `test_checkout_enabled`.
                 "payments.context_processors.test_checkout_enabled",
+                # Exposes the resolved deploy stamp as `app_version` (footer).
+                "config.context_processors.app_version",
             ],
         },
     },

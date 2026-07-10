@@ -107,6 +107,11 @@
                 {% if not organization %}<a href="/admin/">Admin</a>{% endif %}
             </nav>
         </div>
+        {% if app_version %}
+            <p class="site-footer__version" title="{% if app_version.deployed_at %}Deployed {{ app_version.deployed_at }}{% else %}Build identifier{% endif %}">
+                v{{ app_version.version }}{% if app_version.deployed_at %} · {{ app_version.deployed_at }}{% endif %}
+            </p>
+        {% endif %}
     </footer>
 
     <script src="{% static 'js/alpine.min.js' %}" defer></script>

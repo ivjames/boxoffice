@@ -367,6 +367,17 @@ textarea:focus-visible,
     color: var(--muted-color);
 }
 
+/* Small deploy stamp -- lets staff confirm which build a device is showing
+   (config/version.py). Deliberately quiet: max-width'd inner sits above it. */
+.site-footer__version {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 1.5rem 1.25rem;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
+}
+
 .button {
     display: inline-block;
     background: var(--accent-color);

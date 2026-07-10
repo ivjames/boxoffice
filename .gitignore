@@ -16,6 +16,8 @@ db.sqlite3
 db.sqlite3-journal
 staticfiles/
 media/
+# Deploy stamp written by `bin/boxoffice deploy` (config/version.py reads it).
+VERSION
 
 # Editors / OS
 .vscode/

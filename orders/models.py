@@ -20,23 +20,28 @@ def default_hold_expiry():
 def new_token():
     """Short, unguessable public token for Orders and Tickets.
 
-    15 uppercase base32 chars (~72 bits of entropy) instead of a UUID's 36.
-    That shrink is half the point: a Ticket's token rides inside its QR code
-    (as "<token>.<sig>" -- orders/tokens.scan_code), so a shorter token means
-    a lower-density QR that can carry more error correction (see orders/qr.py).
-    The other half is the base32 *alphabet* (A-Z2-7): an all-uppercase code
-    stays inside QR "alphanumeric mode", which packs ~45% more per module than
-    the byte mode any lowercase char would force -- the single biggest lever
-    on how dense the code looks. Unguessability is only ever ONE of three gates
-    on redemption -- the per-ticket HMAC signature (orders/tokens.py) and the
-    scanner-role login are the others -- so 72 bits here is ample; the token
-    alone was never enough to redeem a ticket.
+    10 uppercase base32 chars (48 bits of entropy) instead of a UUID's 36.
+    Kept short on purpose for two reasons: a Ticket's token both rides inside
+    its QR code (as "<token>.<sig>" -- orders/tokens.scan_code) AND is what a
+    staffer keys in by hand on the scanner's manual-entry fallback, so every
+    character saved is a smaller QR and less to type. The base32 *alphabet*
+    (A-Z2-7) keeps the whole code inside QR "alphanumeric mode" (~45% denser
+    per module than byte mode) and drops the digit/letter pairs (0/O, 1/I)
+    most easily fat-fingered.
+
+    48 bits is ample here. Unguessability is only ever ONE of three gates on
+    redemption -- the per-ticket HMAC signature (orders/tokens.py) and the
+    scanner-role login are the others -- so the token alone was never enough
+    to redeem. And 48 bits keeps token COLLISIONS negligible at any realistic
+    box-office volume (well past millions of tickets); in the astronomically
+    rare event two collide, the unique constraint rejects the insert and the
+    Stripe path simply regenerates on webhook redelivery.
 
     Named (not a lambda) so migrations can serialize it as a field default,
     matching default_hold_expiry above. base32's alphabet is a subset of
     Django's `slug` URL converter's, so the redeem/confirmation routes match
     on <slug:token> without a custom converter."""
-    return base64.b32encode(secrets.token_bytes(9)).rstrip(b"=").decode()
+    return base64.b32encode(secrets.token_bytes(6)).rstrip(b"=").decode()
 
 
 class Hold(TenantScopedModel):
@@ -203,8 +208,8 @@ class Order(TenantScopedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
     # Public-facing lookup token for the confirmation page (/tickets/<token>/).
-    # Short base64url string (see new_token) -- max_length leaves headroom for
-    # the 12-char tokens plus any 36-char UUID-string rows predating the switch.
+    # Short base32 string (see new_token) -- max_length leaves headroom for the
+    # 10-char tokens plus any longer rows predating the switch to short tokens.
     token = models.CharField(max_length=36, default=new_token, unique=True, editable=False)
 
     # Phase 4 (Stripe checkout + webhooks): fields only, no logic here.
@@ -296,8 +301,8 @@ class Ticket(TenantScopedModel):
         Seat, on_delete=models.SET_NULL, null=True, blank=True, related_name="tickets"
     )
     holder_name = models.CharField(max_length=255, blank=True)
-    # Rides inside the QR code's URL -- kept short (see new_token) to shrink
-    # the QR and free up error-correction headroom.
+    # Rides inside the QR code AND is what staff key in on manual entry -- kept
+    # short (see new_token) to shrink the QR and cut typing.
     token = models.CharField(max_length=36, default=new_token, unique=True, editable=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.VALID)
     used_at = models.DateTimeField(null=True, blank=True)

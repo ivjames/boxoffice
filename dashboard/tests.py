@@ -1264,6 +1264,46 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertEqual(self.section.origin_x, original_origin_x)
         self.assertEqual(self.section.seats.count(), 9)  # unchanged: [3, 3, 3]
 
+    def test_save_moves_section_in_place_even_with_a_live_ticket(self):
+        # A pure move (origin only, roster unchanged) repositions the existing
+        # seats in place, so the live ticket stays attached to its seat rather
+        # than being orphaned -- this is the case the old regenerate-always
+        # path refused outright.
+        self._login_as("manager")
+        seat = self.seats[0]
+        seat_pk = seat.pk
+        event = Event.objects.create(organization=self.org, title="Show", slug="show")
+        performance = Performance.objects.create(
+            organization=self.org,
+            event=event,
+            venue=self.venue,
+            starts_at=timezone.now() + timedelta(days=1),
+            seating_mode=Performance.SeatingMode.RESERVED,
+        )
+        order = Order.objects.create(
+            organization=self.org, performance=performance, buyer_email="x@example.com", total=Decimal("10.00")
+        )
+        ticket = Ticket.objects.create(
+            organization=self.org, order=order, performance=performance, seat=seat
+        )
+
+        resp = self._post_json(
+            self._save_url(),
+            {"sections": {str(self.section.pk): self._params_payload(origin_x=300.0)}},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["saved"], [self.section.pk])
+        self.section.refresh_from_db()
+        self.assertEqual(self.section.origin_x, 300.0)
+        # Same seat rows (pks preserved) -- shifted, not regenerated.
+        self.assertEqual(self.section.seats.count(), 9)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.seat_id, seat_pk)
+        self.assertTrue(all(s.x >= 300.0 for s in self.section.seats.all()))
+
     def test_save_one_bad_section_does_not_block_the_others_in_the_same_batch(self):
         self._login_as("manager")
         ok_section = Section.objects.create(
@@ -1284,11 +1324,15 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         )
         Ticket.objects.create(organization=self.org, order=order, performance=performance, seat=seat)
 
+        # self.section has a live ticket AND its payload drops a row
+        # (rows=2, from 3) -- a roster change, so it can't reposition in
+        # place and falls back to a regenerate that the guardrail refuses.
+        # ok_section still saves in the same batch.
         resp = self._post_json(
             self._save_url(),
             {
                 "sections": {
-                    str(self.section.pk): self._params_payload(origin_x=1.0),
+                    str(self.section.pk): self._params_payload(rows=2, origin_x=1.0),
                     str(ok_section.pk): self._params_payload(section=ok_section, origin_x=77.0),
                 }
             },

@@ -157,7 +157,7 @@ cmd_deploy() {
   manage migrate --noinput
 
   log "manage.py collectstatic --noinput"
-  manage collectstatic --noinput --clear
+  manage collectstatic --noinput
 
   # Deploy stamp for the footer (config/version.py reads this). Written after a
   # successful build so what the footer shows is what's actually serving.

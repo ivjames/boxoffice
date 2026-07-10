@@ -545,11 +545,35 @@ class ChartBuilderFlowTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         Section.objects.create(organization=self.org, chart=chart, name="Orchestra")
         self.client.post(
             f"/dashboard/charts/{chart.pk}/sections/new/",
-            {"name": "Balcony", "ordering": "1", "tier": "", "numbering_scheme": "sequential", "row_label_scheme": "skip_io"},
+            {"name": "Balcony", "tier": "", "numbering_scheme": "sequential", "row_label_scheme": "skip_io"},
             HTTP_HOST=host_for("roxy"),
         )
         balcony = Section.objects.get(organization=self.org, chart=chart, name="Balcony")
         self.assertEqual(balcony.origin_x, 12.0)
+
+    def test_new_section_ordering_is_auto_assigned_not_a_form_field(self):
+        # Round 2 feedback on docs/EDITOR.md #7: "ordering" is no longer a
+        # raw sort-number input on the create form (see SectionForm's
+        # docstring) -- a new section is auto-appended to the end of the
+        # chart's current list instead, same staggering idea as origin_x.
+        chart = SeatingChart.objects.create(organization=self.org, venue=self.venue, name="Standard")
+        orchestra = Section.objects.create(organization=self.org, chart=chart, name="Orchestra", ordering=0)
+        resp = self.client.post(
+            f"/dashboard/charts/{chart.pk}/sections/new/",
+            {
+                "name": "Balcony", "ordering": "999", "tier": "",
+                "numbering_scheme": "sequential", "row_label_scheme": "skip_io",
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 302)
+        balcony = Section.objects.get(organization=self.org, chart=chart, name="Balcony")
+        # The posted "ordering": "999" is silently ignored (not a form
+        # field) -- the section is appended right after the one existing
+        # section, not moved to some arbitrary value a client could send.
+        self.assertEqual(balcony.ordering, 1)
+        orchestra.refresh_from_db()
+        self.assertEqual(orchestra.ordering, 0)
 
     def test_performance_form_offers_seating_chart_field(self):
         chart = SeatingChart.objects.create(organization=self.org, venue=self.venue, name="Standard")
@@ -613,6 +637,237 @@ class ChartBuilderFlowTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertFalse(Performance.objects.filter(event=event).exists())
 
 
+class InlineSectionCreateTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """docs/EDITOR.md's Round 2 refinement #7: "New section" must not
+    navigate away from the editor. Covers the AJAX path of
+    SectionCreateView (X-Requested-With: XMLHttpRequest) -- the plain-POST
+    redirect path is already covered by ChartBuilderFlowTests above; this
+    class is about the JSON response chart_editor.js's inline modal relies
+    on, plus that it's still manager-gated and org-/chart-scoped."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("roxy")
+        self.other_org, self.other_venue = self.build_org("other")
+        self.chart = SeatingChart.objects.create(organization=self.org, venue=self.venue, name="Standard")
+        self.roles = {
+            "owner": self.make_staff(self.org, Membership.Role.OWNER)[0],
+            "manager": self.make_staff(self.org, Membership.Role.MANAGER)[0],
+            "box_office": self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0],
+            "scanner": self.make_staff(self.org, Membership.Role.SCANNER)[0],
+        }
+
+    def _login_as(self, role):
+        self.client.logout()
+        self.client.force_login(self.roles[role])
+
+    def _ajax_post(self, chart, data, **extra):
+        return self.client.post(
+            f"/dashboard/charts/{chart.pk}/sections/new/",
+            data,
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            **extra,
+        )
+
+    def test_ajax_create_returns_json_shaped_for_the_live_editor(self):
+        self._login_as("manager")
+        resp = self._ajax_post(
+            self.chart,
+            {
+                "name": "Orchestra",
+                "ordering": "0",
+                "tier": "Premium",
+                "numbering_scheme": "sequential",
+                "row_label_scheme": "skip_io",
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        section = Section.objects.get(organization=self.org, chart=self.chart, name="Orchestra")
+        payload = data["section"]
+        self.assertEqual(payload["id"], section.pk)
+        self.assertEqual(payload["name"], "Orchestra")
+        self.assertEqual(payload["tier"], "Premium")
+        self.assertIn("color", payload)
+        self.assertIn("edit_url", payload)
+        # Same param fields chart_editor()'s initial json_script payload
+        # ships -- makeSection() (chart_editor.js) treats the two
+        # identically.
+        self.assertEqual(payload["rows"], section.rows)
+        self.assertEqual(payload["pivot_mode"], "center")
+        self.assertEqual(payload["removed_seats"], [])
+        # No page navigation -- this is a JSON response, not a redirect.
+        self.assertEqual(resp["Content-Type"], "application/json")
+
+    def test_ajax_create_does_not_navigate_the_non_ajax_path_still_redirects(self):
+        # Sanity check that adding the AJAX branch didn't change the plain
+        # form-POST behavior other tests (ChartBuilderFlowTests) rely on.
+        self._login_as("manager")
+        resp = self.client.post(
+            f"/dashboard/charts/{self.chart.pk}/sections/new/",
+            {
+                "name": "Balcony", "ordering": "0", "tier": "",
+                "numbering_scheme": "sequential", "row_label_scheme": "skip_io",
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 302)
+
+    def test_ajax_create_invalid_name_returns_json_errors_not_html(self):
+        self._login_as("manager")
+        Section.objects.create(organization=self.org, chart=self.chart, name="Orchestra")
+        resp = self._ajax_post(
+            self.chart,
+            {
+                "name": "Orchestra",  # duplicate -- unique_section_name_per_chart
+                "ordering": "0", "tier": "", "numbering_scheme": "sequential",
+                "row_label_scheme": "skip_io",
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertFalse(data["ok"])
+        self.assertIn("name", data["errors"])
+        self.assertEqual(Section.objects.filter(organization=self.org, chart=self.chart).count(), 1)
+
+    def test_ajax_create_manager_and_above_only(self):
+        for role, expected in [("owner", 200), ("manager", 200), ("box_office", 403), ("scanner", 403)]:
+            self._login_as(role)
+            resp = self._ajax_post(
+                self.chart,
+                {
+                    "name": f"Section-{role}", "ordering": "0", "tier": "",
+                    "numbering_scheme": "sequential", "row_label_scheme": "skip_io",
+                },
+                HTTP_HOST=host_for("roxy"),
+            )
+            self.assertEqual(resp.status_code, expected, f"{role} -> inline section create")
+
+    def test_ajax_create_anonymous_redirected_to_login(self):
+        resp = self._ajax_post(
+            self.chart,
+            {
+                "name": "Orchestra", "ordering": "0", "tier": "",
+                "numbering_scheme": "sequential", "row_label_scheme": "skip_io",
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login/", resp.headers["Location"])
+
+    def test_ajax_create_cannot_target_another_orgs_chart(self):
+        other_chart = SeatingChart.objects.create(
+            organization=self.other_org, venue=self.other_venue, name="Other"
+        )
+        self._login_as("manager")  # manager of self.org, NOT other_org
+        resp = self._ajax_post(
+            other_chart,
+            {
+                "name": "Orchestra", "ordering": "0", "tier": "",
+                "numbering_scheme": "sequential", "row_label_scheme": "skip_io",
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(Section.objects.filter(organization=self.other_org, chart=other_chart).exists())
+
+
+class SectionReorderTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """dashboard_section_reorder: the up/down-arrow swap that replaces a
+    manual "ordering" number field on the section forms (Round 2 feedback
+    on docs/EDITOR.md #7 -- see SectionForm's docstring)."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("roxy")
+        self.other_org, self.other_venue = self.build_org("other")
+        self.chart = SeatingChart.objects.create(organization=self.org, venue=self.venue, name="Standard")
+        self.first = Section.objects.create(organization=self.org, chart=self.chart, name="Orchestra", ordering=0)
+        self.second = Section.objects.create(organization=self.org, chart=self.chart, name="Balcony", ordering=1)
+        self.third = Section.objects.create(organization=self.org, chart=self.chart, name="Mezzanine", ordering=2)
+        self.roles = {
+            "owner": self.make_staff(self.org, Membership.Role.OWNER)[0],
+            "manager": self.make_staff(self.org, Membership.Role.MANAGER)[0],
+            "box_office": self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0],
+            "scanner": self.make_staff(self.org, Membership.Role.SCANNER)[0],
+        }
+
+    def _login_as(self, role):
+        self.client.logout()
+        self.client.force_login(self.roles[role])
+
+    def _reorder(self, chart, section, direction, **extra):
+        return self.client.post(
+            f"/dashboard/charts/{chart.pk}/sections/{section.pk}/reorder/",
+            data=json.dumps({"direction": direction}),
+            content_type="application/json",
+            **extra,
+        )
+
+    def test_move_down_swaps_with_next_neighbor(self):
+        self._login_as("manager")
+        resp = self._reorder(self.chart, self.first, "down", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["order"], [self.second.pk, self.first.pk, self.third.pk])
+        self.first.refresh_from_db()
+        self.second.refresh_from_db()
+        self.assertEqual(self.first.ordering, 1)
+        self.assertEqual(self.second.ordering, 0)
+
+    def test_move_up_swaps_with_previous_neighbor(self):
+        self._login_as("manager")
+        resp = self._reorder(self.chart, self.third, "up", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["order"], [self.first.pk, self.third.pk, self.second.pk])
+
+    def test_move_up_on_first_section_is_a_no_op(self):
+        self._login_as("manager")
+        resp = self._reorder(self.chart, self.first, "up", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["order"], [self.first.pk, self.second.pk, self.third.pk])
+        self.first.refresh_from_db()
+        self.assertEqual(self.first.ordering, 0)
+
+    def test_move_down_on_last_section_is_a_no_op(self):
+        self._login_as("manager")
+        resp = self._reorder(self.chart, self.third, "down", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["order"], [self.first.pk, self.second.pk, self.third.pk])
+
+    def test_invalid_direction_400s(self):
+        self._login_as("manager")
+        resp = self._reorder(self.chart, self.first, "sideways", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 400)
+
+    def test_manager_and_above_only(self):
+        for role, expected in [("owner", 200), ("manager", 200), ("box_office", 403), ("scanner", 403)]:
+            self._login_as(role)
+            resp = self._reorder(self.chart, self.first, "down", HTTP_HOST=host_for("roxy"))
+            self.assertEqual(resp.status_code, expected, f"{role} -> section reorder")
+
+    def test_anonymous_redirected_to_login(self):
+        resp = self._reorder(self.chart, self.first, "down", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login/", resp.headers["Location"])
+
+    def test_cannot_reorder_another_orgs_section(self):
+        other_chart = SeatingChart.objects.create(
+            organization=self.other_org, venue=self.other_venue, name="Other"
+        )
+        other_section = Section.objects.create(
+            organization=self.other_org, chart=other_chart, name="Other Orchestra", ordering=0
+        )
+        original_ordering = other_section.ordering
+        self._login_as("manager")  # manager of self.org, NOT other_org
+        resp = self._reorder(other_chart, other_section, "down", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 404)
+        other_section.refresh_from_db()
+        self.assertEqual(other_section.ordering, original_ordering)
+
+
 class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     """docs/EDITOR.md's live, param-driven chart editor: the editor page
     (ships every section's params as JSON, no server-side seat rendering --
@@ -664,6 +919,9 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
             "seats_per_row": section.seats_per_row,
             "numbering_scheme": section.numbering_scheme,
             "row_label_scheme": section.row_label_scheme,
+            "pivot_mode": section.pivot_mode,
+            "pivot_x": section.pivot_x,
+            "pivot_y": section.pivot_y,
             "removed": [],
             "accessible": [],
         }
@@ -691,16 +949,24 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         resp = self.client.get(f"/dashboard/charts/{other_chart.pk}/editor/", HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 404)
 
-    def test_editor_ships_section_params_as_json_and_a_group_per_section(self):
+    def test_editor_ships_section_params_as_json(self):
         self._login_as("manager")
         resp = self.client.get(f"/dashboard/charts/{self.chart.pk}/editor/", HTTP_HOST=host_for("roxy"))
         content = resp.content.decode()
         self.assertContains(resp, "<svg")
-        self.assertIn(f'data-section-group="{self.section.pk}"', content)
+        # Round 2 (docs/EDITOR.md, "add sections without leaving the
+        # editor") moves <g data-section-group> creation into
+        # chart_editor.js's ensureSectionGroup() -- a section added inline
+        # has no server-rendered group to bind to, so EVERY section's group
+        # (including ones present at page load) is now created client-side.
+        # No `data-section-group` attribute is server-rendered at all.
+        self.assertNotIn("data-section-group", content)
         # The embedded json_script payload carries this section's shape --
-        # not individual seats (those are computed live, client-side).
+        # not individual seats (those are computed live, client-side) --
+        # including Round 2's configurable-pivot fields.
         self.assertContains(resp, '"rows": 3')
         self.assertContains(resp, '"seats_per_row": 3')
+        self.assertContains(resp, '"pivot_mode": "center"')
         self.assertNotContains(resp, "editor-seat")  # no server-rendered <circle> seats
 
     # -- save endpoint: role gate ------------------------------------------
@@ -740,6 +1006,36 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         seats = list(self.section.seats.all())
         self.assertEqual(len(seats), 8)
         self.assertTrue(all(s.x >= 50.0 for s in seats))
+
+    def test_save_persists_custom_pivot(self):
+        # Round 2 (docs/EDITOR.md #2): pivot_mode/pivot_x/pivot_y round-trip
+        # through the same save endpoint as every other layout param, and
+        # actually change generated geometry (rotation pivots on the
+        # dragged point, not the section center/origin).
+        self._login_as("manager")
+        resp = self._post_json(
+            self._save_url(),
+            {
+                "sections": {
+                    str(self.section.pk): self._params_payload(
+                        rows=1, seats_per_row=1, rotation=90.0,
+                        pivot_mode="custom", pivot_x=5.0, pivot_y=0.0,
+                    )
+                }
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.section.refresh_from_db()
+        self.assertEqual(self.section.pivot_mode, "custom")
+        self.assertEqual(self.section.pivot_x, 5.0)
+        self.assertEqual(self.section.pivot_y, 0.0)
+        # origin_x/origin_y default to 0,0 -- with pivot (5, 0) and a
+        # 90-degree turn, local (0, 0) (the only seat) swings to (5, -5).
+        seat = self.section.seats.get()
+        self.assertAlmostEqual(seat.x, 5.0, places=6)
+        self.assertAlmostEqual(seat.y, -5.0, places=6)
 
     def test_save_applies_alternating_offset_and_alt_row_seat_delta(self):
         self._login_as("manager")

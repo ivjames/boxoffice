@@ -18,7 +18,9 @@
  * `section` here is a plain object with (at least): origin_x, origin_y,
  * rotation, seat_pitch, row_pitch, row_x_offset, offset_mode ("repeated" |
  * "alternating"), alt_row_seat_delta, arc_radius (number or null/0 for
- * grid/raked), rows, seats_per_row, numbering_scheme, row_label_scheme.
+ * grid/raked), rows, seats_per_row, numbering_scheme, row_label_scheme,
+ * pivot_mode ("center" | "origin" | "custom" -- Round 2, see pivotLocal),
+ * pivot_x, pivot_y (CUSTOM pivot_mode only).
  */
 
 const OFFSET_MODE_ALTERNATING = "alternating";
@@ -115,19 +117,35 @@ function seatXY(section, rowIndex, seatIndex, rowSeatCount) {
     } else {
         local = gridOrRakedLocal(section, rowIndex, seatIndex);
     }
-    const [localX, localY] = rotate(local[0], local[1], section.rotation);
-    return [section.origin_x + localX, section.origin_y + localY];
+    const [px, py] = pivotLocal(section);
+    const [relX, relY] = rotate(local[0] - px, local[1] - py, section.rotation);
+    return [section.origin_x + px + relX, section.origin_y + py + relY];
 }
 
 /*
- * The section's pivot marker position (rotation always pivots on the
- * section's own origin -- see generation.py's module docstring): local
- * (0, 0) maps to (origin_x, origin_y) post-rotation by construction, so the
- * pivot is just the origin itself. Exposed as its own function so the
- * editor doesn't have to know that fact is baked into seatXY.
+ * The local (pre-rotation) point `rotation` pivots around, per
+ * `section.pivot_mode` -- mirrors generation.py's `_rotation_pivot_local`
+ * EXACTLY (see this file's header and that function's docstring for the
+ * CENTER/ORIGIN/CUSTOM contract).
+ */
+function pivotLocal(section) {
+    if (section.pivot_mode === "origin") return [0, 0];
+    if (section.pivot_mode === "custom") return [section.pivot_x || 0, section.pivot_y || 0];
+    // CENTER (default).
+    const w = Math.max(0, section.seats_per_row - 1) * section.seat_pitch;
+    const h = Math.max(0, section.rows - 1) * section.row_pitch;
+    return [w / 2, h / 2];
+}
+
+/*
+ * World (x, y) of the section's rotation pivot -- origin + pivotLocal, with
+ * NO rotation applied (a pivot's world position is invariant under the
+ * rotation it pivots around -- see generation.py's module docstring).
+ * Mirrors generation.py's `pivot_xy`.
  */
 function pivotXY(section) {
-    return [section.origin_x, section.origin_y];
+    const [px, py] = pivotLocal(section);
+    return [section.origin_x + px, section.origin_y + py];
 }
 
 /*
@@ -177,6 +195,7 @@ window.SeatGeometry = {
     gridOrRakedLocal,
     fannedLocal,
     seatXY,
+    pivotLocal,
     pivotXY,
     computeSectionSeats,
 };

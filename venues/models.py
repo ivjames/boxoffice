@@ -76,6 +76,11 @@ class Section(TenantScopedModel):
         REPEATED = "repeated", "Repeated (constant shift every row)"
         ALTERNATING = "alternating", "Alternating (stagger every other row)"
 
+    class PivotMode(models.TextChoices):
+        CENTER = "center", "Section center (default)"
+        ORIGIN = "origin", "Origin (front-left corner)"
+        CUSTOM = "custom", "Custom (dragged on canvas)"
+
     chart = models.ForeignKey(SeatingChart, on_delete=models.CASCADE, related_name="sections")
     name = models.CharField(max_length=255)
     ordering = models.PositiveIntegerField(default=0)
@@ -138,6 +143,34 @@ class Section(TenantScopedModel):
             "controls how tightly the rows bow, not where the section sits) -- see "
             "venues.generation._fanned_local, mirrored in static/js/seat_geometry.js. "
             "Null/blank (default) means straight (grid or raked, per rotation/row_x_offset)."
+        ),
+    )
+    pivot_mode = models.CharField(
+        max_length=10,
+        choices=PivotMode.choices,
+        default=PivotMode.CENTER,
+        help_text=(
+            "Round-2 refinement (docs/EDITOR.md): what point `rotation` pivots around. CENTER "
+            "(default) is the midpoint of the seats_per_row x rows block (same bounding box the "
+            "editor's transform-box handles use). ORIGIN is the section's own origin_x/origin_y "
+            "(the front-left corner -- Phase A/B's original, less intuitive behavior). CUSTOM "
+            "uses pivot_x/pivot_y, set by dragging the pivot marker on canvas. See "
+            "venues.generation._rotation_pivot_local, mirrored in static/js/seat_geometry.js's "
+            "pivotLocal."
+        ),
+    )
+    pivot_x = models.FloatField(
+        default=0.0,
+        help_text=(
+            "CUSTOM pivot_mode only: local x (same pre-rotation local frame as the seat grid, "
+            "relative to origin_x) of the rotation pivot. Ignored otherwise."
+        ),
+    )
+    pivot_y = models.FloatField(
+        default=0.0,
+        help_text=(
+            "CUSTOM pivot_mode only: local y (same pre-rotation local frame as the seat grid, "
+            "relative to origin_y) of the rotation pivot. Ignored otherwise."
         ),
     )
 

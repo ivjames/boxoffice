@@ -21,6 +21,7 @@ from venues.generation import (
     generate_row_labels,
     generate_seat_numbers,
     generate_seats,
+    pivot_xy,
 )
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
@@ -286,8 +287,14 @@ class GeometryTests(TestCase):
         # exactly the ragged-row + growing-offset trapezoid shape.
 
     def test_raked_rotation_tilts_the_whole_staggered_block(self):
+        # Pinned to ORIGIN pivot_mode -- this test is about the raked
+        # rotation FORMULA (does a 90-degree turn swap the local axes),
+        # which is easiest to state relative to local (0, 0); the Round-2
+        # default-pivot behavior itself is covered separately below by
+        # PivotModeTests.
         section = self.make_section(
-            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=1.0, row_x_offset=0.0, rotation=90.0
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=1.0, row_x_offset=0.0, rotation=90.0,
+            pivot_mode=Section.PivotMode.ORIGIN,
         )
         generate_seats(section, [1, 1])
         by_row = self.seats_by_row(section)
@@ -424,15 +431,18 @@ class GeometryTests(TestCase):
             self.assertAlmostEqual(by_row[label][0].x, 0.0, places=6)
 
     def test_fanned_rotation_pivots_on_origin_same_as_raked(self):
+        # Pinned to ORIGIN pivot_mode -- see the raked test's comment above;
+        # the default CENTER pivot is covered by PivotModeTests.
         plain = self.make_section(
-            name="Plain", origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0, arc_radius=10.0
+            name="Plain", origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0, arc_radius=10.0,
+            pivot_mode=Section.PivotMode.ORIGIN,
         )
         generate_seats(plain, [1, 1])
         plain_row_b = self.seats_by_row(plain)["B"][0]
 
         rotated = self.make_section(
             name="Rotated", origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0,
-            arc_radius=10.0, rotation=90.0,
+            arc_radius=10.0, rotation=90.0, pivot_mode=Section.PivotMode.ORIGIN,
         )
         generate_seats(rotated, [1, 1])
         rotated_row_b = self.seats_by_row(rotated)["B"][0]
@@ -553,9 +563,55 @@ class SharedFormulaContractTests(TestCase):
         self.assertAlmostEqual(seat.y, 0.0, places=9)
 
     def test_tilt(self):
-        section = self.make_section(origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=1.0, rotation=90.0)
+        # ORIGIN pivot_mode pinned explicitly -- see generation.py's module
+        # docstring's Round-2 section: the CENTER default is a SEPARATE
+        # contract (test_tilt_pivots_on_center_by_default below), and
+        # seat_geometry.js's pivotLocal must match this ORIGIN case too.
+        section = self.make_section(
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=1.0, rotation=90.0,
+            pivot_mode=Section.PivotMode.ORIGIN,
+        )
         by = self.by_identity(generate_seats(section, [1, 1]))
         self.assertAlmostEqual(by[("A", "1")][0], 0.0, places=9)
         self.assertAlmostEqual(by[("A", "1")][1], 0.0, places=9)
         self.assertAlmostEqual(by[("B", "1")][0], -1.0, places=9)
         self.assertAlmostEqual(by[("B", "1")][1], 0.0, places=9)
+
+    def test_tilt_pivots_on_center_by_default(self):
+        # Round 2's headline fix: pivot_mode defaults to CENTER (the
+        # seats_per_row x rows block's midpoint), not the origin corner. A
+        # 2-row x 2-seat block at seat_pitch=row_pitch=1.0 has local center
+        # (0.5, 0.5); rotating 180 degrees around that point maps local
+        # (0, 0) (row A seat 1) to local (1, 1) (row B seat 2) and vice
+        # versa, both offset by the section's origin.
+        section = self.make_section(
+            origin_x=10.0, origin_y=20.0, seat_pitch=1.0, row_pitch=1.0,
+            rows=2, seats_per_row=2, rotation=180.0,
+        )
+        self.assertEqual(section.pivot_mode, Section.PivotMode.CENTER)
+        by = self.by_identity(generate_seats(section, [2, 2]))
+        self.assertAlmostEqual(by[("A", "1")][0], 11.0, places=9)
+        self.assertAlmostEqual(by[("A", "1")][1], 21.0, places=9)
+        self.assertAlmostEqual(by[("B", "2")][0], 10.0, places=9)
+        self.assertAlmostEqual(by[("B", "2")][1], 20.0, places=9)
+        # The center itself (local (0.5, 0.5), i.e. no real seat there for
+        # an even 2x2 grid) is the one point rotation leaves untouched --
+        # confirmed directly via pivot_xy.
+        self.assertAlmostEqual(pivot_xy(section)[0], 10.5, places=9)
+        self.assertAlmostEqual(pivot_xy(section)[1], 20.5, places=9)
+
+    def test_custom_pivot_is_invariant_under_rotation(self):
+        section = self.make_section(
+            origin_x=0.0, origin_y=0.0, seat_pitch=1.0, row_pitch=1.0,
+            pivot_mode=Section.PivotMode.CUSTOM, pivot_x=3.0, pivot_y=4.0, rotation=37.0,
+        )
+        px, py = pivot_xy(section)
+        self.assertAlmostEqual(px, 3.0, places=9)
+        self.assertAlmostEqual(py, 4.0, places=9)
+        # Same pivot world position regardless of how much rotation is
+        # applied -- that's the defining property of a pivot.
+        section.rotation = -22.0
+        section.save(update_fields=["rotation"])
+        px2, py2 = pivot_xy(section)
+        self.assertAlmostEqual(px2, px, places=9)
+        self.assertAlmostEqual(py2, py, places=9)

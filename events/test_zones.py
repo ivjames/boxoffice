@@ -14,12 +14,14 @@ from django.utils import timezone
 from events.models import Event, Performance, PricingZone, PricingZoneSeat, ZoneTemplate
 from events.pricing import PricingError, resolve_seat_price
 from events.zones import (
+    SEAT_RADIUS,
     ZoneError,
     apply_zone,
     clone_zones_from_performance,
     delete_zone,
     get_or_create_template,
     remove_seats_from_zone,
+    zone_map_geometry,
 )
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
@@ -44,6 +46,32 @@ class ZoneFixtureMixin:
             for i in range(1, n_seats + 1)
         ]
         return self.performance
+
+
+class ZoneMapGeometrySeatRadiusTests(ZoneFixtureMixin, TestCase):
+    """docs/EDITOR.md's Round 2 refinement #6 ("seats scale with spacing" is
+    a bug): zone_map_geometry's seat_radius (shared by the live pricing-zone
+    editor AND events.zone_export's PNG/PDF renderer) must be a CONSTANT --
+    changing a section's seat_pitch/row_pitch changes only the GAPS between
+    seats, never the drawn seat size."""
+
+    def test_seat_radius_is_the_constant_regardless_of_pitch(self):
+        self.build_reserved_performance(n_seats=1)
+        self.section.seat_pitch = 4.5
+        self.section.row_pitch = 0.25
+        self.section.save(update_fields=["seat_pitch", "row_pitch"])
+        _, _, seat_radius, _ = zone_map_geometry(self.performance)
+        self.assertEqual(seat_radius, SEAT_RADIUS)
+
+    def test_seat_radius_unchanged_across_very_different_pitches(self):
+        org = make_org("wide-range")
+        self.build_reserved_performance(org=org, n_seats=1)
+        tight_radius = zone_map_geometry(self.performance)[2]
+        self.section.seat_pitch = 0.2
+        self.section.row_pitch = 0.2
+        self.section.save(update_fields=["seat_pitch", "row_pitch"])
+        wide_radius = zone_map_geometry(self.performance)[2]
+        self.assertEqual(tight_radius, wide_radius)
 
 
 class ZoneTemplateModelTests(TestCase):

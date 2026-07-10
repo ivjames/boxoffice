@@ -159,7 +159,7 @@ class SeatingChartForm(forms.ModelForm):
 
 
 class SectionForm(forms.ModelForm):
-    """Section metadata: name/ordering/tier + numbering/row-label scheme.
+    """Section metadata: name/tier + numbering/row-label scheme.
 
     Per docs/EDITOR.md's live rework, LAYOUT params (origin, rotation,
     pitch, offset, arc, rows/seats-per-row shape) are no longer edited via
@@ -167,16 +167,48 @@ class SectionForm(forms.ModelForm):
     editor canvas (dashboard_chart_editor / chart_editor_save), which is
     also the only place seats actually get (re)generated. This form only
     creates/renames the section shell and picks its numbering conventions.
+
+    `ordering` is deliberately NOT a form field (Round-2 feedback,
+    docs/EDITOR.md #7): a bare sort-index number input is exactly the kind
+    of "raw internal param" the inline "New section" modal shouldn't expose
+    -- staff shouldn't have to know or care what integer means "third".
+    SectionCreateView auto-assigns it (append to the end of the chart's
+    current section list, same append-at-the-end idea as origin_x's
+    staggered default); reordering afterward is the chart editor sidebar's
+    up/down arrows (dashboard_section_reorder), not this form.
     """
 
     class Meta:
         model = Section
-        fields = ["name", "ordering", "tier", "numbering_scheme", "row_label_scheme"]
+        fields = ["name", "tier", "numbering_scheme", "row_label_scheme"]
 
     def __init__(self, *args, organization, chart, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.chart = chart
+
+    def clean_name(self):
+        # `chart` isn't a form field (it's fixed by the URL/view, not user-
+        # editable here), so Django's own ModelForm.validate_unique()
+        # excludes it -- and with it, the WHOLE unique_section_name_per_chart
+        # (chart, name) constraint check (a model field absent from the form
+        # can't have its unique-together validated, by design: see
+        # BaseModelForm._get_validation_exclusions()). Left unchecked, a
+        # duplicate name under THIS chart would pass form validation and
+        # blow up as a raw IntegrityError at Section.save() instead of a
+        # clean field error -- surfaced by the Round 2 inline "New section"
+        # modal (docs/EDITOR.md #7), which needs a real form_invalid()/JSON
+        # error response to show a duplicate-name message, not a 500. Doing
+        # the check by hand here covers exactly what the DB constraint would
+        # have caught.
+        name = self.cleaned_data.get("name")
+        if name:
+            existing = Section.objects.filter(organization=self.organization, chart=self.chart, name=name)
+            if self.instance.pk:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise forms.ValidationError("A section with this name already exists on this chart.")
+        return name
 
     def save(self, commit=True):
         section = super().save(commit=False)

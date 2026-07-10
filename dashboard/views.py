@@ -388,6 +388,25 @@ class SeatingChartDetailView(ManagerRequiredMixin, DetailView):
 
 
 class SectionCreateView(ManagerRequiredMixin, CreateView):
+    """Section-shell creation (name/tier/numbering -- layout params are the
+    live editor's job, see SectionForm's docstring). Round 2's "add sections
+    without leaving the editor" (docs/EDITOR.md) reuses this SAME manager-
+    gated, org-/chart-scoped endpoint for BOTH paths rather than adding a
+    parallel one:
+
+    - A plain (non-AJAX) form POST -- e.g. someone hits /sections/new/
+      directly -- behaves exactly as before: redirects into the editor with
+      the new section selected (?section=<pk>), which the editor's own
+      init() already reads as `initialSelectedId`.
+    - An AJAX POST (chart_editor.js's inline "New section" modal sends
+      `X-Requested-With: XMLHttpRequest`) gets a JSON response instead --
+      `{"ok": true, "section": {...}}` in the exact shape _section_json
+      produces, so the editor can splice it straight into its live `sections`
+      state with no extra fetch/reload -- and `{"ok": false, "errors":
+      {...}}` on validation failure (e.g. a duplicate section name), instead
+      of a re-rendered HTML form page an XHR caller can't use.
+    """
+
     model = Section
     form_class = SectionForm
     template_name = "dashboard/section_form.html"
@@ -397,6 +416,9 @@ class SectionCreateView(ManagerRequiredMixin, CreateView):
             SeatingChart, pk=kwargs["chart_pk"], organization=request.organization
         )
         return super().dispatch(request, *args, **kwargs)
+
+    def _wants_json(self):
+        return self.request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
@@ -413,11 +435,29 @@ class SectionCreateView(ManagerRequiredMixin, CreateView):
         # A fresh section's layout params are all still model defaults
         # (origin 0,0) -- stagger new sections' origin_x a bit so they
         # don't all land exactly on top of each other in the live editor;
-        # staff drag the pivot handle to place it precisely afterward.
+        # staff drag the section (or its rotation pivot) to place it
+        # precisely afterward. `ordering` isn't a form field (see
+        # SectionForm's docstring) -- append this section to the end of the
+        # chart's current list the same way; reordering afterward is the
+        # sidebar's up/down arrows (section_reorder below), not a manual
+        # number.
         existing_count = Section.objects.filter(organization=self.request.organization, chart=self.chart).count()
         form.instance.origin_x = existing_count * 12.0
+        form.instance.ordering = existing_count
+        response = super().form_valid(form)  # sets self.object; builds the redirect response
+        if self._wants_json():
+            color = _section_color(existing_count)
+            return JsonResponse({"ok": True, "section": _section_json(self.object, color, self.chart.pk)})
         messages.success(self.request, "Section created -- shape and place it in the visual editor.")
-        return super().form_valid(form)
+        return response
+
+    def form_invalid(self, form):
+        if self._wants_json():
+            return JsonResponse(
+                {"ok": False, "errors": {field: list(errs) for field, errs in form.errors.items()}},
+                status=400,
+            )
+        return super().form_invalid(form)
 
     def get_success_url(self):
         return f"{reverse('dashboard_chart_editor', args=[self.chart.pk])}?section={self.object.pk}"
@@ -455,6 +495,45 @@ class SectionUpdateView(ManagerRequiredMixin, UpdateView):
         return reverse("dashboard_chart_detail", args=[self.chart.pk])
 
 
+@manager_required
+@require_POST
+def section_reorder(request, chart_pk, pk):
+    """Move one section up or down in its chart's display order -- Round
+    2's reordering mechanism now that `ordering` isn't a manual number field
+    on SectionForm (see its docstring): a small swap-with-neighbor action,
+    exposed as up/down arrows in the chart editor sidebar, instead of asking
+    staff to think in raw sort integers. JSON body: `{"direction": "up" |
+    "down"}`. Swaps THIS section's `ordering` value with its neighbor's in
+    the chart's current `(ordering, name)` order -- a no-op (still 200) if
+    already first/last. Org- AND chart-scoped like every other section
+    mutation; returns the chart's full section id order afterward so the
+    editor can just replace its local `sectionOrder` array."""
+    chart = get_object_or_404(SeatingChart, pk=chart_pk, organization=request.organization)
+    section = get_object_or_404(Section, pk=pk, organization=request.organization, chart=chart)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        payload = {}
+    direction = payload.get("direction")
+    if direction not in ("up", "down"):
+        return JsonResponse({"ok": False, "error": "direction must be 'up' or 'down'."}, status=400)
+
+    ordered = list(chart.sections.order_by("ordering", "name"))
+    index = next((i for i, s in enumerate(ordered) if s.pk == section.pk), None)
+    neighbor_index = index - 1 if direction == "up" else index + 1
+
+    if index is not None and 0 <= neighbor_index < len(ordered):
+        neighbor = ordered[neighbor_index]
+        with transaction.atomic():
+            section.ordering, neighbor.ordering = neighbor.ordering, section.ordering
+            section.save(update_fields=["ordering"])
+            neighbor.save(update_fields=["ordering"])
+
+    new_order = [s.pk for s in chart.sections.order_by("ordering", "name")]
+    return JsonResponse({"ok": True, "order": new_order})
+
+
 # --- seating chart visual editor (live, param-driven -- docs/EDITOR.md) ---
 #
 # Rework of the Phase B SVG drag editor: the canvas is entirely param-driven
@@ -485,12 +564,33 @@ def _section_color(index):
 # Every Section field the live editor reads/writes -- the single list both
 # chart_editor (serializing for the page) and chart_editor_save
 # (deserializing + persisting) iterate, so the two can never drift apart on
-# which fields are in scope.
+# which fields are in scope. pivot_mode/pivot_x/pivot_y are Round 2's
+# configurable-rotation-pivot fields (docs/EDITOR.md) -- see
+# venues.generation's module docstring and Section.pivot_mode's help text.
 _SECTION_PARAM_FIELDS = [
     "origin_x", "origin_y", "rotation", "seat_pitch", "row_pitch", "row_x_offset",
     "arc_radius", "offset_mode", "alt_row_seat_delta", "rows", "seats_per_row",
-    "numbering_scheme", "row_label_scheme",
+    "numbering_scheme", "row_label_scheme", "pivot_mode", "pivot_x", "pivot_y",
 ]
+
+
+def _section_json(section, color, chart_pk):
+    """The JSON shape the live editor's Alpine state needs for one section
+    -- shared by chart_editor's initial-page json_script payload AND
+    SectionCreateView's inline-add AJAX response (docs/EDITOR.md Round 2's
+    "add sections without leaving the editor"), so a section created inline
+    is indistinguishable, client-side, from one the page loaded with."""
+    return {
+        "id": section.pk,
+        "name": section.name,
+        "tier": section.tier,
+        "color": color,
+        "edit_url": reverse("dashboard_section_update", args=[chart_pk, section.pk]),
+        "reorder_url": reverse("dashboard_section_reorder", args=[chart_pk, section.pk]),
+        **{field: getattr(section, field) for field in _SECTION_PARAM_FIELDS},
+        "removed_seats": section.removed_seats,
+        "accessible_seats": section.accessible_seats,
+    }
 
 
 @manager_required
@@ -507,17 +607,7 @@ def chart_editor(request, pk):
     sections = list(chart.sections.order_by("ordering", "name"))
 
     sections_json = [
-        {
-            "id": section.pk,
-            "name": section.name,
-            "tier": section.tier,
-            "color": _section_color(i),
-            "edit_url": reverse("dashboard_section_update", args=[chart.pk, section.pk]),
-            **{field: getattr(section, field) for field in _SECTION_PARAM_FIELDS},
-            "removed_seats": section.removed_seats,
-            "accessible_seats": section.accessible_seats,
-        }
-        for i, section in enumerate(sections)
+        _section_json(section, _section_color(i), chart.pk) for i, section in enumerate(sections)
     ]
 
     selected_param = request.GET.get("section")
@@ -537,6 +627,7 @@ def chart_editor(request, pk):
             "sections_json": sections_json,
             "initial_selected_id": selected_id,
             "save_url": reverse("dashboard_chart_editor_save", args=[chart.pk]),
+            "new_section_url": reverse("dashboard_section_create", args=[chart.pk]),
         },
     )
 
@@ -615,7 +706,7 @@ def chart_editor_save(request, pk):
             for field in _SECTION_PARAM_FIELDS:
                 if field not in raw:
                     continue
-                if field in ("offset_mode", "numbering_scheme", "row_label_scheme"):
+                if field in ("offset_mode", "numbering_scheme", "row_label_scheme", "pivot_mode"):
                     setattr(section, field, str(raw[field]))
                 elif field == "arc_radius":
                     setattr(section, field, None if raw[field] in (None, "", 0) else float(raw[field]))

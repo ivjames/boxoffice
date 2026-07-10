@@ -119,3 +119,14 @@ anything that isn't actually live/usable.
 7. **Add sections without leaving the editor**: "New section" adds a section
    inline (in-editor form/modal); it appears live on the canvas. No navigation to
    a separate page.
+
+   **Follow-up feedback on #7**: the inline form must stay human-friendly, not a
+   dump of internal params. No raw `ordering` number input anywhere (create OR
+   edit) — a new section auto-appends to the end of the chart's section list;
+   reordering afterward is up/down arrows in the sidebar (swap-with-neighbor),
+   not a manual sort integer. No bare `origin_x`/`origin_y` fields either — a new
+   section gets an automatic, non-overlapping default position (staggered off
+   existing sections, same idea as before) and is placed precisely by dragging on
+   canvas. The create form is just Name (required) + Tier (optional label); rows/
+   seats-per-row/pitch keep sensible model defaults so the section is immediately
+   visible and usable on the canvas.

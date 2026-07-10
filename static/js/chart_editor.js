@@ -23,14 +23,43 @@
  * Viewport (zoom/pan/fit, axis-correct pointer math) comes from the shared
  * static/js/editor_viewport.js module, included by both this file and
  * zone_editor.js -- see that file for the vertical-0.5x-drag bug fix.
+ *
+ * Round 2 (docs/EDITOR.md "Round 2 refinements", post-review feedback)
+ * adds: paired slider+number inputs (plain HTML/Alpine, template-only --
+ * no JS changes needed since both inputs just x-model the same property);
+ * a configurable rotation pivot (pivot_mode/pivot_x/pivot_y -- see
+ * worldFromLocal/toLocal/the 'rotate'/'move_pivot' onHandleDrag cases, and
+ * venues/generation.py's module docstring for the shared contract);
+ * responsive handle sizing (CSS-only, static/css/app.css); a background
+ * scale grid (plain SVG/Alpine in the template, reactive to `viewBox`, no
+ * JS needed); native SVG <title> tooltips on every handle (template-only);
+ * a constant seat radius decoupled from seat_pitch/row_pitch (see
+ * SEAT_RADIUS below -- the bug was exactly this file's old `radius =
+ * seat_pitch * 0.35`); and inline section creation (submitNewSection(),
+ * which splices a server-created section straight into `sections`/
+ * `sectionOrder` without navigating away -- see ensureSectionGroup() for
+ * why section <g> elements are now created here in JS rather than by a
+ * Django loop).
  */
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// Round 2 bug fix (docs/EDITOR.md #6): seat_pitch/row_pitch must only
+// change the GAPS between seats, never the drawn seat SIZE -- the old
+// `radius = seat_pitch * 0.35` tied the two together, so dragging the
+// pitch sliders visibly grew/shrank every seat along with the spacing.
+// The seat's on-canvas radius is now a plain constant, in the same SVG
+// user-space units seat_pitch/row_pitch are (so it still scales normally
+// with zoom -- just never with pitch). events/zones.py's
+// zone_map_geometry had the exact same coupling for the PNG/PDF export
+// (Phase D) and per-performance zone editor; fixed there too, as its own
+// constant (SEAT_RADIUS), so the two can't drift.
+const SEAT_RADIUS = 0.35;
+
 const PARAM_FIELDS = [
     "origin_x", "origin_y", "rotation", "seat_pitch", "row_pitch", "row_x_offset",
     "offset_mode", "alt_row_seat_delta", "rows", "seats_per_row",
-    "numbering_scheme", "row_label_scheme",
+    "numbering_scheme", "row_label_scheme", "pivot_mode", "pivot_x", "pivot_y",
 ];
 
 function clamp(value, min, max) {
@@ -62,12 +91,16 @@ function makeSection(raw) {
         tier: raw.tier,
         color: raw.color,
         editUrl: raw.edit_url,
+        reorderUrl: raw.reorder_url,
         origin_x: raw.origin_x,
         origin_y: raw.origin_y,
         rotation: raw.rotation,
         seat_pitch: raw.seat_pitch,
         row_pitch: raw.row_pitch,
         row_x_offset: raw.row_x_offset,
+        pivot_mode: raw.pivot_mode || "center",
+        pivot_x: raw.pivot_x || 0,
+        pivot_y: raw.pivot_y || 0,
         arc_enabled: !!arcRadius,
         arc_radius: arcRadius,
         arc_amount: arcRadiusToAmount(arcRadius),
@@ -89,10 +122,13 @@ function chartEditor(config) {
 
         chartId: config.chartId,
         saveUrl: config.saveUrl,
+        newSectionUrl: config.newSectionUrl,
         sections: {},
         sectionOrder: [],
         selectedId: config.initialSelectedId || null,
-        dragMode: null, // null | 'pivot' | 'seat_pitch' | 'row_pitch' | 'both' | 'rotate' | 'offset'
+        // null | 'origin' (move the whole section) | 'seat_pitch' | 'row_pitch' | 'both'
+        // (resize) | 'rotate' | 'offset' | 'move_pivot' (reposition the rotation pivot)
+        dragMode: null,
         _dragSectionId: null,
         _dragStart: null,
         _bgStart: null,
@@ -101,6 +137,10 @@ function chartEditor(config) {
         saving: false,
         savedAt: null,
         error: null,
+        newSectionOpen: false,
+        newSectionForm: { name: "", tier: "" },
+        newSectionSaving: false,
+        newSectionError: null,
 
         init() {
             const raw = JSON.parse(document.getElementById("editor-sections-data").textContent);
@@ -116,8 +156,16 @@ function chartEditor(config) {
             // name before Alpine sees it), so push it imperatively on every
             // reactive change instead.
             this.$watch("viewBox", () => this.syncViewBoxAttr());
+            // The selected section's <g> gets a highlight class -- applied
+            // imperatively (see refreshGroupClasses()) rather than an
+            // Alpine :class binding, since groups themselves are now
+            // created imperatively too (ensureSectionGroup(), so a section
+            // added inline via submitNewSection() has a group to render
+            // into -- see this file's header comment).
+            this.$watch("selectedId", () => this.refreshGroupClasses());
             this.$nextTick(() => {
                 for (const id of this.sectionOrder) this.renderSection(id);
+                this.refreshGroupClasses();
                 this.fitAll();
                 this.syncViewBoxAttr();
             });
@@ -155,6 +203,9 @@ function chartEditor(config) {
                 seats_per_row: section.seats_per_row,
                 numbering_scheme: section.numbering_scheme,
                 row_label_scheme: section.row_label_scheme,
+                pivot_mode: section.pivot_mode,
+                pivot_x: section.pivot_x,
+                pivot_y: section.pivot_y,
             };
         },
 
@@ -165,22 +216,49 @@ function chartEditor(config) {
             });
         },
 
+        // Creates (once) and returns the <g data-section-group> a section's
+        // seats render into. Sections present at page load and sections
+        // added inline via submitNewSection() both go through this same
+        // path now -- see this file's header comment for why group
+        // creation moved from a Django template loop into JS.
+        // Inserted right before the transform-box <g> (x-ref="transformBox"
+        // in the template) so seats always paint UNDER the handles/pivot
+        // markers regardless of insertion order (SVG paints in DOM order).
+        ensureSectionGroup(id) {
+            let g = this.$refs.svg.querySelector(`[data-section-group="${id}"]`);
+            if (!g) {
+                g = document.createElementNS(SVG_NS, "g");
+                g.setAttribute("data-section-group", id);
+                this.$refs.svg.insertBefore(g, this.$refs.transformBox);
+            }
+            return g;
+        },
+
+        refreshGroupClasses() {
+            for (const id of this.sectionOrder) {
+                const g = this.$refs.svg.querySelector(`[data-section-group="${id}"]`);
+                if (g) g.setAttribute("class", this.selectedId === id ? "chart-editor__group--selected" : "");
+            }
+        },
+
         renderSection(id) {
             const section = this.sections[id];
             if (!section) return;
-            const g = this.$refs.svg.querySelector(`[data-section-group="${id}"]`);
-            if (!g) return;
+            const g = this.ensureSectionGroup(id);
             while (g.firstChild) g.removeChild(g.firstChild);
 
             const seats = this.computeSeats(section).filter((s) => !s.removed);
             section.seatCount = seats.length;
-            const radius = Math.max(0.15, section.seat_pitch * 0.35);
+            // Round-2 bug fix (docs/EDITOR.md #6): a constant radius, NOT
+            // derived from seat_pitch -- see SEAT_RADIUS's module-level
+            // comment. Spacing sliders now only move seats apart/together;
+            // they never resize the seat circles themselves.
 
             for (const seat of seats) {
                 const circle = document.createElementNS(SVG_NS, "circle");
                 circle.setAttribute("cx", seat.x);
                 circle.setAttribute("cy", seat.y);
-                circle.setAttribute("r", radius);
+                circle.setAttribute("r", SEAT_RADIUS);
                 circle.setAttribute(
                     "class",
                     "editor-seat" + (seat.accessible ? " editor-seat--accessible" : "")
@@ -239,6 +317,23 @@ function chartEditor(config) {
             this.onParamInput(id);
         },
 
+        // Round 2 (docs/EDITOR.md #2): the Center/Origin/Custom selector.
+        // Switching INTO "custom" seeds pivot_x/pivot_y from whatever the
+        // pivot is currently computed as (center or origin) so the pivot
+        // marker doesn't jump somewhere unexpected the moment the mode
+        // changes -- from there, dragging the marker (onHandleDrag's
+        // 'move_pivot' case) moves it exactly where the user drops it.
+        onPivotModeInput(id, mode) {
+            const s = this.sections[id];
+            if (mode === "custom" && s.pivot_mode !== "custom") {
+                const [px, py] = window.SeatGeometry.pivotLocal(this.geomParams(s));
+                s.pivot_x = px;
+                s.pivot_y = py;
+            }
+            s.pivot_mode = mode;
+            this.onParamInput(id);
+        },
+
         stepRows(id, delta) {
             const s = this.sections[id];
             s.rows = Math.max(1, s.rows + delta);
@@ -263,6 +358,45 @@ function chartEditor(config) {
             this.selectedId = id;
         },
 
+        // -- sidebar reordering (Round 2, docs/EDITOR.md #7 feedback) --------
+        //
+        // `ordering` isn't a manual number field on the New-section form
+        // (see SectionForm's docstring) -- these up/down arrows are the
+        // whole reordering UI, swapping THIS section with its neighbor in
+        // the display list via dashboard_section_reorder (manager-gated,
+        // org-/chart-scoped, same as every other section mutation). The
+        // server computes the swap and returns the chart's full section-id
+        // order; the client just adopts it verbatim rather than trying to
+        // replicate the swap logic itself.
+
+        async reorderSection(id, direction) {
+            const s = this.sections[id];
+            if (!s || !s.reorderUrl) return;
+            try {
+                const resp = await fetch(s.reorderUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "X-CSRFToken": this.csrfToken() },
+                    credentials: "same-origin",
+                    body: JSON.stringify({ direction }),
+                });
+                const data = await resp.json().catch(() => null);
+                if (resp.ok && data && data.ok && Array.isArray(data.order)) {
+                    this.sectionOrder = data.order;
+                }
+            } catch (e) {
+                // Best-effort -- the sidebar list simply doesn't reorder;
+                // no seat/geometry state is at risk either way.
+            }
+        },
+
+        moveSectionUp(id) {
+            this.reorderSection(id, "up");
+        },
+
+        moveSectionDown(id) {
+            this.reorderSection(id, "down");
+        },
+
         // -- transform box: local <-> world, handle positions -----------------
 
         localWH(section) {
@@ -271,44 +405,85 @@ function chartEditor(config) {
             return [w, h];
         },
 
+        // World position of a LOCAL (pre-rotation) point in `section`'s
+        // frame -- rotates around the section's CONFIGURED pivot (Round 2,
+        // docs/EDITOR.md #2 -- see seat_geometry.js's pivotLocal/seatXY and
+        // venues/generation.py's module docstring for the shared contract),
+        // not always the origin corner like before. Every transform-box
+        // handle (resize/offset/rotate) is expressed as a local point and
+        // goes through this, so they all correctly swing around whichever
+        // pivot is selected.
         worldFromLocal(section, lx, ly) {
-            const [rx, ry] = window.SeatGeometry.rotate(lx, ly, section.rotation);
-            return [section.origin_x + rx, section.origin_y + ry];
+            const [px, py] = window.SeatGeometry.pivotLocal(this.geomParams(section));
+            const [rx, ry] = window.SeatGeometry.rotate(lx - px, ly - py, section.rotation);
+            return [section.origin_x + px + rx, section.origin_y + py + ry];
         },
 
+        // Inverse of worldFromLocal -- used by the resize/offset drag math
+        // to turn a pointer's world position back into the section's local
+        // (pre-rotation) frame, regardless of the current pivot/rotation.
         toLocal(section, worldX, worldY) {
-            const dx = worldX - section.origin_x;
-            const dy = worldY - section.origin_y;
-            return window.SeatGeometry.rotate(dx, dy, -section.rotation);
+            const [px, py] = window.SeatGeometry.pivotLocal(this.geomParams(section));
+            const dx = worldX - section.origin_x - px;
+            const dy = worldY - section.origin_y - py;
+            const [rx, ry] = window.SeatGeometry.rotate(dx, dy, -section.rotation);
+            return [rx + px, ry + py];
         },
 
-        handlePivot() {
+        // World (x, y) of the section's ORIGIN (origin_x, origin_y) -- the
+        // translate-only placement anchor, distinct from the rotation pivot
+        // since Round 2 (see pivotWorldXY() below). Unlike a local (lx, ly)
+        // point, the origin itself never needs `worldFromLocal`'s rotation:
+        // it's the thing everything else is rotated/translated relative to.
+        handleOrigin() {
             const s = this.selected;
             return s ? [s.origin_x, s.origin_y] : [0, 0];
         },
 
-        // The pivot MARKER is drawn/clickable slightly up-and-left of the
-        // TRUE pivot (handlePivot(), the section's origin -- what rotation
-        // actually pivots on), not exactly on top of it. The true origin
-        // usually coincides with the section's own front-left seat, and
-        // since the marker paints after (on top of) the seat circles, a
-        // marker drawn exactly at the origin would sit on top of that seat
-        // and swallow every click meant for it -- confirmed by driving the
-        // editor: clicking that seat opened a pivot drag instead of its
-        // popover. Dragging the marker still moves origin_x/origin_y
-        // exactly as if it were at the true origin (onHandleDrag's 'pivot'
-        // case only cares about pointer delta, not the marker's own
-        // position); a thin connector line ties the marker back to the
-        // real pivot point so it's unambiguous.
-        pivotMarkerLocal(s) {
-            return [-Math.max(0.5, s.seat_pitch * 0.6), -Math.max(0.5, s.row_pitch * 0.6)];
-        },
-
-        pivotMarkerXY() {
+        // World (x, y) of the section's CONFIGURED ROTATION PIVOT (Round 2)
+        // -- origin + pivotLocal, invariant under rotation by construction
+        // (see seat_geometry.js's pivotXY doc comment).
+        pivotWorldXY() {
             const s = this.selected;
             if (!s) return [0, 0];
-            const [lx, ly] = this.pivotMarkerLocal(s);
-            return this.worldFromLocal(s, lx, ly);
+            return window.SeatGeometry.pivotXY(this.geomParams(s));
+        },
+
+        // The origin ("move section") MARKER is drawn/clickable slightly
+        // up-and-left of the TRUE origin (handleOrigin()), not exactly on
+        // top of it. The true origin usually coincides with the section's
+        // own front-left seat, and since the marker paints after (on top
+        // of) the seat circles, a marker drawn exactly at the origin would
+        // sit on top of that seat and swallow every click meant for it --
+        // confirmed by driving the editor: clicking that seat opened a drag
+        // instead of its popover. A thin connector line ties the marker
+        // back to the real origin point so it's unambiguous. This offset is
+        // a plain constant delta (NOT routed through worldFromLocal/
+        // rotation) since the origin itself doesn't rotate.
+        originMarkerXY() {
+            const s = this.selected;
+            if (!s) return [0, 0];
+            const dx = -Math.max(0.5, s.seat_pitch * 0.6);
+            const dy = -Math.max(0.5, s.row_pitch * 0.6);
+            return [s.origin_x + dx, s.origin_y + dy];
+        },
+
+        // The ROTATION PIVOT marker (Round 2, docs/EDITOR.md #2): offset
+        // from the true pivot (pivotWorldXY()) in the OPPOSITE direction of
+        // the origin marker above, so the two draggable markers/connectors
+        // never sit on top of each other -- including the common case where
+        // pivot_mode is ORIGIN (pivot === origin exactly) or a small block's
+        // CENTER pivot lands close to it. Dragging this marker always sets
+        // pivot_mode to CUSTOM (see onHandleDrag's 'move_pivot' case) --
+        // it's the one control that works regardless of which mode is
+        // currently selected in the Center/Origin/Custom toggle.
+        rotationPivotMarkerXY() {
+            const s = this.selected;
+            if (!s) return [0, 0];
+            const [px, py] = this.pivotWorldXY();
+            const dx = Math.max(0.5, s.seat_pitch * 0.6);
+            const dy = Math.max(0.5, s.row_pitch * 0.6);
+            return [px + dx, py + dy];
         },
 
         handleTR() {
@@ -381,11 +556,26 @@ function chartEditor(config) {
             evt.preventDefault();
             const [px, py] = this.clientToViewBox(evt.clientX, evt.clientY);
 
-            if (this.dragMode === "pivot") {
+            if (this.dragMode === "origin") {
+                // Translate the whole section -- a pure pointer-delta drag,
+                // unaffected by rotation/pivot (see handleOrigin()'s doc
+                // comment: origin_x/origin_y is the placement anchor, not a
+                // rotated local point).
                 const [startPx, startPy] = this._dragStart.pointer;
                 s.origin_x += px - startPx;
                 s.origin_y += py - startPy;
                 this._dragStart.pointer = [px, py];
+            } else if (this.dragMode === "move_pivot") {
+                // Reposition the ROTATION PIVOT (Round 2, docs/EDITOR.md
+                // #2): a pivot's world position is always origin +
+                // pivot_local with NO rotation applied (see
+                // seat_geometry.js's pivotXY doc comment), so converting the
+                // dropped world point back to local is just subtraction --
+                // no toLocal()/rotation-inversion needed. Always switches
+                // pivot_mode to CUSTOM, regardless of what it was before.
+                s.pivot_mode = "custom";
+                s.pivot_x = px - s.origin_x;
+                s.pivot_y = py - s.origin_y;
             } else if (this.dragMode === "seat_pitch" || this.dragMode === "both") {
                 const denom = Math.max(1, s.seats_per_row - 1);
                 const [lx] = this.toLocal(s, px, py);
@@ -397,10 +587,16 @@ function chartEditor(config) {
                 s.row_pitch = clamp(ly / denom, 0.2, 60);
             }
             if (this.dragMode === "rotate") {
-                const originVec = [px - s.origin_x, py - s.origin_y];
-                const pointerAngle = Math.atan2(originVec[1], originVec[0]);
+                // Angle is measured relative to the section's CONFIGURED
+                // PIVOT (Round 2), not always the origin -- see
+                // pivotWorldXY()/pivotLocal so the rotate handle tracks the
+                // cursor correctly no matter which pivot is selected.
+                const [pivotWX, pivotWY] = this.pivotWorldXY();
+                const pointerVec = [px - pivotWX, py - pivotWY];
+                const pointerAngle = Math.atan2(pointerVec[1], pointerVec[0]);
                 const [hx, hy] = this.rotateHandleLocal(s);
-                const handleAngle = Math.atan2(hy, hx);
+                const [pvx, pvy] = window.SeatGeometry.pivotLocal(this.geomParams(s));
+                const handleAngle = Math.atan2(hy - pvy, hx - pvx);
                 const deg = ((pointerAngle - handleAngle) * 180) / Math.PI;
                 s.rotation = clamp(deg, -45, 45);
             }
@@ -469,7 +665,10 @@ function chartEditor(config) {
             // coordinates for the clipped-out element, but clicking there
             // hit whatever page content sat behind/above the canvas).
             if (this.selected) {
-                const points = [this.handlePivot(), this.handleRotate(), this.pivotMarkerXY()];
+                const points = [
+                    this.handleOrigin(), this.handleRotate(), this.originMarkerXY(),
+                    this.pivotWorldXY(), this.rotationPivotMarkerXY(),
+                ];
                 if (!this.selected.arc_enabled) {
                     points.push(this.handleTR(), this.handleBL(), this.handleBR(), this.handleOffset());
                 }
@@ -529,11 +728,86 @@ function chartEditor(config) {
             this.popover = null;
         },
 
-        // -- save ---------------------------------------------------------------
+        // -- inline "New section" (Round 2, docs/EDITOR.md #7) -----------------
+        //
+        // Posts to the SAME dashboard_section_create endpoint a direct link
+        // to /sections/new/ would (manager-gated, org-/chart-scoped --
+        // SectionCreateView's docstring), but with an X-Requested-With
+        // header so the view returns JSON instead of redirecting. The
+        // response's `section` is in the exact shape makeSection() expects
+        // (dashboard.views._section_json), so the new section becomes
+        // indistinguishable from one the page loaded with -- it gets a
+        // group (ensureSectionGroup), renders, and is selected, all without
+        // leaving the editor or reloading anything.
 
         csrfToken() {
             const match = document.cookie.match(/(?:^|; )csrftoken=([^;]*)/);
             return match ? decodeURIComponent(match[1]) : "";
+        },
+
+        openNewSection() {
+            this.newSectionForm = { name: "", tier: "" };
+            this.newSectionError = null;
+            this.newSectionOpen = true;
+        },
+
+        closeNewSection() {
+            this.newSectionOpen = false;
+        },
+
+        async submitNewSection() {
+            if (this.newSectionSaving) return;
+            const name = (this.newSectionForm.name || "").trim();
+            if (!name) {
+                this.newSectionError = "Name is required.";
+                return;
+            }
+            this.newSectionSaving = true;
+            this.newSectionError = null;
+            try {
+                const resp = await fetch(this.newSectionUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "X-CSRFToken": this.csrfToken(),
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                    credentials: "same-origin",
+                    body: new URLSearchParams({
+                        name,
+                        tier: this.newSectionForm.tier || "",
+                        numbering_scheme: "sequential",
+                        row_label_scheme: "skip_io",
+                    }),
+                });
+                let data = null;
+                try {
+                    data = await resp.json();
+                } catch (e) {
+                    // Non-JSON error page (e.g. a 403) -- fall through to
+                    // the generic error message below.
+                }
+                if (!resp.ok || !data || !data.ok) {
+                    const fieldErrors = data && data.errors;
+                    this.newSectionError =
+                        (fieldErrors && Object.values(fieldErrors)[0] && Object.values(fieldErrors)[0][0]) ||
+                        "Could not create the section. Try again.";
+                    return;
+                }
+                const section = makeSection(data.section);
+                this.sections[section.id] = section;
+                this.sectionOrder.push(section.id);
+                this.newSectionOpen = false;
+                this.$nextTick(() => {
+                    this.renderSection(section.id);
+                    this.selectSection(section.id);
+                    this.fitAll();
+                });
+            } catch (e) {
+                this.newSectionError = "Network error -- try again.";
+            } finally {
+                this.newSectionSaving = false;
+            }
         },
 
         buildPayload() {

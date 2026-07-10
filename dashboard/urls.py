@@ -65,6 +65,11 @@ urlpatterns = [
         views.SectionUpdateView.as_view(),
         name="dashboard_section_update",
     ),
+    path(
+        "dashboard/charts/<int:chart_pk>/sections/<int:pk>/reorder/",
+        views.section_reorder,
+        name="dashboard_section_reorder",
+    ),
     # -- visual editor (live, param-driven -- docs/EDITOR.md) ---------------
     path(
         "dashboard/charts/<int:pk>/editor/",

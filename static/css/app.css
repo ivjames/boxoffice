@@ -1214,37 +1214,67 @@ table.dash-table th {
 
 /* -- live editor: transform box handles + pivot marker (docs/EDITOR.md) -- */
 
+/* Round-2 refinement #3 (responsive handle size): the on-canvas control
+   dots are too big for a mouse but need to stay comfortably tappable on
+   touch/coarse pointers. `r` is a real CSS geometry property on SVG
+   <circle>s (overrides any `r=""` presentation attribute, of which the
+   handles below deliberately have none), so a single scale variable here
+   covers every handle without touching chart_editor.js. `(hover: none)`
+   catches touchscreens that report as neither strictly coarse nor fine on
+   some browsers; `pointer: coarse` covers the common case directly. */
+:root {
+    --chart-editor-handle-scale: 1;
+}
+
+@media (pointer: coarse), (hover: none) {
+    :root {
+        --chart-editor-handle-scale: 1.7;
+    }
+}
+
 .chart-editor__transform-box,
 .chart-editor__pivot-group {
     pointer-events: none;
 }
 
 .chart-editor__handle,
-.chart-editor__pivot {
+.chart-editor__pivot,
+.chart-editor__rotation-pivot {
     pointer-events: all;
     fill: #fff;
     stroke: #111827;
     stroke-width: 0.08;
     cursor: pointer;
+    r: calc(0.28 * var(--chart-editor-handle-scale));
 }
 
 .chart-editor__handle--resize {
+    r: calc(0.32 * var(--chart-editor-handle-scale));
     cursor: nwse-resize;
 }
 
 .chart-editor__handle--offset {
+    r: calc(0.28 * var(--chart-editor-handle-scale));
     fill: #d97706;
     cursor: ew-resize;
 }
 
 .chart-editor__handle--rotate {
+    r: calc(0.3 * var(--chart-editor-handle-scale));
     fill: #7c3aed;
     cursor: grab;
 }
 
 .chart-editor__pivot {
+    r: calc(0.26 * var(--chart-editor-handle-scale));
     fill: #e11d48;
     cursor: move;
+}
+
+.chart-editor__rotation-pivot {
+    r: calc(0.26 * var(--chart-editor-handle-scale));
+    fill: #0891b2;
+    cursor: crosshair;
 }
 
 .chart-editor__handle-line {
@@ -1277,6 +1307,39 @@ table.dash-table th {
 .chart-editor__pivot-point {
     fill: #e11d48;
     pointer-events: none;
+}
+
+/* Rotation-pivot marker (Round 2 #2) -- same connector/dot treatment as the
+   origin marker above, teal instead of red so the two are visually
+   distinct even when they sit close together (e.g. pivot_mode "origin"). */
+.chart-editor__rotation-pivot-connector {
+    stroke: #0891b2;
+    stroke-width: 0.03;
+    stroke-dasharray: 0.06 0.06;
+    opacity: 0.7;
+}
+
+.chart-editor__rotation-pivot-point {
+    fill: #0891b2;
+    pointer-events: none;
+}
+
+/* -- live editor: background scale grid (docs/EDITOR.md Round 2 #4) ------- */
+
+.chart-editor__grid-bg {
+    pointer-events: none;
+}
+
+.chart-editor__grid-line--minor {
+    stroke: var(--border-color);
+    stroke-width: 0.015;
+    opacity: 0.35;
+}
+
+.chart-editor__grid-line--major {
+    stroke: var(--border-color);
+    stroke-width: 0.025;
+    opacity: 0.6;
 }
 
 /* -- live editor: per-seat popover ----------------------------------------- */
@@ -1353,6 +1416,36 @@ table.dash-table th {
     background: linear-gradient(to right, transparent 49.5%, var(--muted-color) 49.5%, var(--muted-color) 50.5%, transparent 50.5%);
 }
 
+/* Round-2 refinement #1: every slider gets a paired number input showing/
+   accepting the exact value. Both inputs x-model the SAME underlying
+   property (see chart_editor.html), so Alpine keeps them in sync with no
+   extra JS -- this is purely a layout row for the pair. */
+.chart-editor__slider-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__slider-row .chart-editor__slider {
+    margin-top: 0;
+    flex: 1 1 auto;
+}
+
+.chart-editor__number {
+    width: 4.25rem;
+    flex: 0 0 auto;
+    padding: 0.2rem 0.35rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.chart-editor__unit {
+    color: var(--muted-color);
+    font-size: 0.85rem;
+}
+
 .chart-editor__toggle {
     display: flex;
     border: 1px solid var(--border-color);
@@ -1413,6 +1506,43 @@ table.dash-table th {
     font-size: 0.875rem;
 }
 
+/* Reorder up/down arrows (Round 2 feedback on #7) share the row with the
+   select button -- override its width:100% so the arrows have room. */
+.chart-editor__legend-row .chart-editor__legend-btn {
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.chart-editor__legend-reorder {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 0.15rem;
+}
+
+.chart-editor__legend-reorder-btn {
+    width: 1.4rem;
+    height: 1.4rem;
+    line-height: 1;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 0.25rem;
+    background: #fff;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--muted-color);
+}
+
+.chart-editor__legend-reorder-btn:hover:not(:disabled) {
+    background: #f3f4f6;
+    color: inherit;
+}
+
+.chart-editor__legend-reorder-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
 .chart-editor__legend-btn:hover {
     background: #f3f4f6;
 }
@@ -1420,6 +1550,20 @@ table.dash-table th {
 .chart-editor__legend-btn.is-selected {
     border-color: var(--accent-color);
     background: #f3f4f6;
+}
+
+/* -- live editor: inline "New section" (docs/EDITOR.md Round 2 #7) -------- */
+
+.chart-editor__new-section {
+    margin-top: 0.6rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: #f9fafb;
+}
+
+.chart-editor__new-section .field {
+    margin-bottom: 0.6rem;
 }
 
 @media (max-width: 900px) {

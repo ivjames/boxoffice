@@ -26,15 +26,30 @@ tilt params precisely so a drift between the two implementations shows up
 as a Python test failure even though the JS side can't be exercised by
 pytest.
 
-Both geometries share the SAME two-step composition, which is also why
-`rotation`'s pivot is unambiguous: compute a "local" position with local
-(0, 0) defined as the section's front-row/row-center reference point (see
-each `_..._local` function), then rotate that local point around (0, 0)
-by `section.rotation` degrees (`_rotate`), then translate by
-`(section.origin_x, section.origin_y)`. So **rotation always pivots on the
-section's origin** -- local (0, 0) maps to the origin post-rotation no
-matter what `rotation` is, by construction -- and the editor draws a pivot
-marker there.
+Both geometries share the SAME two-step composition: compute a "local"
+position with local (0, 0) defined as the section's front-row/row-center
+reference point (see each `_..._local` function), then rotate that local
+point by `section.rotation` degrees around a PIVOT point (`_rotate`, applied
+relative to the pivot -- see `_rotation_pivot_local` below), then translate
+by `(section.origin_x, section.origin_y)`.
+
+Round 2 (docs/EDITOR.md "Round 2 refinements") makes the pivot itself
+configurable via `Section.pivot_mode`/`pivot_x`/`pivot_y`:
+- **CENTER** (default): the midpoint of the `seats_per_row` x `rows` block
+  (the same bounding box `static/js/chart_editor.js`'s `localWH()` already
+  draws the transform-box handles from) -- rotating swings the whole block
+  around its own middle, which reads as far more intuitive than the old
+  corner-pivot default.
+- **ORIGIN**: local (0, 0) -- the section's front-left corner, i.e. Phase
+  A/B's original behavior (local (0, 0) maps to `(origin_x, origin_y)`
+  post-rotation, unchanged).
+- **CUSTOM**: `(pivot_x, pivot_y)`, set by dragging the pivot marker on
+  canvas.
+
+Whatever the pivot, its WORLD position never moves as `rotation` changes --
+that's what "pivot" means -- so `pivot_xy()` below (mirrored by
+`seat_geometry.js`'s `pivotXY`) is simply `origin + pivot_local`, with no
+rotation applied, and the editor draws its pivot marker there.
 
 Per the spec's "separate LOGICAL identity from VISUAL geometry" decision,
 row labels/seat numbers and x/y are computed independently and BOTH
@@ -187,18 +202,47 @@ def _fanned_local(section, row_index, seat_index, row_seat_count):
     return local_x, local_y
 
 
+def _rotation_pivot_local(section):
+    """The local (pre-rotation) point `rotation` pivots around, per
+    `section.pivot_mode` -- see the module docstring's Round 2 section.
+    Mirrored exactly by seat_geometry.js's `pivotLocal`."""
+    if section.pivot_mode == Section.PivotMode.ORIGIN:
+        return 0.0, 0.0
+    if section.pivot_mode == Section.PivotMode.CUSTOM:
+        return section.pivot_x, section.pivot_y
+    # CENTER (default): midpoint of the seats_per_row x rows block, using
+    # the section's SHAPE params -- not the actual (possibly ragged/
+    # alternating) row_counts passed to generate_seats, same simplification
+    # the editor's transform-box bounding box already makes.
+    width = max(0, section.seats_per_row - 1) * section.seat_pitch
+    height = max(0, section.rows - 1) * section.row_pitch
+    return width / 2.0, height / 2.0
+
+
+def pivot_xy(section):
+    """World (x, y) of `section`'s rotation pivot -- `origin + pivot_local`,
+    with NO rotation applied (a pivot's world position is, by definition,
+    invariant under the rotation it pivots -- see the module docstring).
+    Exposed so the editor can draw a pivot marker; mirrored by
+    seat_geometry.js's `pivotXY`."""
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    return section.origin_x + pivot_x, section.origin_y + pivot_y
+
+
 def _seat_xy(section, row_index, seat_index, row_seat_count):
     """Dispatch to the right local geometry for `section` (see module
-    docstring), then rotate around the origin pivot and translate by the
-    section's origin -- the shared final step both geometries go through.
-    `row_seat_count` (the row's total seat count) is only used by the
-    fanned case, to center the row's arc on its midpoint."""
+    docstring), then rotate around the section's configured pivot
+    (`_rotation_pivot_local`) and translate by the section's origin -- the
+    shared final step both geometries go through. `row_seat_count` (the
+    row's total seat count) is only used by the fanned case, to center the
+    row's arc on its midpoint."""
     if section.arc_radius:
         local_x, local_y = _fanned_local(section, row_index, seat_index, row_seat_count)
     else:
         local_x, local_y = _grid_or_raked_local(section, row_index, seat_index)
-    local_x, local_y = _rotate(local_x, local_y, section.rotation)
-    return section.origin_x + local_x, section.origin_y + local_y
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    rel_x, rel_y = _rotate(local_x - pivot_x, local_y - pivot_y, section.rotation)
+    return section.origin_x + pivot_x + rel_x, section.origin_y + pivot_y + rel_y
 
 
 def generate_seats(

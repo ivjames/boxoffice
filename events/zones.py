@@ -24,6 +24,18 @@ class ZoneError(Exception):
     directly to staff."""
 
 
+# docs/EDITOR.md's Round 2 refinement #6 ("seats scale with spacing" bug):
+# the seat radius drawn on the map must be a CONSTANT, decoupled from
+# seat_pitch/row_pitch -- the pitch sliders should only ever change the GAPS
+# between seats, never the seats' own size. This used to be
+# `min(section.seat_pitch for ...) * 0.35`, which visibly grew/shrank every
+# seat as staff dragged a pitch slider or resize handle. Matches
+# static/js/chart_editor.js's SEAT_RADIUS (same value, same units) so the
+# live editor and this map's PNG/PDF export (events.zone_export) draw seats
+# at the same relative size.
+SEAT_RADIUS = 0.35
+
+
 @transaction.atomic
 def apply_zone(*, organization, performance, seat_ids, amount, template):
     """Assign `seat_ids` (Seat pks, already validated as belonging to this
@@ -175,8 +187,9 @@ def zone_map_geometry(performance):
     sections = list(chart.sections.order_by("ordering", "name")) if chart is not None else []
     seats = list(performance_seats(performance).select_related("section"))
 
-    pitches = [section.seat_pitch for section in sections if section.seat_pitch] or [1.0]
-    seat_radius = max(0.15, min(pitches) * 0.35)
+    # A constant, NOT derived from any section's seat_pitch -- see this
+    # module's SEAT_RADIUS docstring (docs/EDITOR.md Round 2 refinement #6).
+    seat_radius = SEAT_RADIUS
     pad = seat_radius * 4 + 1
 
     xs = [seat.x for seat in seats]

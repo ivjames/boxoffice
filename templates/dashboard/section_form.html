@@ -8,7 +8,11 @@
 <h1>{% if object %}Edit “{{ object.name }}”{% else %}New section{% endif %}</h1>
 <p class="muted">
     {{ chart.name }} — {{ chart.venue.name }}
-    {% if not object %}· shape, position, and seats are set live in the visual editor after you create this section.{% endif %}
+    {% if not object %}
+        · shape and position are set live in the visual editor after you create this section
+        (it starts with sensible defaults and lands at the end of the list -- reorder it with the
+        up/down arrows there, or drag it into place on the canvas).
+    {% endif %}
 </p>
 <form method="post" class="dash-form">
     {% csrf_token %}

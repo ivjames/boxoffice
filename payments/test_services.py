@@ -96,6 +96,21 @@ class CreateCheckoutSessionTests(OrdersFixtureMixin, TestCase):
                 services.create_checkout_session(self.hold, self.request)
             mock_create.assert_not_called()
 
+    def test_no_stripe_key_returns_stub_url_without_calling_stripe(self):
+        """A tenant with no Stripe secret key can't authenticate a real
+        Stripe call -- calling Stripe anyway raises AuthenticationError and
+        500s "Proceed to payment". Instead create_checkout_session returns
+        the internal simulated-checkout stub URL and never touches Stripe."""
+        self.org.stripe_secret_key = ""
+        self.org.save(update_fields=["stripe_secret_key"])
+
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            url = services.create_checkout_session(self.hold, self.request)
+            mock_create.assert_not_called()
+
+        self.assertIn("/checkout/stub/", url)
+        self.assertIn(f"hold_id={self.hold.pk}", url)
+
 
 class CreateCheckoutSessionReservedHoldTests(OrdersFixtureMixin, TestCase):
     """Separate class (own setUp/org) from CreateCheckoutSessionTests: that

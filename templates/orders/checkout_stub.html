@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Payment (simulated) — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <a class="back-link" href="{% url 'cart' %}">&larr; Back to cart</a>
+    <h1>Payment</h1>
+
+    <div class="checkout-stub">
+        <p class="checkout-stub__notice">
+            <strong>Simulated payment.</strong> This box office hasn't connected
+            a Stripe account yet, so no card is charged and no real payment is
+            taken. Submitting the form below completes your order with a
+            simulated payment so you can pick up your tickets.
+        </p>
+
+        <div class="checkout-stub__summary">
+            <h2>{{ hold.performance.event.title }}</h2>
+            <p>{{ hold.performance.starts_at|date:"D, M j Y — g:i A" }} · {{ hold.performance.venue.name }}</p>
+            {% if hold.quantity %}
+                <p>{{ hold.quantity }} × {{ hold.price_tier.name }} (${{ hold.price_tier.amount }} ea)</p>
+            {% else %}
+                <ul>
+                    {% for hs in hold.hold_seats.all %}
+                        <li>{{ hs.seat.section.name }} — {{ hs.seat.row_label }}{{ hs.seat.number }}{% if hs.pricing_zone %} ({{ hs.pricing_zone.name }}){% endif %} (${{ hs.unit_amount }})</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+            <p><strong>Total: ${{ total }}</strong></p>
+            <p class="muted">Held until {{ hold.expires_at|date:"g:i:s A" }}.</p>
+        </div>
+
+        <form method="post" action="{% url 'checkout_stub' %}" class="checkout-stub__form">
+            {% csrf_token %}
+            <input type="hidden" name="hold_id" value="{{ hold.pk }}">
+
+            <div class="field">
+                <label for="stub-buyer-name">Name on card</label>
+                <input type="text" id="stub-buyer-name" name="buyer_name" autocomplete="name">
+            </div>
+            <div class="field">
+                <label for="stub-buyer-email">Email</label>
+                <input type="email" id="stub-buyer-email" name="buyer_email" autocomplete="email" required>
+            </div>
+            <div class="field">
+                <label for="stub-card">Card number</label>
+                <input type="text" id="stub-card" value="4242 4242 4242 4242 (simulated)" disabled>
+            </div>
+
+            <button type="submit" class="button">Pay ${{ total }} (simulated — no real charge)</button>
+        </form>
+    </div>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% comment %}
+Inert (display-only) seat map for GA performances. Unlike orders/_seat_map.html
+(the reserved-seat picker), nothing here is clickable or selectable: GA is sold
+as undifferentiated admission, so this is purely a picture of the house so the
+buyer can see the room. It reuses the same continuous-world-coordinate layout
+math as the interactive map (see that file's SCALE/PAD note), but renders each
+seat as a plain, non-focusable <span> rather than a <button>, and carries no
+form. The Alpine component only positions seats -- it has no selection state.
+{% endcomment %}
+{{ ga_seats_json|json_script:"ga-seats-data" }}
+
+<div x-data="inertSeatMap()" class="seat-map seat-map--inert">
+    <ul class="seat-map__legend">
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--inert"></i> Seat (general admission — not assigned)</li>
+    </ul>
+
+    <div class="seat-map__grid">
+        <div class="seat-map__canvas" :style="canvasStyle" role="img" aria-label="Venue seat map (general admission — seating is not assigned)">
+            <template x-for="seat in seats" :key="seat.id">
+                <span class="seat-btn seat-btn--inert" aria-hidden="true"
+                      :style="seatStyle(seat)"
+                      :title="seat.section + ' — ' + seat.row + seat.number">
+                    <span x-text="seat.row + seat.number"></span>
+                </span>
+            </template>
+        </div>
+    </div>
+</div>
+
+<script>
+    function inertSeatMap() {
+        const seats = JSON.parse(document.getElementById('ga-seats-data').textContent);
+
+        // Same layout math as the interactive map (orders/_seat_map.html):
+        // seat.x/y are continuous world coordinates, laid out inside an
+        // absolutely-positioned canvas scaled px-per-world-unit.
+        const SCALE = 44; // px per world unit
+        const PAD = 0.6; // world units of breathing room around the block
+        const xs = seats.map((s) => s.x);
+        const ys = seats.map((s) => s.y);
+        const minX = xs.length ? Math.min(...xs) : 0;
+        const minY = ys.length ? Math.min(...ys) : 0;
+        const maxX = xs.length ? Math.max(...xs) : 0;
+        const maxY = ys.length ? Math.max(...ys) : 0;
+
+        return {
+            seats: seats,
+            canvasStyle:
+                'width:' + ((maxX - minX + 2 * PAD) * SCALE) + 'px;' +
+                'height:' + ((maxY - minY + 2 * PAD) * SCALE) + 'px;',
+            seatStyle(seat) {
+                const left = (seat.x - minX + PAD) * SCALE;
+                const top = (seat.y - minY + PAD) * SCALE;
+                return (
+                    'position:absolute; left:' + left + 'px; top:' + top + 'px;' +
+                    ' transform:translate(-50%, -50%);'
+                );
+            },
+        };
+    }
+</script>

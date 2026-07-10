@@ -5,6 +5,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
@@ -44,11 +45,29 @@ def performance_detail(request, pk):
 
     if performance.seating_mode == Performance.SeatingMode.GA:
         available = services.ga_available(performance, exclude_session_key=session_key)
+        # GA doesn't assign seats, but the performance still has a house
+        # layout (its venue's seating chart). Show it as an INERT map -- a
+        # non-interactive picture of the room so the buyer can picture where
+        # they'll be -- while the quantity selector below stays the actual
+        # purchase control. Seats carry no per-seat state/price here: GA is
+        # sold as undifferentiated admission, so every seat renders the same.
+        ga_seats_json = [
+            {
+                "id": seat.id,
+                "row": seat.row_label,
+                "number": seat.number,
+                "x": seat.x,
+                "y": seat.y,
+                "section": seat.section.name,
+            }
+            for seat in services.performance_seats(performance)
+        ]
         context.update(
             {
                 "tiers": list(performance.price_tiers.all()),
                 "available": available,
                 "existing_quantity": existing_hold.quantity if existing_hold else 0,
+                "ga_seats_json": ga_seats_json,
             }
         )
     else:
@@ -268,6 +287,63 @@ def checkout_test(request):
 
     send_ticket_email(order, request)
     return redirect("ticket_detail", token=order.token)
+
+
+@require_tenant
+def checkout_stub(request):
+    """SIMULATED hosted-checkout page, used when a tenant has no Stripe keys
+    (Organization.stripe_secret_key is blank). create_checkout_session
+    (payments/services.py) redirects the browser here INSTEAD of to Stripe's
+    hosted payment page, so "Proceed to payment" works end to end without any
+    Stripe account -- this view stands in for Stripe's page. No Stripe call
+    of any kind is made and no card is charged.
+
+    GET renders a fake payment form (clearly labelled as simulated). POST
+    fulfills the targeted hold with a SIMULATED payment by calling the exact
+    same payments.services.fulfill_hold() core the real Stripe webhook uses
+    (same re-validate-then-lock, same Order/OrderItem/Ticket creation, same
+    GA-sold/seat bookkeeping, same Hold deletion) with provider="stub" and a
+    synthetic payment_ref -- Order.stripe_checkout_session_id is left NULL, so
+    a stub order can never collide with (or be mistaken for) a real Stripe
+    order.
+
+    Scoped to THIS org + THIS session's own hold, exactly like checkout_view
+    and checkout_test -- a stub POST can no more reach another tenant's or
+    another session's hold than a real checkout can.
+    """
+    session_key = services.get_session_key(request)
+    hold = get_object_or_404(
+        Hold,
+        pk=request.POST.get("hold_id") or request.GET.get("hold_id"),
+        organization=request.organization,
+        session_key=session_key,
+        expires_at__gt=timezone.now(),
+    )
+
+    if request.method == "POST":
+        buyer_name = request.POST.get("buyer_name", "").strip()
+        buyer_email = request.POST.get("buyer_email", "").strip()
+        if not buyer_email:
+            messages.error(request, "Enter an email address to receive your tickets.")
+            return redirect(f"{reverse('checkout_stub')}?hold_id={hold.pk}")
+
+        try:
+            order = payment_services.fulfill_hold(
+                hold,
+                buyer_email=buyer_email,
+                buyer_name=buyer_name,
+                payment_ref=f"stub-{uuid.uuid4()}",
+                provider="stub",
+            )
+        except payment_services.FulfillmentError as exc:
+            messages.error(request, str(exc))
+            return redirect("cart")
+
+        send_ticket_email(order, request)
+        return redirect("ticket_detail", token=order.token)
+
+    total = services.hold_total(hold)
+    return render(request, "orders/checkout_stub.html", {"hold": hold, "total": total})
 
 
 @require_tenant

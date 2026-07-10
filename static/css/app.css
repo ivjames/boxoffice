@@ -121,6 +121,53 @@ textarea:focus-visible,
     font-size: 1rem;
 }
 
+/* Simulated (Stripe-less) checkout page -- see orders/checkout_stub.html.
+   Framed like the test-checkout form so it reads unmistakably as "not a
+   real payment", while still laying out like a normal hosted-checkout. */
+.checkout-stub {
+    max-width: 34rem;
+    border: 2px dashed #f59e0b;
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+    background: #fffbeb;
+}
+
+.checkout-stub__notice {
+    margin-top: 0;
+}
+
+.checkout-stub__summary {
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+    padding: 0.75rem 0;
+    margin: 1rem 0;
+}
+
+.checkout-stub__form .field {
+    margin-bottom: 0.75rem;
+}
+
+.checkout-stub__form label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.checkout-stub__form input {
+    width: 100%;
+    max-width: 24rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    font-family: inherit;
+    font-size: 1rem;
+}
+
+.checkout-stub__form input:disabled {
+    background: #f3f4f6;
+    color: var(--muted-color);
+}
+
 /* .button.button--test (not just .button--test): matches .button's own
    specificity so this reliably wins regardless of stylesheet source order,
    instead of depending on this block appearing after the .button rule
@@ -743,6 +790,13 @@ textarea:focus-visible,
     background: #d1d5db;
 }
 
+/* Inert (GA display-only) seat -- see orders/_seat_map_inert.html. Neutral
+   "house" fill; never interactive. */
+.seat-swatch--inert {
+    background: #e5e7eb;
+    border: 2px solid var(--accent-color);
+}
+
 /* Scroll wrapper for the seat canvas. Seats are laid out by their real
    (continuous) world coordinates inside .seat-map__canvas -- see
    templates/orders/_seat_map.html -- so a wide chart simply scrolls
@@ -791,6 +845,17 @@ textarea:focus-visible,
 }
 
 .seat-btn:disabled {
+    pointer-events: none;
+}
+
+/* Inert seats (GA map) are a picture, not a control: no pointer, no focus,
+   neutral fill so they don't read as "available to pick" like the reserved
+   map's white seats do. */
+.seat-btn--inert {
+    background: #e5e7eb;
+    border-color: var(--accent-color);
+    color: var(--muted-color);
+    cursor: default;
     pointer-events: none;
 }
 

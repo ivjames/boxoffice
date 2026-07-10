@@ -15,6 +15,10 @@
     </section>
 
     {% if performance.seating_mode == "GA" %}
+        {% if ga_seats_json %}
+            <p class="muted">General admission — seating is open. The map below shows the room; seats aren't assigned.</p>
+            {% include "orders/_seat_map_inert.html" %}
+        {% endif %}
         <form method="post" action="{% url 'hold_create' performance.pk %}" class="ga-form">
             {% csrf_token %}
             {% if tiers|length > 1 %}

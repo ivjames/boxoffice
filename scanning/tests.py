@@ -223,7 +223,9 @@ class ScanRedeemViewTests(ScanFixtureMixin, TestCase):
         self.client.force_login(user)
         self.client.get(self.url, HTTP_HOST=host_for("roxy"))
         resp = self.client.get(self.url, HTTP_HOST=host_for("roxy"))
-        self.assertContains(resp, "FAIL")
+        # An already-redeemed ticket gets its own "already scanned" verdict
+        # (amber), distinct from a hard reject -- see scan_result.html.
+        self.assertContains(resp, "ALREADY SCANNED")
         self.assertContains(resp, "Already scanned")
 
     def test_json_response_for_fetch_style_request(self):

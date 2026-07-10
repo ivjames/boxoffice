@@ -2089,8 +2089,70 @@ table.dash-table th {
     color: #166534;
 }
 
+/* "Scanned fine, but this ticket was already redeemed" -- amber, distinct from
+   a hard reject so door staff can tell a re-entry attempt from a fake code. */
+.scan-result--used {
+    border-color: #fcd34d;
+    background: #fffbeb;
+    color: #92400e;
+}
+
 .scan-result--fail {
     border-color: #fca5a5;
     background: #fef2f2;
     color: #991b1b;
+}
+
+/* Prominent variant for the live camera scanner -- big and centered so the
+   verdict reads at a glance on a phone held at the door. */
+.scan-result--big {
+    text-align: center;
+    padding: 1.5rem 1.25rem;
+}
+
+.scan-result--big .scan-result__headline {
+    font-size: 2.25rem;
+    line-height: 1.1;
+}
+
+/* Full-screen color wash fired on every scan (scanner.js feedback()). Fixed +
+   pointer-events:none so it never blocks the next scan; the fade is a one-shot
+   keyframe whose ~0.6s matches the flash timer that clears the element. */
+.scan-flash {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    pointer-events: none;
+    opacity: 0;
+    animation: scan-flash-fade 0.6s ease-out forwards;
+}
+
+.scan-flash--pass { background: #22c55e; }
+.scan-flash--used { background: #f59e0b; }
+.scan-flash--fail { background: #ef4444; }
+
+@keyframes scan-flash-fade {
+    0% { opacity: 0.8; }
+    100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* Still show the color, just don't animate the fade. */
+    .scan-flash { animation-duration: 0.01s; }
+}
+
+.scanner__sound {
+    margin-top: 0.5rem;
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 0.35rem 0.85rem;
+    font-size: 0.9rem;
+    line-height: 1;
+    color: var(--text-color);
+    cursor: pointer;
+}
+
+.scanner__sound:hover {
+    border-color: var(--muted-color);
 }

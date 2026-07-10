@@ -6,9 +6,16 @@
 {% block content %}
 {% include "dashboard/_nav.html" %}
 <div x-data="qrScanner()" x-init="start()">
+    <!-- Full-screen color wash on each scan (green pass / amber already-scanned
+         / red fail) -- visible at arm's length even when the inline banner isn't. -->
+    <div class="scan-flash" x-show="flash" x-cloak :class="flash ? 'scan-flash--' + flash : ''" aria-hidden="true"></div>
+
     <div class="dash-header">
         <h1>Scan tickets</h1>
         <p class="muted">{{ request.membership.get_role_display }} — {{ organization.name }}</p>
+        <button type="button" class="scanner__sound" @click="toggleSound()"
+                :aria-pressed="soundOn.toString()"
+                x-text="soundOn ? '🔊 Sound on' : '🔇 Muted'"></button>
     </div>
 
     <div class="scanner">
@@ -32,8 +39,8 @@
         </p>
 
         <template x-if="lastResult">
-            <div class="scan-result" :class="lastResult.ok ? 'scan-result--pass' : 'scan-result--fail'">
-                <p class="scan-result__headline" x-text="lastResult.ok ? 'PASS' : 'FAIL'"></p>
+            <div class="scan-result scan-result--big" :class="'scan-result--' + lastResult.category" aria-live="assertive">
+                <p class="scan-result__headline" x-text="headlineFor(lastResult)"></p>
                 <p x-text="lastResult.message"></p>
                 <template x-if="lastResult.ticket">
                     <ul>

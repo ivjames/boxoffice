@@ -9,31 +9,29 @@ venue header, then each ticket's seat (or "General Admission") and its scan
 QR -- the same signed QR the confirmation page and email show (orders.qr /
 orders.tokens), so a printed PDF scans at the door identically.
 
-Entry point: render_order_pdf(order, request) -> bytes. `request` is threaded
-through only so the QR encodes an absolute, tenant-correct scan URL (dev vs
-prod) exactly like the on-page QR -- nothing about the PDF depends on the
-request otherwise.
+Entry point: render_order_pdf(order) -> bytes. Needs no request: the QR
+encodes a bare "<token>.<sig>" ticket code (orders.tokens.scan_code), not a
+URL, so there's no host/scheme to resolve.
 """
 
 import io
 
 import segno
 
-from .tokens import build_ticket_scan_url
+from .tokens import scan_code
 
 
-def _qr_png_bytes(ticket, request, scale=6, border=2):
-    """PNG bytes of the ticket's signed scan QR (same URL/signing as the
-    on-page/email QR, just emitted as raw PNG bytes for reportlab's
+def _qr_png_bytes(ticket, scale=6, border=2):
+    """PNG bytes of the ticket's signed scan QR (same code/signing/error level
+    as the on-page and email QR, just emitted as raw PNG bytes for reportlab's
     ImageReader instead of a data URI)."""
-    url = build_ticket_scan_url(ticket, request)
     buf = io.BytesIO()
-    segno.make(url, error="m").save(buf, kind="png", scale=scale, border=border)
+    segno.make(scan_code(ticket), error="h").save(buf, kind="png", scale=scale, border=border)
     buf.seek(0)
     return buf
 
 
-def render_order_pdf(order, request):
+def render_order_pdf(order):
     """Return the PDF bytes for `order`'s tickets. `order` must already be
     tenant-scoped by the caller (it comes off the unguessable Order.token
     lookup in orders.views.order_pdf). Reads only; touches no DB state beyond
@@ -89,7 +87,7 @@ def render_order_pdf(order, request):
         qr_x = margin
         try:
             c.drawImage(
-                ImageReader(_qr_png_bytes(ticket, request)),
+                ImageReader(_qr_png_bytes(ticket)),
                 qr_x,
                 qr_top - qr_size,
                 width=qr_size,

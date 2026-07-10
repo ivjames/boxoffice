@@ -52,11 +52,11 @@
 
     <div class="scanner__manual">
         <h2>Manual entry</h2>
-        <p class="muted">No camera, or permission denied? Type or paste the ticket code (the value after <code>/scan/redeem/</code> in the QR link).</p>
+        <p class="muted">No camera, or permission denied? Type or paste the ticket code (the <code>/S/</code> segment of the QR link, before the signature).</p>
         {% if error %}<p class="scan-result scan-result--fail">{{ error }}</p>{% endif %}
         <form method="post">
             {% csrf_token %}
-            <input type="text" name="token" placeholder="Ticket code (UUID)" required>
+            <input type="text" name="token" placeholder="Ticket code" required>
             <button type="submit" class="button">Redeem</button>
         </form>
     </div>

@@ -109,14 +109,20 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 ### Ticket & scanning
 
 - `Ticket`: `order`, `performance`, `seat` (nullable for GA), `holder_name`,
-  `token` (short base64url string, ~72 bits — see `orders.models.new_token`),
-  `status` (`valid`|`used`|`void`), `used_at`, `scanned_by`.
-- QR encodes a URL `/scan/redeem/<token>/?sig=<hmac>` where `sig` = the first
-  128 bits of an HMAC of the token with the tenant/app secret, base64url-encoded
-  (`orders/tokens.py`). The short token + truncated sig keep the QR small enough
-  to carry the highest error-correction level (`error="h"`, ~30%). Scan view
-  (role `scanner`+) verifies sig, checks status, atomically flips `valid`→`used`,
-  returns pass/fail UI.
+  `token` (short uppercase base32 string, ~72 bits — see
+  `orders.models.new_token`), `status` (`valid`|`used`|`void`), `used_at`,
+  `scanned_by`.
+- QR encodes a bare code `<token>.<sig>` (no URL) where `sig` = the first 96
+  bits of an HMAC of the token with the tenant/app secret, base32-encoded
+  (`orders/tokens.py`). Both halves are uppercase base32, so the code sits in
+  QR *alphanumeric mode* — ~45% denser per module than byte mode — and it
+  stays sparse even at the highest error-correction level (`error="h"`, ~30%).
+  The in-page scanner (`static/js/scanner.js`) decodes the code, splits it, and
+  calls the internal redeem endpoint `/S/<token>/<sig>/` itself; the scan view
+  (role `scanner`+) verifies sig, checks status, atomically flips
+  `valid`→`used`, returns pass/fail UI. Trade-off: because the QR is not a URL,
+  a phone's stock camera app can't open it — redemption goes through the staff
+  scanner UI only.
 
 ## URL structure (per tenant subdomain)
 
@@ -126,7 +132,8 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 - `/cart/`, `/checkout/`, `/checkout/success/`, `/checkout/cancel/`
 - `/tickets/<order-token>/` order confirmation + tickets
 - `/dashboard/` staff area (events CRUD, orders, reports)
-- `/scan/` scanner UI, `/scan/redeem/<token>/`
+- `/scan/` scanner UI, `/S/<token>/<sig>/` (internal redeem endpoint; the QR
+  encodes a bare `<token>.<sig>` code, not this URL)
 - `/webhooks/stripe/` tenant Stripe webhook
 - Platform/landing (reserved host): `/`, `/signup/`, Django `/admin/`
 

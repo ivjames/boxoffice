@@ -472,7 +472,7 @@ def ticket_detail(request, token):
             "seat__section__ordering", "seat__row_label", "seat__number", "id"
         )
     )
-    ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket, request)} for ticket in tickets]
+    ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket)} for ticket in tickets]
     return render(request, "orders/ticket_detail.html", {"order": order, "ticket_rows": ticket_rows})
 
 
@@ -493,7 +493,7 @@ def ticket_pdf(request, token):
         ),
         token=token,
     )
-    pdf_bytes = render_order_pdf(order, request)
+    pdf_bytes = render_order_pdf(order)
     response = HttpResponse(pdf_bytes, content_type="application/pdf")
     response["Content-Disposition"] = f'attachment; filename="tickets-{order.token}.pdf"'
     return response

@@ -506,37 +506,61 @@ class GeometryTests(TestCase):
             self.assertAlmostEqual(middle_seat.x, expected_x, places=6)
             self.assertAlmostEqual(middle_seat.y, expected_y, places=6)
 
-    def test_rebalance_origin_for_arc_change_is_a_no_op_between_two_radii(self):
-        # Tightening (radius -> a different radius, arc staying ON) never
-        # needed a correction -- the rebalance is a pure no-op there.
+    def test_rebalance_origin_for_arc_change_keeps_bbox_center_between_two_radii(self):
+        # Tightening the arc (radius -> a different radius) must keep the
+        # block's bounding-box CENTER fixed. The old front-center pinning made
+        # this a no-op and let the tighter curve slide the block -- the "arc
+        # still offsets the section" report -- so rebalancing on a radius
+        # change is deliberately NOT a no-op now; it compensates the shift.
         section = self.make_section(
-            origin_x=3.0, origin_y=-2.0, rotation=20.0, seat_pitch=1.1, row_pitch=0.9,
+            origin_x=3.0, origin_y=-2.0, rotation=0.0, seat_pitch=1.1, row_pitch=0.9,
             rows=4, seats_per_row=6, arc_radius=42.0,
         )
+        generate_seats(section, [6] * 4)
+        seats = list(section.seats.all())
+        before = ((min(s.x for s in seats) + max(s.x for s in seats)) / 2,
+                  (min(s.y for s in seats) + max(s.y for s in seats)) / 2)
+
         new_x, new_y = rebalance_origin_for_arc_change(section, new_arc_radius=5.0, row_seat_count=6)
-        self.assertAlmostEqual(new_x, section.origin_x, places=6)
-        self.assertAlmostEqual(new_y, section.origin_y, places=6)
+        section.origin_x, section.origin_y, section.arc_radius = new_x, new_y, 5.0
+        section.save(update_fields=["origin_x", "origin_y", "arc_radius"])
+        section.seats.all().delete()
+        generate_seats(section, [6] * 4)
+        seats = list(section.seats.all())
+        after = ((min(s.x for s in seats) + max(s.x for s in seats)) / 2,
+                 (min(s.y for s in seats) + max(s.y for s in seats)) / 2)
+
+        self.assertAlmostEqual(before[0], after[0], places=6)
+        self.assertAlmostEqual(before[1], after[1], places=6)
 
     def test_rebalance_origin_for_arc_change_fixes_the_enable_jump(self):
-        # THE fix, stated directly: enabling arc on a straight section
-        # (or disabling it back) must not move the front-center seat --
-        # applying the rebalanced origin makes that true even though
-        # generate_seats's raw grid/fanned formulas alone would jump it
-        # (see this method's sibling test below for the "before" jump).
+        # THE fix, stated directly: enabling arc on a straight section (or
+        # disabling it back) must not move the block -- its bounding-box CENTER
+        # stays put after applying the rebalanced origin, even though
+        # generate_seats's raw grid/fanned formulas alone would jump it (see
+        # this method's sibling test below for the "before" jump).
         grid_section = self.make_section(
-            origin_x=10.0, origin_y=5.0, rotation=15.0, seat_pitch=1.4, row_pitch=1.2,
+            origin_x=10.0, origin_y=5.0, rotation=0.0, seat_pitch=1.4, row_pitch=1.2,
             rows=6, seats_per_row=9, arc_radius=None,
         )
-        before_x, before_y = front_center_xy(grid_section, row_seat_count=9, arc_radius=None)
+        generate_seats(grid_section, [9] * 6)
+        seats = list(grid_section.seats.all())
+        before = ((min(s.x for s in seats) + max(s.x for s in seats)) / 2,
+                  (min(s.y for s in seats) + max(s.y for s in seats)) / 2)
 
         new_x, new_y = rebalance_origin_for_arc_change(
             grid_section, new_arc_radius=42.0, row_seat_count=9
         )
-        grid_section.origin_x, grid_section.origin_y = new_x, new_y
-        after_x, after_y = front_center_xy(grid_section, row_seat_count=9, arc_radius=42.0)
+        grid_section.origin_x, grid_section.origin_y, grid_section.arc_radius = new_x, new_y, 42.0
+        grid_section.save(update_fields=["origin_x", "origin_y", "arc_radius"])
+        grid_section.seats.all().delete()
+        generate_seats(grid_section, [9] * 6)
+        seats = list(grid_section.seats.all())
+        after = ((min(s.x for s in seats) + max(s.x for s in seats)) / 2,
+                 (min(s.y for s in seats) + max(s.y for s in seats)) / 2)
 
-        self.assertAlmostEqual(before_x, after_x, places=6)
-        self.assertAlmostEqual(before_y, after_y, places=6)
+        self.assertAlmostEqual(before[0], after[0], places=6)
+        self.assertAlmostEqual(before[1], after[1], places=6)
 
     def test_without_rebalance_enabling_arc_jumps_the_section(self):
         # Documents the actual bug rebalance_origin_for_arc_change fixes:

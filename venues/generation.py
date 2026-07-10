@@ -279,29 +279,58 @@ def front_center_xy(section, row_seat_count, arc_radius):
     return section.origin_x + pivot_x + rel_x, section.origin_y + pivot_y + rel_y
 
 
+def _shape_center_local(section, arc_radius, row_seat_count):
+    """Local (pre-rotation) bounding-box center of the section's uniform
+    rows x row_seat_count seat block, evaluated for a HYPOTHETICAL arc_radius
+    (temporarily set + restored, so `section` is NOT mutated). Uses the uniform
+    shape params -- the same simplification the pivot / transform box make.
+    Mirrored by seat_geometry.js's `shapeCenterLocal`."""
+    saved = section.arc_radius
+    section.arc_radius = arc_radius
+    try:
+        xs, ys = [], []
+        for r in range(section.rows):
+            for c in range(row_seat_count):
+                if arc_radius:
+                    lx, ly = _fanned_local(section, r, c, row_seat_count)
+                else:
+                    lx, ly = _grid_or_raked_local(section, r, c)
+                xs.append(lx)
+                ys.append(ly)
+    finally:
+        section.arc_radius = saved
+    if not xs:
+        return 0.0, 0.0
+    return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+
+
+def shape_center_xy(section, arc_radius, row_seat_count):
+    """World (x, y) of `_shape_center_local`, through the same
+    pivot-rotate-translate pipeline `_seat_xy` uses. Mirrored by
+    seat_geometry.js's `shapeCenterXY`."""
+    cx, cy = _shape_center_local(section, arc_radius, row_seat_count)
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    rel_x, rel_y = _rotate(cx - pivot_x, cy - pivot_y, section.rotation)
+    return section.origin_x + pivot_x + rel_x, section.origin_y + pivot_y + rel_y
+
+
 def rebalance_origin_for_arc_change(section, new_arc_radius, row_seat_count):
-    """The (origin_x, origin_y) that keep `section`'s front-center
-    reference point exactly where it currently is when `section.arc_radius`
-    is about to change to `new_arc_radius` -- covers BOTH the "tightening"
-    case (arc_radius -> a different arc_radius, already invariant by
-    construction, so this is a no-op correction) AND the "enabling/
-    disabling" case (None/0 <-> a radius), which is NOT a no-op: grid mode's
-    local (0, 0) is the front-LEFT seat while fanned mode's is front-CENTER
-    (see `front_center_local`'s docstring for why that mismatch can't be
-    resolved by changing either geometry's own formula without breaking the
-    OTHER mode's pinned tests), so switching modes with `origin_x/origin_y`
-    held fixed visibly shifts the whole block sideways by roughly half its
-    width -- confirmed as the actual round-3 "arc still offsets the
-    section" symptom (toggling the arc checkbox jumps the section; a fixed
-    arc_radius slider alone was already jump-free). Callers (chart_editor.js's
-    `onArcToggle`/`onArcAmountInput`, mirrored via seat_geometry.js's
-    `rebalanceOriginForArcChange`) apply this EVERY time arc_radius changes
-    for any reason, so the correction is simply a zero vector on a pure
-    radius-to-radius change and a real compensating shift on a mode switch.
+    """The (origin_x, origin_y) that keep `section`'s BOUNDING-BOX CENTER
+    exactly where it currently is when `section.arc_radius` is about to change
+    to `new_arc_radius`, so the section curves IN PLACE at ANY radius.
+
+    Pinning only the front-CENTER point (the earlier approach) kept the front
+    row fixed but let a tightening curve slide the block's center -- measured
+    up to ~40% of the block height at small radii -- which is the "arc still
+    offsets the section" report. Pinning the bbox center makes that shift zero
+    by construction for every radius, and still absorbs the grid-front-LEFT vs
+    fanned-front-CENTER local-(0,0) mismatch on enable/disable. Callers
+    (chart_editor.js's arc handlers, mirrored by seat_geometry.js's
+    `rebalanceOriginForArcChange`) apply this every time arc_radius changes.
     Does not mutate `section`.
     """
-    before_x, before_y = front_center_xy(section, row_seat_count, section.arc_radius)
-    after_x, after_y = front_center_xy(section, row_seat_count, new_arc_radius)
+    before_x, before_y = shape_center_xy(section, section.arc_radius, row_seat_count)
+    after_x, after_y = shape_center_xy(section, new_arc_radius, row_seat_count)
     return section.origin_x + (before_x - after_x), section.origin_y + (before_y - after_y)
 
 

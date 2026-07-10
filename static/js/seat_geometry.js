@@ -173,20 +173,49 @@ function frontCenterXY(section, rowSeatCount, arcRadius) {
     return [section.origin_x + px + rx, section.origin_y + py + ry];
 }
 
+// Local bbox center of the uniform rows x rowSeatCount block for a hypothetical
+// arcRadius (temporarily set + restored). Mirrors generation.py's
+// _shape_center_local.
+function shapeCenterLocal(section, arcRadius, rowSeatCount) {
+    const saved = section.arc_radius;
+    section.arc_radius = arcRadius;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let r = 0; r < section.rows; r++) {
+        for (let c = 0; c < rowSeatCount; c++) {
+            const [lx, ly] = arcRadius
+                ? fannedLocal(section, r, c, rowSeatCount)
+                : gridOrRakedLocal(section, r, c);
+            if (lx < minX) minX = lx;
+            if (lx > maxX) maxX = lx;
+            if (ly < minY) minY = ly;
+            if (ly > maxY) maxY = ly;
+        }
+    }
+    section.arc_radius = saved;
+    if (!isFinite(minX)) return [0, 0];
+    return [(minX + maxX) / 2, (minY + maxY) / 2];
+}
+
+// World (x, y) of shapeCenterLocal -- mirrors generation.py's shape_center_xy.
+function shapeCenterXY(section, arcRadius, rowSeatCount) {
+    const [cx, cy] = shapeCenterLocal(section, arcRadius, rowSeatCount);
+    const [px, py] = pivotLocal(section);
+    const [rx, ry] = rotate(cx - px, cy - py, section.rotation);
+    return [section.origin_x + px + rx, section.origin_y + py + ry];
+}
+
 /*
- * The Round-3 "arc still offsets the section" fix (docs/EDITOR.md #6):
- * (origin_x, origin_y) that keep the front-center reference point fixed
- * when `section.arc_radius` is about to change to `newArcRadius` -- see
- * generation.py's `rebalance_origin_for_arc_change` docstring for the full
- * story (grid's front-LEFT vs fanned's front-CENTER local-(0,0) mismatch,
- * which is what actually jumps the section on ENABLE/DISABLE, not on a
- * plain radius-to-radius "tightening" change -- that was already
- * jump-free). Does not mutate `section`; chart_editor.js applies the
- * result on every arc_radius change.
+ * "Arc curves in place" (docs/EDITOR.md): keep the section's BBOX CENTER fixed
+ * across an arc_radius change so the block doesn't move at ANY radius. Mirrors
+ * generation.py's rebalance_origin_for_arc_change -- pinning only the
+ * front-center point kept the front row fixed but let tight curves slide the
+ * block's center; pinning the bbox center makes that shift zero for every
+ * radius. Does not mutate `section`; chart_editor.js applies the result on
+ * every arc_radius change.
  */
 function rebalanceOriginForArcChange(section, newArcRadius, rowSeatCount) {
-    const [beforeX, beforeY] = frontCenterXY(section, rowSeatCount, section.arc_radius);
-    const [afterX, afterY] = frontCenterXY(section, rowSeatCount, newArcRadius);
+    const [beforeX, beforeY] = shapeCenterXY(section, section.arc_radius, rowSeatCount);
+    const [afterX, afterY] = shapeCenterXY(section, newArcRadius, rowSeatCount);
     return [section.origin_x + (beforeX - afterX), section.origin_y + (beforeY - afterY)];
 }
 

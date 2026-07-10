@@ -260,7 +260,9 @@ vendored static files (`static/js/jsQR.js`, `static/js/scanner.js`,
 manifest (`staticfiles/staticfiles.json`) or template `{% static %}` tags for
 them 500 in prod (`CompressedManifestStaticFilesStorage` raises on a missing
 manifest entry). `boxoffice deploy` runs it with `--clear` so stale files
-from a previous deploy don't linger.
+from a previous deploy don't linger, and `--verbosity 0` so the per-file
+copy/delete listing (hundreds of lines) stays out of the deploy log —
+errors still surface.
 
 `boxoffice deploy` prints the old/new commit and a diffstat of what changed,
 same idea as `lab980.com/update.sh`.
@@ -322,7 +324,8 @@ Nothing else in the app changes — `psycopg` is already in
 - **500s after a deploy, static files 404 or raise `ValueError: Missing
   staticfiles manifest entry`**: `collectstatic` didn't run or didn't
   complete — re-run `boxoffice deploy` (or `venv/bin/python manage.py
-  collectstatic --noinput --clear` directly) and check for errors.
+  collectstatic --noinput --clear` directly, dropping `--verbosity 0` to
+  watch each file) and check for errors.
 - **`no such table` errors**: migrations haven't run against the file
   `config/settings/prod.py` actually points at (`data/db.sqlite3`, not the
   dev-only `db.sqlite3` at the repo root) — run `boxoffice migrate` with

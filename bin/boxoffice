@@ -156,8 +156,10 @@ cmd_deploy() {
   log "manage.py migrate"
   manage migrate --noinput
 
-  log "manage.py collectstatic --noinput"
-  manage collectstatic --noinput --clear
+  log "manage.py collectstatic --noinput --clear"
+  # --clear wipes stale files; --verbosity 0 keeps the per-file copy/delete
+  # listing (hundreds of lines) out of the deploy log — errors still print.
+  manage collectstatic --noinput --clear --verbosity 0
 
   # Deploy stamp for the footer (config/version.py reads this). Written after a
   # successful build so what the footer shows is what's actually serving.

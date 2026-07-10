@@ -1,4 +1,3 @@
-import base64
 import secrets
 from datetime import timedelta
 
@@ -17,31 +16,40 @@ def default_hold_expiry():
     return timezone.now() + timedelta(minutes=10)
 
 
+# Alphabet for hand-typed ticket codes: A-Z0-9 minus every glyph that's a
+# look-alike for another in common fonts, so a staffer reading a token off a
+# ticket can't transpose one character for another regardless of the font.
+# Dropped pairs: 0/O, 1/I/L, 2/Z, 5/S, 6/G, 8/B, U/V (kept one of each; O and
+# 0, I/L and 1 are dropped outright). 26 chars -> ~4.7 bits each; all uppercase
+# alphanumeric, so a code stays in QR "alphanumeric mode" and is <slug>-safe.
+_TOKEN_ALPHABET = "ACDEFGHJKMNPQRTVWXY2345789"
+_TOKEN_LENGTH = 10
+
+
 def new_token():
     """Short, unguessable public token for Orders and Tickets.
 
-    10 uppercase base32 chars (48 bits of entropy) instead of a UUID's 36.
+    10 chars from _TOKEN_ALPHABET (~47 bits of entropy) instead of a UUID's 36.
     Kept short on purpose for two reasons: a Ticket's token both rides inside
     its QR code (as "<token>.<sig>" -- orders/tokens.scan_code) AND is what a
     staffer keys in by hand on the scanner's manual-entry fallback, so every
-    character saved is a smaller QR and less to type. The base32 *alphabet*
-    (A-Z2-7) keeps the whole code inside QR "alphanumeric mode" (~45% denser
-    per module than byte mode) and drops the digit/letter pairs (0/O, 1/I)
-    most easily fat-fingered.
+    character saved is a smaller QR and less to type. The alphabet omits
+    look-alike characters (see _TOKEN_ALPHABET) so a hand-typed code can't be
+    misread; only the token needs this -- the signature is machine-read only.
 
-    48 bits is ample here. Unguessability is only ever ONE of three gates on
+    ~47 bits is ample here. Unguessability is only ever ONE of three gates on
     redemption -- the per-ticket HMAC signature (orders/tokens.py) and the
     scanner-role login are the others -- so the token alone was never enough
-    to redeem. And 48 bits keeps token COLLISIONS negligible at any realistic
-    box-office volume (well past millions of tickets); in the astronomically
+    to redeem. And it keeps token COLLISIONS negligible at any realistic
+    box-office volume (past a million-plus tickets); in the astronomically
     rare event two collide, the unique constraint rejects the insert and the
     Stripe path simply regenerates on webhook redelivery.
 
     Named (not a lambda) so migrations can serialize it as a field default,
-    matching default_hold_expiry above. base32's alphabet is a subset of
-    Django's `slug` URL converter's, so the redeem/confirmation routes match
-    on <slug:token> without a custom converter."""
-    return base64.b32encode(secrets.token_bytes(6)).rstrip(b"=").decode()
+    matching default_hold_expiry above. The alphabet is a subset of Django's
+    `slug` URL converter's, so the redeem/confirmation routes match on
+    <slug:token> without a custom converter."""
+    return "".join(secrets.choice(_TOKEN_ALPHABET) for _ in range(_TOKEN_LENGTH))
 
 
 class Hold(TenantScopedModel):
@@ -208,8 +216,8 @@ class Order(TenantScopedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
     # Public-facing lookup token for the confirmation page (/tickets/<token>/).
-    # Short base32 string (see new_token) -- max_length leaves headroom for the
-    # 10-char tokens plus any longer rows predating the switch to short tokens.
+    # Short code (see new_token) -- max_length leaves headroom for the 10-char
+    # tokens plus any longer rows predating the switch to short tokens.
     token = models.CharField(max_length=36, default=new_token, unique=True, editable=False)
 
     # Phase 4 (Stripe checkout + webhooks): fields only, no logic here.

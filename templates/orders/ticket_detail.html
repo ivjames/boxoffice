@@ -38,7 +38,7 @@
                 </h3>
                 <p><span class="badge badge--{{ row.ticket.status }}">{{ row.ticket.get_status_display }}</span></p>
                 <img src="{{ row.qr_data_uri }}" alt="Ticket QR code" width="220" height="220" class="ticket__qr">
-                <p class="muted">{{ row.ticket.token }}</p>
+                <p class="muted ticket__code">{{ row.ticket.token }}</p>
             </div>
         {% endfor %}
     </div>

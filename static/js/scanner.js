@@ -183,7 +183,9 @@ function qrScanner() {
                 // The QR encodes a bare "<token>.<sig>" code (see orders/tokens.py),
                 // not a URL. Validate the shape, split on ".", and build the redeem
                 // path ourselves. A random non-ticket QR won't match and is rejected.
-                const m = /^([A-Z2-7]+)\.([A-Z2-7]+)$/.exec(decodedText.trim().toUpperCase());
+                // Token is uppercase alphanumeric; sig is base32 -- both are covered
+                // by [A-Z0-9] here (shape guard only; the server does the real check).
+                const m = /^([A-Z0-9]+)\.([A-Z0-9]+)$/.exec(decodedText.trim().toUpperCase());
                 if (!m) {
                     this.recordResult({
                         ok: false,

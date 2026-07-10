@@ -109,9 +109,9 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 ### Ticket & scanning
 
 - `Ticket`: `order`, `performance`, `seat` (nullable for GA), `holder_name`,
-  `token` (short uppercase base32 string, ~72 bits — see
-  `orders.models.new_token`), `status` (`valid`|`used`|`void`), `used_at`,
-  `scanned_by`.
+  `token` (short uppercase base32 string, 10 chars / 48 bits — short enough to
+  key in by hand on manual entry; see `orders.models.new_token`), `status`
+  (`valid`|`used`|`void`), `used_at`, `scanned_by`.
 - QR encodes a bare code `<token>.<sig>` (no URL) where `sig` = the first 96
   bits of an HMAC of the token with the tenant/app secret, base32-encoded
   (`orders/tokens.py`). Both halves are uppercase base32, so the code sits in

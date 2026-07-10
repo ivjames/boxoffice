@@ -18,6 +18,6 @@ def ticket_qr_data_uri(ticket, scale=5, border=2):
     still scan with up to ~30% of its area obscured/damaged -- a scuffed or
     partially torn printout, a smudge, a phone photographing it at an angle.
     That level stays affordable because the QR encodes only the ticket code
-    (orders/tokens.scan_code) -- token + truncated HMAC, ~36 chars in QR
-    alphanumeric mode -- rather than a full scan URL."""
+    (orders/tokens.scan_code) -- a 10-char token + truncated HMAC, ~31 chars
+    in QR alphanumeric mode -- rather than a full scan URL."""
     return segno.make(scan_code(ticket), error="h").png_data_uri(scale=scale, border=border)

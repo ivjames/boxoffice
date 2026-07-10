@@ -939,6 +939,15 @@ textarea:focus-visible,
     background: #fff;
 }
 
+/* The ticket code, shown for manual entry at the door. Monospace + wide
+   tracking so each character reads distinctly (the token's alphabet already
+   omits look-alike glyphs -- see orders.models.new_token). */
+.ticket__code {
+    font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "Consolas", monospace;
+    letter-spacing: 0.15em;
+    font-size: 1.05rem;
+}
+
 .ticket-actions {
     display: flex;
     gap: 0.75rem;

@@ -36,14 +36,14 @@ def scan_home(request):
     """
     error = None
     if request.method == "POST":
-        # Tokens are uppercase base32 (orders.models.new_token); accept a
+        # Tokens are uppercase alphanumeric (orders.models.new_token); accept a
         # lowercase paste too by upper()ing first. The regex is just a shape
         # guard so a stray paste can't reach reverse() with a char the
         # <slug:token> route can't build (which would 500) -- a genuinely
         # wrong-but-well-formed code still flows through to
         # scan_redeem/redeem_ticket, the single place that decides pass/fail.
         raw_token = request.POST.get("token", "").strip().upper()
-        if not raw_token or not re.fullmatch(r"[A-Z2-7]+", raw_token):
+        if not raw_token or not re.fullmatch(r"[A-Z0-9]+", raw_token):
             error = "That doesn't look like a valid ticket code."
         else:
             sig = sign_token(raw_token, request.organization.id)

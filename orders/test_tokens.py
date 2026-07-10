@@ -54,12 +54,25 @@ class TicketSigningTests(OrdersFixtureMixin, TestCase):
         self.assertNotIn("?", code)
 
     def test_scan_code_is_all_uppercase_alphanumeric(self):
-        # Stays inside QR alphanumeric mode: only A-Z, 2-7, and the '.' split.
+        # Stays inside QR alphanumeric mode: uppercase A-Z / 0-9 and the '.' split
+        # (token uses the unambiguous alphabet; sig is base32 -- both are A-Z0-9).
         code = tokens.scan_code(self.ticket)
-        self.assertRegex(code, r"^[A-Z2-7]+\.[A-Z2-7]+$")
+        self.assertRegex(code, r"^[A-Z0-9]+\.[A-Z0-9]+$")
 
     def test_scan_code_round_trips_through_verify(self):
         # A scanner can split the code and verify the ticket from it alone.
         token, sig = tokens.scan_code(self.ticket).split(".")
         self.assertEqual(token, self.ticket.token)
         self.assertTrue(tokens.verify_ticket_sig(token, sig, self.ticket.organization_id))
+
+    def test_new_token_avoids_ambiguous_characters(self):
+        from orders.models import new_token
+
+        # The look-alikes a hand-typed code must never contain (each dropped in
+        # favour of its distinct counterpart, or outright -- see orders.models):
+        # 0 O, 1 I L, Z, S, 6, B, U.
+        forbidden = set("0O1ILZS6BU")
+        sample = "".join(new_token() for _ in range(500))
+        offenders = sorted(set(sample) & forbidden)
+        self.assertEqual(offenders, [], f"token contained ambiguous chars: {offenders}")
+        self.assertRegex(sample, r"^[A-Z0-9]+$")  # still uppercase alphanumeric

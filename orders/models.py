@@ -1,3 +1,4 @@
+import base64
 import secrets
 from datetime import timedelta
 
@@ -17,22 +18,26 @@ def default_hold_expiry():
 
 
 def new_token():
-    """Short, URL-safe, unguessable public token for Orders and Tickets.
+    """Short, unguessable public token for Orders and Tickets.
 
-    12 base64url chars (~72 bits of entropy) instead of a UUID's 36 chars.
-    That shrink is the whole point: a Ticket's token rides inside its QR
+    15 uppercase base32 chars (~72 bits of entropy) instead of a UUID's 36.
+    That shrink is half the point: a Ticket's token rides inside its QR
     code's URL, so a shorter token means a lower-density QR that can carry
-    more error correction (see orders/qr.py), and it keeps the public
-    confirmation link (/tickets/<token>/) short. Unguessability is only ever
-    ONE of three gates on redemption -- the per-ticket HMAC signature
-    (orders/tokens.py) and the scanner-role login are the others -- so 72
-    bits here is ample; the token alone was never enough to redeem a ticket.
+    more error correction (see orders/qr.py). The other half is the base32
+    *alphabet* (A-Z2-7): together with an uppercased host + a `?sig=`-free
+    path (orders/tokens.build_ticket_scan_url), it keeps the entire scan URL
+    inside QR "alphanumeric mode", which packs ~45% more per module than the
+    byte mode any lowercase char would force -- the single biggest lever on
+    how dense the code looks. Unguessability is only ever ONE of three gates
+    on redemption -- the per-ticket HMAC signature (orders/tokens.py) and the
+    scanner-role login are the others -- so 72 bits here is ample; the token
+    alone was never enough to redeem a ticket.
 
     Named (not a lambda) so migrations can serialize it as a field default,
-    matching default_hold_expiry above. base64url's alphabet (A-Za-z0-9_-)
-    is exactly Django's `slug` URL converter's, so the redeem/confirmation
-    routes match on <slug:token> without a custom converter."""
-    return secrets.token_urlsafe(9)
+    matching default_hold_expiry above. base32's alphabet is a subset of
+    Django's `slug` URL converter's, so the redeem/confirmation routes match
+    on <slug:token> without a custom converter."""
+    return base64.b32encode(secrets.token_bytes(9)).rstrip(b"=").decode()
 
 
 class Hold(TenantScopedModel):

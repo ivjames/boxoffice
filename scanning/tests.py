@@ -1,6 +1,6 @@
 """Scanning: redeem flow correctness (pass/fail reasons, double-scan,
 signature/tenant checks), the lock-then-recheck concurrency guarantee, and
-role/tenant gating on both /scan/ and /scan/redeem/<token>/.
+role/tenant gating on both /scan/ and /S/<token>/<sig>/.
 
 Concurrency-test caveat (same as orders/test_services.py's
 GAAvailabilityTests.test_concurrent_last_tickets_only_one_succeeds): SQLite
@@ -178,7 +178,7 @@ class ScanRedeemViewTests(ScanFixtureMixin, TestCase):
             self.build_org_with_ticket()
         )
         self.sig = sign_token(self.ticket.token, self.org.id)
-        self.url = f"/scan/redeem/{self.ticket.token}/?sig={self.sig}"
+        self.url = f"/S/{self.ticket.token}/{self.sig}/"
 
     def test_all_staff_roles_can_redeem(self):
         """Membership.can_scan() intentionally covers every role -- 'every
@@ -205,7 +205,7 @@ class ScanRedeemViewTests(ScanFixtureMixin, TestCase):
             self.client.logout()
             self.client.force_login(user)
             resp = self.client.get(
-                f"/scan/redeem/{ticket.token}/?sig={sig}", HTTP_HOST=host_for("roxy")
+                f"/S/{ticket.token}/{sig}/", HTTP_HOST=host_for("roxy")
             )
             self.assertEqual(resp.status_code, 200, f"{role} should be able to redeem")
             self.assertContains(resp, "PASS")
@@ -288,17 +288,26 @@ class ScanHomeViewTests(ScanFixtureMixin, TestCase):
             "/scan/", {"token": str(self.ticket.token)}, HTTP_HOST=host_for("roxy")
         )
         self.assertEqual(resp.status_code, 302)
-        self.assertIn(f"/scan/redeem/{self.ticket.token}/", resp.headers["Location"])
+        self.assertIn(f"/S/{self.ticket.token}/", resp.headers["Location"])
 
         follow = self.client.get(resp.headers["Location"], HTTP_HOST=host_for("roxy"))
         self.assertContains(follow, "PASS")
         self.ticket.refresh_from_db()
         self.assertEqual(self.ticket.status, Ticket.Status.USED)
 
+    def test_manual_entry_lowercase_token_is_normalized(self):
+        # Staff may type/paste the code in lowercase; it's upper()ed before use.
+        self.client.force_login(self.scanner_user)
+        resp = self.client.post(
+            "/scan/", {"token": str(self.ticket.token).lower()}, HTTP_HOST=host_for("roxy")
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(f"/S/{self.ticket.token}/", resp.headers["Location"])
+
     def test_manual_entry_rejects_garbage_token(self):
-        # Tokens are base64url now, so a "wrong" code is only rejected at input
-        # if it contains chars outside that alphabet (a space + punctuation
-        # here); a well-formed-but-unknown code is handled below instead.
+        # Tokens are uppercase base32 (A-Z2-7), so a "wrong" code is rejected at
+        # input only if it has chars outside that alphabet (a space, punctuation,
+        # or 0/1/8/9); a well-formed-but-unknown code is handled below instead.
         self.client.force_login(self.scanner_user)
         resp = self.client.post("/scan/", {"token": "bad token!"}, HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 200)
@@ -309,9 +318,9 @@ class ScanHomeViewTests(ScanFixtureMixin, TestCase):
         # it flows through to scan_redeem/redeem_ticket -- the single place that
         # decides pass/fail -- which reports it as not found.
         self.client.force_login(self.scanner_user)
-        resp = self.client.post("/scan/", {"token": "abcXYZ012_-9"}, HTTP_HOST=host_for("roxy"))
+        resp = self.client.post("/scan/", {"token": "ABCDEFG234567AB"}, HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 302)
-        self.assertIn("/scan/redeem/abcXYZ012_-9/", resp.headers["Location"])
+        self.assertIn("/S/ABCDEFG234567AB/", resp.headers["Location"])
         follow = self.client.get(resp.headers["Location"], HTTP_HOST=host_for("roxy"))
         self.assertContains(follow, "FAIL")
 

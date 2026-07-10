@@ -46,13 +46,16 @@ class TicketSigningTests(OrdersFixtureMixin, TestCase):
         sig = tokens.sign_ticket(self.ticket)  # signed under self.org's key
         self.assertFalse(tokens.verify_ticket_sig(self.ticket.token, sig, other_org.id))
 
-    def test_scan_path_contains_token_and_signature(self):
+    def test_scan_path_carries_token_and_signature_as_segments(self):
         path = tokens.scan_path(self.ticket)
-        self.assertIn(str(self.ticket.token), path)
-        self.assertIn(f"sig={tokens.sign_ticket(self.ticket)}", path)
+        # token and sig are consecutive path segments, not a ?sig= query param.
+        self.assertEqual(path, f"/S/{self.ticket.token}/{tokens.sign_ticket(self.ticket)}/")
+        self.assertNotIn("?", path)
 
-    def test_build_ticket_scan_url_is_absolute_and_host_correct(self):
+    def test_build_ticket_scan_url_is_absolute_uppercase_and_host_correct(self):
         request = RequestFactory().get("/", HTTP_HOST="roxy.localhost")
         url = tokens.build_ticket_scan_url(self.ticket, request)
-        self.assertTrue(url.startswith("http://roxy.localhost/scan/redeem/"))
-        self.assertIn(str(self.ticket.token), url)
+        # Whole URL is uppercased to stay in QR alphanumeric mode.
+        self.assertTrue(url.startswith("HTTP://ROXY.LOCALHOST/S/"))
+        self.assertEqual(url, url.upper())
+        self.assertIn(self.ticket.token, url)  # token is already uppercase base32

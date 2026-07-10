@@ -109,14 +109,17 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 ### Ticket & scanning
 
 - `Ticket`: `order`, `performance`, `seat` (nullable for GA), `holder_name`,
-  `token` (short base64url string, ~72 bits — see `orders.models.new_token`),
-  `status` (`valid`|`used`|`void`), `used_at`, `scanned_by`.
-- QR encodes a URL `/scan/redeem/<token>/?sig=<hmac>` where `sig` = the first
-  128 bits of an HMAC of the token with the tenant/app secret, base64url-encoded
-  (`orders/tokens.py`). The short token + truncated sig keep the QR small enough
-  to carry the highest error-correction level (`error="h"`, ~30%). Scan view
-  (role `scanner`+) verifies sig, checks status, atomically flips `valid`→`used`,
-  returns pass/fail UI.
+  `token` (short uppercase base32 string, ~72 bits — see
+  `orders.models.new_token`), `status` (`valid`|`used`|`void`), `used_at`,
+  `scanned_by`.
+- QR encodes an uppercase URL `HTTPS://<host>/S/<token>/<sig>/` where `sig` =
+  the first 96 bits of an HMAC of the token with the tenant/app secret,
+  base32-encoded (`orders/tokens.py`). Uppercase base32 token+sig, the short
+  `/S/` path, and the signature living in the path (not a `?sig=` query) keep
+  the whole URL inside QR *alphanumeric mode* — ~45% denser per module than
+  byte mode — so the code stays sparse even at the highest error-correction
+  level (`error="h"`, ~30%). Scan view (role `scanner`+) verifies sig, checks
+  status, atomically flips `valid`→`used`, returns pass/fail UI.
 
 ## URL structure (per tenant subdomain)
 
@@ -126,7 +129,7 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 - `/cart/`, `/checkout/`, `/checkout/success/`, `/checkout/cancel/`
 - `/tickets/<order-token>/` order confirmation + tickets
 - `/dashboard/` staff area (events CRUD, orders, reports)
-- `/scan/` scanner UI, `/scan/redeem/<token>/`
+- `/scan/` scanner UI, `/S/<token>/<sig>/` (QR redeem endpoint)
 - `/webhooks/stripe/` tenant Stripe webhook
 - Platform/landing (reserved host): `/`, `/signup/`, Django `/admin/`
 

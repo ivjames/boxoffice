@@ -36,33 +36,34 @@ def scan_home(request):
     """
     error = None
     if request.method == "POST":
-        raw_token = request.POST.get("token", "").strip()
-        # Tokens are base64url strings (orders.models.new_token); the check
-        # here is just a shape guard so a stray paste can't reach reverse()
-        # with a char the <slug:token> route can't build (which would 500) --
-        # a genuinely wrong-but-well-formed code still flows through to
+        # Tokens are uppercase base32 (orders.models.new_token); accept a
+        # lowercase paste too by upper()ing first. The regex is just a shape
+        # guard so a stray paste can't reach reverse() with a char the
+        # <slug:token> route can't build (which would 500) -- a genuinely
+        # wrong-but-well-formed code still flows through to
         # scan_redeem/redeem_ticket, the single place that decides pass/fail.
-        if not raw_token or not re.fullmatch(r"[A-Za-z0-9_-]+", raw_token):
+        raw_token = request.POST.get("token", "").strip().upper()
+        if not raw_token or not re.fullmatch(r"[A-Z2-7]+", raw_token):
             error = "That doesn't look like a valid ticket code."
         else:
             sig = sign_token(raw_token, request.organization.id)
-            return redirect(f"{reverse('scan_redeem', args=[raw_token])}?sig={sig}")
+            return redirect(reverse("scan_redeem", args=[raw_token, sig]))
 
     return render(request, "scanning/scan_home.html", {"error": error})
 
 
 @scanner_required
-def scan_redeem(request, token):
+def scan_redeem(request, token, sig):
     """GET-only (it's what a QR code's encoded URL resolves to, and what the
     in-page scanner's fetch() hits): verify the signature, then
-    lock-check-flip the Ticket inside redeem_ticket(). Requires login +
+    lock-check-flip the Ticket inside redeem_ticket(). Both `token` and `sig`
+    arrive as URL path segments (see scanning/urls.py). Requires login +
     scanner role like every view in this app -- the QR by itself is not
     sufficient to redeem a ticket; a public/anonymous request never reaches
     this far (accounts.permissions.scanner_required 404s off-tenant hosts,
     sends anonymous users to /login/, and 403s a logged-in user who isn't
     staff at this org or doesn't have scanner+ role).
     """
-    sig = request.GET.get("sig")
     result = redeem_ticket(
         organization=request.organization, token=token, sig=sig, scanned_by=request.user
     )

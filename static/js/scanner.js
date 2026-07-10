@@ -9,7 +9,7 @@
  * pure JS, no deps) -- that path works everywhere getUserMedia does.
  *
  * On a decoded hit: parse the ticket URL the QR encodes
- * (/scan/redeem/<token>/?sig=<hmac> -- see orders/tokens.py), fetch() it
+ * (HTTPS://<host>/S/<token>/<sig>/ -- see orders/tokens.py), fetch() it
  * with Accept: application/json (scanning/views.scan_redeem returns JSON
  * for that instead of a full HTML page) and render PASS/FAIL inline so
  * staff can immediately scan the next ticket. Debounced so a code sitting
@@ -192,7 +192,7 @@ function qrScanner() {
                     });
                     return;
                 }
-                if (!/^\/scan\/redeem\//.test(url.pathname)) {
+                if (!/^\/S\//.test(url.pathname)) {
                     this.recordResult({
                         ok: false,
                         reason: "invalid_code",

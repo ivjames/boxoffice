@@ -31,7 +31,13 @@ from .services import redeem_ticket
 
 
 class ScanFixtureMixin:
-    def build_org_with_ticket(self, subdomain="roxy"):
+    def build_org_with_ticket(self, subdomain="roxy", starts_at=None):
+        # Default to "now" so the ticket is inside the scan window (an hour
+        # before showtime through the show) -- redeem_ticket() time-gates
+        # admission, so the default fixture must be redeemable. Pass an
+        # explicit starts_at to exercise the too-early / too-late gates.
+        if starts_at is None:
+            starts_at = timezone.now()
         org = make_org(subdomain)
         venue = Venue.objects.create(organization=org, name="Main Stage")
         event = Event.objects.create(
@@ -41,7 +47,7 @@ class ScanFixtureMixin:
             organization=org,
             event=event,
             venue=venue,
-            starts_at=timezone.now() + timedelta(days=1),
+            starts_at=starts_at,
             seating_mode=Performance.SeatingMode.GA,
             status=Performance.Status.PUBLISHED,
         )
@@ -154,6 +160,76 @@ class RedeemTicketServiceTests(ScanFixtureMixin, TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "not_found")
 
+    def test_scan_before_window_is_wrong_time(self):
+        """A valid ticket scanned more than an hour before showtime isn't
+        admitted -- it comes back as an amber wrong_time result and the ticket
+        stays VALID for a later, in-window re-scan."""
+        _o, _v, _e, perf, _ord, ticket = self.build_org_with_ticket(
+            "earlybird", starts_at=timezone.now() + timedelta(hours=3)
+        )
+        result = redeem_ticket(
+            organization=perf.organization,
+            token=ticket.token,
+            sig=sign_token(ticket.token, perf.organization.id),
+            scanned_by=self.scanner_user,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "wrong_time")
+        self.assertIn("Too early", result.message)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, Ticket.Status.VALID)  # not flipped
+
+    def test_scan_after_window_is_wrong_time(self):
+        """A valid ticket scanned long after the show has ended is likewise
+        gated as wrong_time and left VALID."""
+        _o, _v, _e, perf, _ord, ticket = self.build_org_with_ticket(
+            "latecomer", starts_at=timezone.now() - timedelta(hours=6)
+        )
+        result = redeem_ticket(
+            organization=perf.organization,
+            token=ticket.token,
+            sig=sign_token(ticket.token, perf.organization.id),
+            scanned_by=self.scanner_user,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "wrong_time")
+        self.assertIn("Too late", result.message)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, Ticket.Status.VALID)
+
+    def test_scan_just_before_doors_open_admits(self):
+        """The window opens an hour before showtime -- a scan just inside that
+        edge admits normally."""
+        _o, _v, _e, perf, _ord, ticket = self.build_org_with_ticket(
+            "doorsopen", starts_at=timezone.now() + timedelta(minutes=45)
+        )
+        result = redeem_ticket(
+            organization=perf.organization,
+            token=ticket.token,
+            sig=sign_token(ticket.token, perf.organization.id),
+            scanned_by=self.scanner_user,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.reason, "ok")
+
+    def test_wrong_time_takes_lower_precedence_than_already_used(self):
+        """void/already_used are decided before the time gate -- a used ticket
+        re-scanned outside the window still reports already_used, not
+        wrong_time."""
+        _o, _v, _e, perf, _ord, ticket = self.build_org_with_ticket(
+            "precedence", starts_at=timezone.now() + timedelta(hours=5)
+        )
+        ticket.status = Ticket.Status.USED
+        ticket.save(update_fields=["status"])
+        result = redeem_ticket(
+            organization=perf.organization,
+            token=ticket.token,
+            sig=sign_token(ticket.token, perf.organization.id),
+            scanned_by=self.scanner_user,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "already_used")
+
     def test_ticket_from_another_org_rejected(self):
         """A ticket token + a sig that's valid for a DIFFERENT org must not
         redeem -- both the signature (HMAC keyed per-org, see
@@ -227,6 +303,24 @@ class ScanRedeemViewTests(ScanFixtureMixin, TestCase):
         # (amber), distinct from a hard reject -- see scan_result.html.
         self.assertContains(resp, "ALREADY SCANNED")
         self.assertContains(resp, "Already scanned")
+
+    def test_wrong_time_renders_amber_alert(self):
+        """A ticket scanned outside the showtime window renders the amber
+        WRONG TIME verdict (scan-result--used styling) explaining the issue,
+        distinct from a hard FAIL."""
+        org, _v, _e, perf, _ord, ticket = self.build_org_with_ticket(
+            "amber", starts_at=timezone.now() + timedelta(hours=4)
+        )
+        user, _ = StaffFixtureMixin().make_staff(org, Membership.Role.SCANNER)
+        self.client.force_login(user)
+        resp = self.client.get(
+            f"/S/{ticket.token}/{sign_token(ticket.token, org.id)}/", HTTP_HOST=host_for("amber")
+        )
+        self.assertContains(resp, "WRONG TIME")
+        self.assertContains(resp, "scan-result--used")
+        self.assertContains(resp, "Too early")
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, Ticket.Status.VALID)
 
     def test_json_response_for_fetch_style_request(self):
         user, _ = StaffFixtureMixin().make_staff(self.org, Membership.Role.SCANNER)

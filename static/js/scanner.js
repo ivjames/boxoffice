@@ -251,11 +251,13 @@ function qrScanner() {
 
         recordResult(data) {
             // Three visible outcomes, not two: a valid admit (green), a QR
-            // that scanned fine but was already redeemed (amber -- a distinct
-            // "already scanned" so staff don't confuse it with a fake), and
+            // that scanned fine but shouldn't admit yet (amber -- either
+            // already redeemed or scanned outside the showtime window, both
+            // distinct from a fake so staff can make a judgment call), and
             // everything else (red -- bad signature, unknown code, void,
             // non-ticket QR, network/session error).
-            const category = data.ok ? "pass" : data.reason === "already_used" ? "used" : "fail";
+            const amber = data.reason === "already_used" || data.reason === "wrong_time";
+            const category = data.ok ? "pass" : amber ? "used" : "fail";
             data.category = category;
             this.lastResult = data;
             if (data.ok) {
@@ -269,6 +271,7 @@ function qrScanner() {
         headlineFor(data) {
             if (!data) return "";
             if (data.category === "pass") return "PASS";
+            if (data.reason === "wrong_time") return "WRONG TIME";
             if (data.category === "used") return "ALREADY SCANNED";
             return "FAIL";
         },

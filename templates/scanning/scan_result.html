@@ -6,8 +6,8 @@
     {% include "dashboard/_nav.html" %}
     <h1>Scan result</h1>
 
-    <div class="scan-result scan-result--big {% if result.ok %}scan-result--pass{% elif result.reason == 'already_used' %}scan-result--used{% else %}scan-result--fail{% endif %}">
-        <p class="scan-result__headline">{% if result.ok %}PASS{% elif result.reason == 'already_used' %}ALREADY SCANNED{% else %}FAIL{% endif %}</p>
+    <div class="scan-result scan-result--big {% if result.ok %}scan-result--pass{% elif result.reason == 'already_used' or result.reason == 'wrong_time' %}scan-result--used{% else %}scan-result--fail{% endif %}">
+        <p class="scan-result__headline">{% if result.ok %}PASS{% elif result.reason == 'wrong_time' %}WRONG TIME{% elif result.reason == 'already_used' %}ALREADY SCANNED{% else %}FAIL{% endif %}</p>
         <p>{{ result.message }}</p>
 
         {% if result.ticket %}

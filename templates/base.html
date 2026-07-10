@@ -30,6 +30,7 @@
         </div>
     {% endif %}
 
+    {% block site_header %}
     <header class="site-header" x-data="{ navOpen: false }">
         <div class="site-header__inner">
             <a class="site-header__brand" href="{% url 'home' %}">
@@ -82,6 +83,7 @@
             </nav>
         </div>
     </header>
+    {% endblock %}
 
     <main class="site-main" id="main-content">
         {% if messages %}

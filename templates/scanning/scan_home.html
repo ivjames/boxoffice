@@ -3,70 +3,94 @@
 
 {% block title %}Scan tickets — {{ organization.name }}{% endblock %}
 
+{# Drop the site-wide header so the scanner is a single-bar, app-like screen:
+   the scan bar's own burger carries the section nav (incl. storefront + log out). #}
+{% block site_header %}{% endblock %}
+
 {% block content %}
-{% include "dashboard/_nav.html" %}
-<div x-data="qrScanner()" x-init="start()">
+<div class="scan" x-data="qrScanner()" x-init="start()">
     <!-- Full-screen color wash on each scan (green pass / amber already-scanned
          / red fail) -- visible at arm's length even when the inline banner isn't. -->
     <div class="scan-flash" x-show="flash" x-cloak :class="flash ? 'scan-flash--' + flash : ''" aria-hidden="true"></div>
 
-    <div class="dash-header">
-        <h1>Scan tickets</h1>
-        <p class="muted">{{ request.membership.get_role_display }} — {{ organization.name }}</p>
-        <button type="button" class="scanner__sound" @click="toggleSound()"
+    <!-- Compact app bar. The dashboard section nav is pushed behind a burger so
+         the scan screen itself stays stripped back and focused on the camera. -->
+    <div class="scan-bar" x-data="{ menuOpen: false }" @keydown.escape="menuOpen = false">
+        <button type="button" class="scan-bar__burger" @click="menuOpen = !menuOpen"
+                :aria-expanded="menuOpen.toString()" aria-controls="scan-menu" aria-label="Menu">
+            <span></span><span></span><span></span>
+        </button>
+        <h1 class="scan-bar__title">Scan</h1>
+        <button type="button" class="scan-bar__sound" @click="toggleSound()"
                 :aria-pressed="soundOn.toString()"
-                x-text="soundOn ? '🔊 Sound on' : '🔇 Muted'"></button>
+                :aria-label="soundOn ? 'Mute scan sounds' : 'Unmute scan sounds'"
+                x-text="soundOn ? '🔊' : '🔇'"></button>
+
+        <div id="scan-menu" class="scan-menu" x-show="menuOpen" x-cloak
+             @click.outside="menuOpen = false">
+            {% include "dashboard/_nav.html" %}
+        </div>
     </div>
 
-    <div class="scanner">
-        <div class="scanner__camera" x-show="status === 'starting' || status === 'scanning'">
-            <video x-ref="video" class="scanner__video" playsinline muted autoplay></video>
-            <canvas x-ref="canvas" class="scanner__canvas" style="display:none;"></canvas>
+    <!-- Square scan stage: fixed 1:1 frame so the layout never jumps as camera,
+         status, and verdict states swap in. The camera fills it; overlays sit
+         on top so the manual entry stays pinned right below. -->
+    <div class="scan-stage">
+        <video x-ref="video" class="scan-stage__video" playsinline muted autoplay
+               x-show="status === 'starting' || status === 'scanning'"></video>
+        <canvas x-ref="canvas" style="display:none;"></canvas>
+
+        <div class="scan-stage__reticle" x-show="status === 'scanning'" aria-hidden="true"></div>
+
+        <div class="scan-stage__status" x-show="status === 'starting'">
+            <p class="muted">Starting camera…</p>
         </div>
 
-        <template x-if="status === 'starting'">
-            <p class="muted">Starting camera…</p>
-        </template>
+        <div class="scan-stage__status scan-stage__status--error" x-show="status === 'error'">
+            <p x-text="errorMessage"></p>
+        </div>
 
-        <template x-if="status === 'error'">
-            <p class="scan-result scan-result--fail" x-text="errorMessage"></p>
-        </template>
+        <div class="scan-tally" x-show="status === 'scanning'" aria-hidden="true">
+            <span class="scan-tally__pass" x-text="tally.pass"></span> ✓
+            <span class="scan-tally__sep">·</span>
+            <span class="scan-tally__fail" x-text="tally.fail"></span> ✕
+        </div>
 
-        <p class="muted" x-show="status === 'scanning'">
-            Point the camera at a ticket's QR code. Scanned:
-            <strong><span x-text="tally.pass"></span> passed</strong>,
-            <strong><span x-text="tally.fail"></span> failed</strong>.
-        </p>
-
+        <!-- Last verdict, anchored to the bottom of the stage so it reads at a
+             glance without pushing the manual entry off-screen. -->
         <template x-if="lastResult">
-            <div class="scan-result scan-result--big" :class="'scan-result--' + lastResult.category" aria-live="assertive">
-                <p class="scan-result__headline" x-text="headlineFor(lastResult)"></p>
-                <p x-text="lastResult.message"></p>
+            <div class="scan-verdict" :class="'scan-verdict--' + lastResult.category" aria-live="assertive">
+                <p class="scan-verdict__headline" x-text="headlineFor(lastResult)"></p>
+                <p class="scan-verdict__msg" x-text="lastResult.message"></p>
                 <template x-if="lastResult.ticket">
-                    <ul>
-                        <li x-show="lastResult.ticket.holder_name"><strong>Holder:</strong> <span x-text="lastResult.ticket.holder_name"></span></li>
-                        <li x-show="lastResult.ticket.seat"><strong>Seat:</strong> <span x-text="lastResult.ticket.seat"></span></li>
-                        <li><strong>Performance:</strong> <span x-text="lastResult.ticket.performance"></span></li>
-                    </ul>
+                    <dl class="scan-verdict__meta">
+                        <template x-if="lastResult.ticket.holder_name">
+                            <div><dt>Holder</dt><dd x-text="lastResult.ticket.holder_name"></dd></div>
+                        </template>
+                        <template x-if="lastResult.ticket.seat">
+                            <div><dt>Seat</dt><dd x-text="lastResult.ticket.seat"></dd></div>
+                        </template>
+                        <div><dt>Show</dt><dd x-text="lastResult.ticket.performance"></dd></div>
+                    </dl>
                 </template>
             </div>
         </template>
     </div>
 
-    <noscript>
-        <p class="muted">Enable JavaScript to use the camera scanner. The manual entry form below still works.</p>
-    </noscript>
+    <!-- Manual entry, right below the scan area: no camera / permission denied /
+         a code that won't scan. Type the ticket code (the /S/ segment). -->
+    <form class="scan-manual" method="post">
+        {% csrf_token %}
+        <input type="text" name="token" class="scan-manual__input"
+               placeholder="Enter ticket code" autocomplete="off"
+               autocapitalize="characters" spellcheck="false" required>
+        <button type="submit" class="button scan-manual__submit">Redeem</button>
+    </form>
+    {% if error %}<p class="scan-result scan-result--fail scan-manual__error">{{ error }}</p>{% endif %}
 
-    <div class="scanner__manual">
-        <h2>Manual entry</h2>
-        <p class="muted">No camera, or permission denied? Type or paste the ticket code (the <code>/S/</code> segment of the QR link, before the signature).</p>
-        {% if error %}<p class="scan-result scan-result--fail">{{ error }}</p>{% endif %}
-        <form method="post">
-            {% csrf_token %}
-            <input type="text" name="token" placeholder="Ticket code" required>
-            <button type="submit" class="button">Redeem</button>
-        </form>
-    </div>
+    <noscript>
+        <p class="muted scan-note">Enable JavaScript to use the camera scanner. The manual entry form above still works.</p>
+    </noscript>
 </div>
 {% endblock %}
 

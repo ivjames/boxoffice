@@ -42,6 +42,12 @@
 
         <div class="scan-stage__reticle" x-show="status === 'scanning'" aria-hidden="true"></div>
 
+        <!-- Shown while more than one QR is in frame: we refuse to guess which
+             ticket the staffer means and wait for a single code (scanner.js
+             considerCodes). -->
+        <div class="scan-stage__hint" x-show="status === 'scanning' && multiple" x-cloak
+             aria-live="polite">Multiple codes — show one at a time</div>
+
         <div class="scan-stage__status" x-show="status === 'starting'">
             <p class="muted">Starting camera…</p>
         </div>

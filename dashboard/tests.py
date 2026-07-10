@@ -14,6 +14,7 @@ from accounts.models import Membership
 from accounts.tests import StaffFixtureMixin, host_for
 from events.models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
 from orders.models import Order, Ticket
+from orders.services import get_seating_chart
 from venues.generation import generate_seats
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
@@ -312,24 +313,77 @@ class EventPerformanceCRUDTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertIsNone(tier.section_id)
         self.assertEqual(tier.organization_id, self.org.id)
 
-    def test_add_reserved_price_tier_requires_section(self):
+    def test_reserved_editor_lists_every_section_including_unpriced(self):
+        _event, performance, section, _seats = self.build_reserved_event(self.org, self.venue)
+        chart = get_seating_chart(performance)
+        balcony = Section.objects.create(organization=self.org, chart=chart, name="Balcony")
+        resp = self.client.get(
+            f"/dashboard/performances/{performance.pk}/price-tiers/", HTTP_HOST=host_for("roxy")
+        )
+        self.assertEqual(resp.status_code, 200)
+        section_ids = {row["section"].id for row in resp.context["rows"]}
+        self.assertEqual(section_ids, {section.id, balcony.id})
+        # An unpriced section is shown, not silently omitted.
+        self.assertContains(resp, "Not priced")
+
+    def test_reserved_editor_sets_section_default(self):
         _event, performance, section, _seats = self.build_reserved_event(self.org, self.venue)
         resp = self.client.post(
             f"/dashboard/performances/{performance.pk}/price-tiers/",
-            {"name": "Orchestra", "amount": "75.00", "currency": "USD", "section": ""},
+            {f"default_{section.id}": "45.00", f"override_{section.id}": ""},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertRedirects(
+            resp,
+            f"/dashboard/performances/{performance.pk}/price-tiers/",
+            fetch_redirect_response=False,
+        )
+        tier = PriceTier.objects.get(section=section, performance__isnull=True)
+        self.assertEqual(tier.amount, Decimal("45.00"))
+        self.assertIsNone(tier.performance_id)
+        self.assertEqual(tier.organization_id, self.org.id)
+
+    def test_reserved_editor_sets_override_separately_from_default(self):
+        _event, performance, section, _seats = self.build_reserved_event(self.org, self.venue)
+        self.client.post(
+            f"/dashboard/performances/{performance.pk}/price-tiers/",
+            {f"default_{section.id}": "45.00", f"override_{section.id}": "85.00"},
+            HTTP_HOST=host_for("roxy"),
+        )
+        default = PriceTier.objects.get(section=section, performance__isnull=True)
+        override = PriceTier.objects.get(section=section, performance=performance)
+        self.assertEqual(default.amount, Decimal("45.00"))
+        self.assertEqual(override.amount, Decimal("85.00"))
+
+    def test_reserved_editor_blank_clears_existing_price(self):
+        _event, performance, section, _seats = self.build_reserved_event(self.org, self.venue)
+        PriceTier.objects.create(
+            organization=self.org, section=section, name="Orchestra", amount=Decimal("45.00")
+        )
+        resp = self.client.post(
+            f"/dashboard/performances/{performance.pk}/price-tiers/",
+            {f"default_{section.id}": "", f"override_{section.id}": ""},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertRedirects(
+            resp,
+            f"/dashboard/performances/{performance.pk}/price-tiers/",
+            fetch_redirect_response=False,
+        )
+        self.assertFalse(
+            PriceTier.objects.filter(section=section, performance__isnull=True).exists()
+        )
+
+    def test_reserved_editor_rejects_negative_and_saves_nothing(self):
+        _event, performance, section, _seats = self.build_reserved_event(self.org, self.venue)
+        resp = self.client.post(
+            f"/dashboard/performances/{performance.pk}/price-tiers/",
+            {f"default_{section.id}": "-5", f"override_{section.id}": ""},
             HTTP_HOST=host_for("roxy"),
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertFalse(PriceTier.objects.filter(name="Orchestra").exists())
-
-        resp = self.client.post(
-            f"/dashboard/performances/{performance.pk}/price-tiers/",
-            {"name": "Orchestra", "amount": "75.00", "currency": "USD", "section": section.pk},
-            HTTP_HOST=host_for("roxy"),
-        )
-        tier = PriceTier.objects.get(name="Orchestra")
-        self.assertEqual(tier.section_id, section.pk)
-        self.assertIsNone(tier.performance_id)
+        self.assertContains(resp, "can&#x27;t be negative")
+        self.assertFalse(PriceTier.objects.filter(section=section).exists())
 
 
 class OverviewReportTests(StaffFixtureMixin, DashFixtureMixin, TestCase):

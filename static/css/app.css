@@ -1037,6 +1037,42 @@ table.dash-table th {
     font-size: 0.875rem;
 }
 
+/* -- reserved-seating price grid ----------------------------------------- */
+
+.price-input {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--muted-color, #6b7280);
+}
+
+/* Override the full-width .dash-form input rule: these live in table cells. */
+.dash-form .price-input input {
+    width: 6rem;
+    max-width: 6rem;
+    padding: 0.35rem 0.5rem;
+    text-align: right;
+}
+
+.field-error {
+    display: block;
+    margin-top: 0.25rem;
+    color: #b91c1c;
+    font-size: 0.8125rem;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 /* -- dashboard seating chart builder (Phase A) ---------------------------- */
 
 .chart-seat {

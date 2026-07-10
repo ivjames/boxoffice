@@ -34,10 +34,15 @@ function qrScanner() {
         lastCode: null,
         lastCodeAt: 0,
         lastAttemptAt: 0,
-        // `multiple` is true while more than one QR is visible, which we refuse
-        // to scan: the only gate before redeeming is isolating a single code in
-        // frame (see considerCodes()), not any camera-stability settle.
+        // `multiple` is true while more than one QR is visible (or was, within
+        // the last MULTI_CLEAR_MS), which we refuse to scan. Detection flickers
+        // -- a multi-code scene decodes just one code on the odd frame -- so we
+        // hold off scanning a lone code until the extras have stayed gone for
+        // MULTI_CLEAR_MS. This is a single-code check, not a camera-stability
+        // settle: a code shown on its own scans on the frame it decodes.
         multiple: false,
+        MULTI_CLEAR_MS: 600,
+        lastMultipleAt: 0,
         stream: null,
         useBarcodeDetector: typeof window.BarcodeDetector !== "undefined",
         detector: null,
@@ -195,19 +200,35 @@ function qrScanner() {
             // tickets fanned out we can't tell which one the staffer means, so
             // we scan none of them and wait for a single code to be isolated.
             // (Only the native BarcodeDetector reports multiples; the jsQR
-            // fallback returns at most one, so this branch is a no-op there.)
+            // fallback returns at most one, so this guard is a no-op there.)
+            const now = performance.now();
             if (codes.length > 1) {
+                this.multiple = true;
+                this.lastMultipleAt = now;
+                return;
+            }
+
+            if (codes.length === 0) {
+                // Empty frame -- clear the hint, but only once the just-seen
+                // extras have been gone long enough that this isn't a flicker.
+                if (now - this.lastMultipleAt >= this.MULTI_CLEAR_MS) this.multiple = false;
+                return;
+            }
+
+            // Exactly one code decoded this frame. If we saw multiple codes
+            // within the last MULTI_CLEAR_MS, treat this as the flicker of a
+            // still-crowded frame: keep refusing (and keep the hint up) until
+            // the extras have truly cleared, so a fanned-out stack can't slip a
+            // scan through on the odd single-code frame.
+            if (now - this.lastMultipleAt < this.MULTI_CLEAR_MS) {
                 this.multiple = true;
                 return;
             }
+
+            // A genuinely isolated code: redeem it right away -- no
+            // camera-stability settle. handleCode's busy/4s debounce keeps a
+            // code sitting in frame from re-submitting.
             this.multiple = false;
-
-            if (codes.length === 0) return;
-
-            // Exactly one code in frame: redeem it right away. The only wait is
-            // isolating a single code -- there's no camera-stability settle, so
-            // a lone code fires on the frame it decodes. handleCode's busy/4s
-            // debounce keeps a code sitting in frame from re-submitting.
             this.handleCode(codes[0]);
         },
 

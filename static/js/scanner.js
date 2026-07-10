@@ -34,14 +34,9 @@ function qrScanner() {
         lastCode: null,
         lastCodeAt: 0,
         lastAttemptAt: 0,
-        // Settle gate: we only redeem a code once the SAME single code has
-        // held steady in frame for SETTLE_MS. `pendingCode`/`pendingSince`
-        // track the candidate currently settling; `multiple` is true while
-        // more than one QR is visible (which we refuse to scan -- see
-        // considerCodes()).
-        SETTLE_MS: 500,
-        pendingCode: null,
-        pendingSince: 0,
+        // `multiple` is true while more than one QR is visible, which we refuse
+        // to scan: the only gate before redeeming is isolating a single code in
+        // frame (see considerCodes()), not any camera-stability settle.
         multiple: false,
         stream: null,
         useBarcodeDetector: typeof window.BarcodeDetector !== "undefined",
@@ -203,33 +198,17 @@ function qrScanner() {
             // fallback returns at most one, so this branch is a no-op there.)
             if (codes.length > 1) {
                 this.multiple = true;
-                this.pendingCode = null;
-                this.pendingSince = 0;
                 return;
             }
             this.multiple = false;
 
-            if (codes.length === 0) {
-                // Frame is empty -- drop any half-settled candidate so a code
-                // that leaves and returns has to settle again.
-                this.pendingCode = null;
-                this.pendingSince = 0;
-                return;
-            }
+            if (codes.length === 0) return;
 
-            const text = codes[0];
-            const now = performance.now();
-            if (text !== this.pendingCode) {
-                // A new single code just appeared: start its settle clock. We
-                // redeem only after it has held steady for SETTLE_MS, so a code
-                // swept past mid-motion (or a one-frame misread) never fires.
-                this.pendingCode = text;
-                this.pendingSince = now;
-                return;
-            }
-            if (now - this.pendingSince >= this.SETTLE_MS) {
-                this.handleCode(text);
-            }
+            // Exactly one code in frame: redeem it right away. The only wait is
+            // isolating a single code -- there's no camera-stability settle, so
+            // a lone code fires on the frame it decodes. handleCode's busy/4s
+            // debounce keeps a code sitting in frame from re-submitting.
+            this.handleCode(codes[0]);
         },
 
         handleCode(text) {

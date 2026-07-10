@@ -59,7 +59,9 @@
         <!-- Last verdict, anchored to the bottom of the stage so it reads at a
              glance without pushing the manual entry off-screen. -->
         <template x-if="lastResult">
-            <div class="scan-verdict" :class="'scan-verdict--' + lastResult.category" aria-live="assertive">
+            <div class="scan-verdict" :class="'scan-verdict--' + lastResult.category"
+                 aria-live="assertive" role="button" tabindex="0" title="Tap to dismiss"
+                 @click="dismissResult()" @keydown.enter.prevent="dismissResult()" @keydown.space.prevent="dismissResult()">
                 <p class="scan-verdict__headline" x-text="headlineFor(lastResult)"></p>
                 <p class="scan-verdict__msg" x-text="lastResult.message"></p>
                 <template x-if="lastResult.ticket">
@@ -73,6 +75,7 @@
                         <div><dt>Show</dt><dd x-text="lastResult.ticket.performance"></dd></div>
                     </dl>
                 </template>
+                <p class="scan-verdict__dismiss" aria-hidden="true">Tap to dismiss</p>
             </div>
         </template>
     </div>

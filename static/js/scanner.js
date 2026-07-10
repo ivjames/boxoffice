@@ -24,11 +24,17 @@
  * form below the scanner.
  */
 
+// How long a PASS/FAIL/WRONG TIME verdict lingers over the camera before it
+// auto-hides. Staff can also tap it to dismiss immediately (dismissResult) --
+// either way the camera keeps scanning underneath the whole time.
+const RESULT_TTL_MS = 5000;
+
 function qrScanner() {
     return {
         status: "idle", // idle | starting | scanning | error
         errorMessage: "",
         lastResult: null,
+        resultTimer: null, // auto-hides the verdict after RESULT_TTL_MS
         tally: { pass: 0, fail: 0 },
         busy: false,
         lastCode: null,
@@ -266,6 +272,20 @@ function qrScanner() {
                 this.tally.fail += 1;
             }
             this.feedback(category);
+            // Auto-hide so a stale verdict doesn't sit over the live camera; a
+            // fresh scan replaces it and restarts the clock. Staff can also tap
+            // the verdict to clear it early (dismissResult).
+            if (this.resultTimer) clearTimeout(this.resultTimer);
+            this.resultTimer = setTimeout(() => {
+                this.lastResult = null;
+                this.resultTimer = null;
+            }, RESULT_TTL_MS);
+        },
+
+        dismissResult() {
+            if (this.resultTimer) clearTimeout(this.resultTimer);
+            this.resultTimer = null;
+            this.lastResult = null;
         },
 
         headlineFor(data) {

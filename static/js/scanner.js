@@ -171,7 +171,17 @@ function qrScanner() {
                     if (this.useBarcodeDetector && this.detector) {
                         try {
                             const found = await this.detector.detect(video);
-                            const codes = found.map((c) => c.rawValue);
+                            // Only count codes the staffer can SEE: the square
+                            // scan stage shows a center crop of the camera
+                            // frame (CSS object-fit: cover), so a code in the
+                            // hidden side margins must neither scan nor count
+                            // toward "multiple". detect() reports positions in
+                            // full-frame coords; keep detections whose center
+                            // falls in the visible square.
+                            const vis = this.visibleRect(video);
+                            const codes = found
+                                .filter((c) => this.detectionVisible(c, vis))
+                                .map((c) => c.rawValue);
                             result = { codes, multiple: codes.length > 1 };
                         } catch (e) {
                             // Transient decode error -- just try the next frame.
@@ -184,6 +194,29 @@ function qrScanner() {
             }
 
             this.rafId = requestAnimationFrame(() => this.loop());
+        },
+
+        visibleRect(video) {
+            // The scan stage is a 1:1 square and the video fills it with
+            // object-fit: cover, so what's on screen is the CENTERED SQUARE of
+            // the camera frame -- on a 1280x720 feed, nearly half the width is
+            // cropped away invisibly. Everything the scanner considers must
+            // come from this rect, or codes the staffer can't see would scan
+            // (or trip the multiple-codes refusal).
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            const side = Math.min(vw, vh);
+            return { x: (vw - side) / 2, y: (vh - side) / 2, side };
+        },
+
+        detectionVisible(detection, vis) {
+            // A BarcodeDetector detection counts as visible when its center is
+            // inside the visible square (boundingBox is full-frame coords).
+            const box = detection.boundingBox;
+            if (!box) return true; // spec guarantees it, but never drop a scan over a missing box
+            const cx = box.x + box.width / 2;
+            const cy = box.y + box.height / 2;
+            return cx >= vis.x && cx <= vis.x + vis.side && cy >= vis.y && cy <= vis.y + vis.side;
         },
 
         decodeWithJsQR(video) {
@@ -201,40 +234,37 @@ function qrScanner() {
             // view and the frame is ambiguous.
             if (typeof window.jsQR !== "function") return { codes: [], multiple: false };
             const canvas = this.$refs.canvas;
-            const vw = video.videoWidth;
-            const vh = video.videoHeight;
-            if (!vw || !vh) return { codes: [], multiple: false };
+            if (!video.videoWidth || !video.videoHeight) return { codes: [], multiple: false };
 
-            // Downscale before decoding -- jsQR's cost scales with pixel
-            // count, and QR codes fill a printed/e-ticket frame generously
-            // enough that a 480px-max-dimension image decodes fine while
-            // being much cheaper per attempt on a phone.
-            const maxDim = 480;
-            const scale = Math.min(1, maxDim / Math.max(vw, vh));
-            const w = Math.max(1, Math.round(vw * scale));
-            const h = Math.max(1, Math.round(vh * scale));
+            // Decode ONLY the visible square (see visibleRect) -- codes in the
+            // camera frame's hidden margins must not scan or count as
+            // "multiple". Downscale it: jsQR's cost scales with pixel count,
+            // and a QR filling the on-screen frame decodes fine at 480px. As a
+            // bonus, cropping first spends all 480px on what's on screen.
+            const vis = this.visibleRect(video);
+            const w = Math.max(1, Math.min(480, Math.round(vis.side)));
             canvas.width = w;
-            canvas.height = h;
+            canvas.height = w;
 
             const ctx = canvas.getContext("2d", { willReadFrequently: true });
-            ctx.drawImage(video, 0, 0, w, h);
-            const imageData = ctx.getImageData(0, 0, w, h);
+            ctx.drawImage(video, vis.x, vis.y, vis.side, vis.side, 0, 0, w, w);
+            const imageData = ctx.getImageData(0, 0, w, w);
 
-            const code = window.jsQR(imageData.data, w, h, { inversionAttempts: "dontInvert" });
+            const code = window.jsQR(imageData.data, w, w, { inversionAttempts: "dontInvert" });
 
             // Look for OTHER codes on the SAME frame via finder patterns.
             // This runs even when nothing decoded, so a screenful of codes
             // raises the "show one at a time" hint before any is readable.
             let multiple = false;
             if (typeof window.findQrFinderPatterns === "function") {
-                const centers = window.findQrFinderPatterns(imageData.data, w, h);
+                const centers = window.findQrFinderPatterns(imageData.data, w, w);
                 if (code && code.location) {
                     // The decoded code's own three finder squares (and any
                     // residual phantom inside it) don't count as "another
                     // code": only centers outside its padded bounding box do,
                     // and we want two of them -- a second code that's really
                     // in frame shows 2-3, while a stray phantom shows 1.
-                    multiple = this.centersOutsideBox(centers, code.location, w, h) >= 2;
+                    multiple = this.centersOutsideBox(centers, code.location, w, w) >= 2;
                 } else {
                     // Nothing decoded: 3 patterns belong to one (unreadable)
                     // code; more means several codes are in view.
@@ -242,7 +272,7 @@ function qrScanner() {
                 }
             } else if (typeof window.countQrFinderPatterns === "function") {
                 // Older qr-multi.js (count only) -- e.g. a half-cached deploy.
-                multiple = window.countQrFinderPatterns(imageData.data, w, h) >= this.MULTI_PATTERN_MIN;
+                multiple = window.countQrFinderPatterns(imageData.data, w, w) >= this.MULTI_PATTERN_MIN;
             }
 
             return { codes: code ? [code.data] : [], multiple };

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}{{ performance.event.title }} — {{ organization.name }}{% endblock %}
 
@@ -54,4 +55,10 @@
         <p>{{ available_count }} seat(s) available. Click a seat to select it, then reserve.</p>
         {% include "orders/_seat_map.html" %}
     {% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+    {# WCAG seat-label contrast for the maps above; loads before Alpine's
+       deferred init so window.SeatContrast exists when the components run. #}
+    <script src="{% static 'js/seat_contrast.js' %}"></script>
 {% endblock %}

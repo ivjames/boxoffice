@@ -1272,6 +1272,9 @@ table.dash-table th {
 
 .editor-seat-label {
     pointer-events: none;
+    /* Fallback ink only. renderSection() sets `style.fill` per seat to black
+       or white for WCAG contrast against the section's fill color (see
+       seat_contrast.js); that inline style wins over this rule. */
     fill: #fff;
     font-family: inherit;
     /* Centering is done on the element itself: text-anchor="middle" +

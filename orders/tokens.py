@@ -11,16 +11,30 @@ orders.services or orders.views, and Phase 5 should import ONLY this module
 (plus the Ticket model) rather than reaching into the rest of Phase 4's
 checkout/webhook code.
 
-Scheme: sig = HMAC-SHA256(key, str(token)).hexdigest(), where `key` is
-derived from settings.SECRET_KEY + the ticket's organization_id. Per-tenant
-(not global) so a leaked signature for one theater's tickets can't forge
-another's. Deliberately NOT derived from the org's Stripe keys: QR signing
-must keep working for orgs that haven't configured Stripe yet (e.g. comp
-tickets issued directly) and must stay stable if Stripe keys are rotated.
+Scheme: sig = base64url(HMAC-SHA256(key, str(token))[:16]) -- the HMAC is
+computed full-width over SHA-256 and then TRUNCATED to its first 128 bits,
+which are base64url-encoded (22 chars, no padding) rather than hex-encoded
+(the full digest would be 64 hex chars). Truncating an HMAC is a standard,
+sound construction (cf. RFC 4226/HOTP), and 128 bits is far more than a
+forger needs to fail against here: `key` is secret and per-tenant, and even
+a valid signature is only one of three gates -- the scanner still has to be
+a logged-in staffer with the scanner role at that org. The payoff is a much
+shorter QR URL, which lets orders/qr.py raise the error-correction level.
+
+`key` is derived from settings.SECRET_KEY + the ticket's organization_id.
+Per-tenant (not global) so a leaked signature for one theater's tickets
+can't forge another's. Deliberately NOT derived from the org's Stripe keys:
+QR signing must keep working for orgs that haven't configured Stripe yet
+(e.g. comp tickets issued directly) and must stay stable if Stripe keys are
+rotated.
 """
 
+import base64
 import hashlib
 import hmac
+
+# Bytes of the HMAC-SHA256 digest kept in the signature. 16 -> 128-bit sig.
+_SIG_BYTES = 16
 
 
 def _key_for_org(organization_id):
@@ -30,11 +44,13 @@ def _key_for_org(organization_id):
 
 
 def sign_token(token, organization_id):
-    """Raw signer: HMAC-SHA256 hex digest of `token` (str/UUID) scoped to
-    `organization_id`. Lower-level than sign_ticket() so Phase 5 can verify
-    against a token pulled straight off the URL without first loading the
-    Ticket row (useful for a fast-fail before hitting the DB)."""
-    return hmac.new(_key_for_org(organization_id), str(token).encode(), hashlib.sha256).hexdigest()
+    """Raw signer: base64url of the first 128 bits of HMAC-SHA256 over
+    `token` (str/UUID), scoped to `organization_id`. Lower-level than
+    sign_ticket() so the scanner can verify against a token pulled straight
+    off the URL without first loading the Ticket row (a fast-fail before
+    hitting the DB)."""
+    digest = hmac.new(_key_for_org(organization_id), str(token).encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest[:_SIG_BYTES]).rstrip(b"=").decode()
 
 
 def sign_ticket(ticket):

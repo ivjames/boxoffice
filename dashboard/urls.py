@@ -29,7 +29,7 @@ urlpatterns = [
     ),
     path("dashboard/orders/", views.OrderListView.as_view(), name="dashboard_order_list"),
     path(
-        "dashboard/orders/<uuid:token>/",
+        "dashboard/orders/<slug:token>/",
         views.OrderDetailView.as_view(),
         name="dashboard_order_detail",
     ),

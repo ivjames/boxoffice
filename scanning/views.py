@@ -1,4 +1,4 @@
-import uuid
+import re
 
 from django.contrib import messages
 from django.http import JsonResponse
@@ -37,13 +37,16 @@ def scan_home(request):
     error = None
     if request.method == "POST":
         raw_token = request.POST.get("token", "").strip()
-        try:
-            token = uuid.UUID(raw_token)
-        except ValueError:
+        # Tokens are base64url strings (orders.models.new_token); the check
+        # here is just a shape guard so a stray paste can't reach reverse()
+        # with a char the <slug:token> route can't build (which would 500) --
+        # a genuinely wrong-but-well-formed code still flows through to
+        # scan_redeem/redeem_ticket, the single place that decides pass/fail.
+        if not raw_token or not re.fullmatch(r"[A-Za-z0-9_-]+", raw_token):
             error = "That doesn't look like a valid ticket code."
         else:
-            sig = sign_token(token, request.organization.id)
-            return redirect(f"{reverse('scan_redeem', args=[token])}?sig={sig}")
+            sig = sign_token(raw_token, request.organization.id)
+            return redirect(f"{reverse('scan_redeem', args=[raw_token])}?sig={sig}")
 
     return render(request, "scanning/scan_home.html", {"error": error})
 

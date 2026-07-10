@@ -117,6 +117,18 @@ function qrScanner() {
                 }
             }
 
+            // On the jsQR path the multiple-code guard lives in qr-multi.js.
+            // If that file failed to load (404 after a partial deploy, stale
+            // cache), scanning still works but the guard is OFF -- say so
+            // loudly instead of degrading silently, so a broken deploy is
+            // visible in the console rather than discovered at the door.
+            if (!this.useBarcodeDetector && typeof window.countQrFinderPatterns !== "function") {
+                console.warn(
+                    "scanner: qr-multi.js not loaded -- multiple-code detection is DISABLED. " +
+                    "Check that /static/js/qr-multi.js is deployed (redeploy + hard reload)."
+                );
+            }
+
             this.status = "scanning";
             this.loop();
         },

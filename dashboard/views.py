@@ -195,7 +195,11 @@ def performance_price_tiers(request, pk):
         pk=pk,
         organization=request.organization,
     )
+    if performance.seating_mode == Performance.SeatingMode.RESERVED:
+        return _reserved_price_editor(request, performance)
 
+    # GA: a flat performance-scoped tier (or several named types). Unchanged
+    # append-only form.
     if request.method == "POST":
         form = PriceTierForm(
             request.POST, organization=request.organization, performance=performance
@@ -207,17 +211,161 @@ def performance_price_tiers(request, pk):
     else:
         form = PriceTierForm(organization=request.organization, performance=performance)
 
-    if performance.seating_mode == Performance.SeatingMode.GA:
-        tiers = performance.price_tiers.all()
+    return render(
+        request,
+        "dashboard/performance_price_tiers.html",
+        {
+            "performance": performance,
+            "is_reserved": False,
+            "form": form,
+            "tiers": performance.price_tiers.all(),
+        },
+    )
+
+
+def _reserved_price_editor(request, performance):
+    """The reserved-seating pricing editor: one row per Section on the
+    performance's chart, showing (and editing inline) that section's
+    chart-wide DEFAULT price and, separately, an optional OVERRIDE price for
+    THIS performance only. This is the surface a manager sets reserved
+    pricing on -- every section is listed whether or not it's been priced
+    yet, so an unpriced section is visible instead of silently missing.
+
+    See events.pricing.resolve_seat_tier for the override-then-default rule
+    these two columns feed: `PriceTier(performance=None, section=S)` is the
+    default, `PriceTier(performance=P, section=S)` the per-performance
+    override that wins for this one performance."""
+    chart = get_seating_chart(performance)
+    sections = list(
+        Section.objects.filter(organization=performance.organization_id, chart=chart)
+        if chart is not None
+        else Section.objects.none()
+    )
+
+    if request.method == "POST":
+        errors = _save_reserved_prices(request, performance, sections)
+        if not errors:
+            messages.success(request, "Reserved pricing saved.")
+            return redirect("dashboard_performance_price_tiers", pk=performance.pk)
+        for message in errors.values():
+            messages.error(request, message)
     else:
-        chart = get_seating_chart(performance)
-        tiers = PriceTier.objects.filter(organization=request.organization, section__chart=chart)
+        errors = {}
+
+    # Current defaults/overrides keyed by section id, so the template can show
+    # each section's live values (and echo back a rejected POST unchanged).
+    defaults = {
+        t.section_id: t
+        for t in PriceTier.objects.filter(
+            organization=performance.organization_id,
+            performance__isnull=True,
+            section__in=sections,
+        )
+    }
+    overrides = {
+        t.section_id: t
+        for t in PriceTier.objects.filter(
+            organization=performance.organization_id,
+            performance=performance,
+            section__in=sections,
+        )
+    }
+    posted = request.POST if request.method == "POST" else None
+    rows = []
+    for section in sections:
+        default_tier = defaults.get(section.id)
+        override_tier = overrides.get(section.id)
+        if posted is not None:
+            default_val = posted.get(f"default_{section.id}", "").strip()
+            override_val = posted.get(f"override_{section.id}", "").strip()
+        else:
+            default_val = "" if default_tier is None else f"{default_tier.amount:.2f}"
+            override_val = "" if override_tier is None else f"{override_tier.amount:.2f}"
+        rows.append(
+            {
+                "section": section,
+                "default_value": default_val,
+                "override_value": override_val,
+                "has_default": default_tier is not None,
+                "has_override": override_tier is not None,
+                "default_error": errors.get(f"default_{section.id}"),
+                "override_error": errors.get(f"override_{section.id}"),
+            }
+        )
 
     return render(
         request,
         "dashboard/performance_price_tiers.html",
-        {"performance": performance, "form": form, "tiers": tiers},
+        {
+            "performance": performance,
+            "is_reserved": True,
+            "chart": chart,
+            "rows": rows,
+        },
     )
+
+
+def _parse_price(raw):
+    """`(amount, error)` for a submitted price cell. Blank is a valid "no
+    price" (amount None). A non-numeric or negative value is an error."""
+    raw = (raw or "").strip()
+    if raw == "":
+        return None, None
+    try:
+        amount = Decimal(raw)
+    except (InvalidOperation, TypeError):
+        return None, "Enter a number, e.g. 45 or 45.00."
+    if amount < 0:
+        return None, "Price can't be negative."
+    return amount.quantize(Decimal("0.01")), None
+
+
+def _save_reserved_prices(request, performance, sections):
+    """Validate every section's submitted default/override price and, only if
+    all are valid, upsert them in one transaction. A blank cell CLEARS that
+    section's default (or override): the matching PriceTier is deleted, so a
+    manager can un-price a section from the same grid. Returns a
+    `{field_name: message}` dict of validation errors ({} on success)."""
+    org = request.organization
+    errors = {}
+    plan = []  # (kind, section, amount-or-None)
+    for section in sections:
+        default_amount, default_error = _parse_price(request.POST.get(f"default_{section.id}"))
+        override_amount, override_error = _parse_price(request.POST.get(f"override_{section.id}"))
+        if default_error:
+            errors[f"default_{section.id}"] = default_error
+        else:
+            plan.append(("default", section, default_amount))
+        if override_error:
+            errors[f"override_{section.id}"] = override_error
+        else:
+            plan.append(("override", section, override_amount))
+    if errors:
+        return errors
+
+    with transaction.atomic():
+        for kind, section, amount in plan:
+            perf = None if kind == "default" else performance
+            existing = PriceTier.objects.filter(
+                organization=org, performance=perf, section=section
+            ).first()
+            if amount is None:
+                if existing is not None:
+                    existing.delete()
+                continue
+            if existing is not None:
+                existing.amount = amount
+                existing.save(update_fields=["amount"])
+            else:
+                name = section.name if kind == "default" else f"{section.name} (this performance)"
+                PriceTier.objects.create(
+                    organization=org,
+                    performance=perf,
+                    section=section,
+                    name=name,
+                    amount=amount,
+                )
+    return {}
 
 
 # --- orders (box_office+) -------------------------------------------------

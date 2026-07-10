@@ -8,33 +8,97 @@
 <h1>Pricing — {{ performance.event.title }}</h1>
 <p class="muted">{{ performance.starts_at|date:"D, M j Y — g:i A" }} · {{ performance.get_seating_mode_display }}</p>
 
-<div class="dash-table-wrap">
-<table class="dash-table">
-    <thead><tr><th>Name</th><th>Section</th><th>Amount</th></tr></thead>
-    <tbody>
-    {% for tier in tiers %}
-        <tr>
-            <td>{{ tier.name }}</td>
-            <td>{{ tier.section.name|default:"General admission" }}</td>
-            <td>${{ tier.amount }} {{ tier.currency }}</td>
-        </tr>
-    {% empty %}
-        <tr><td colspan="3" class="muted">No price tiers yet.</td></tr>
-    {% endfor %}
-    </tbody>
-</table>
-</div>
-
-<h2>Add price tier</h2>
-<form method="post" class="dash-form">
-    {% csrf_token %}
-    {% for field in form %}
-        <div class="field">
-            {{ field.label_tag }}
-            {{ field }}
-            {{ field.errors }}
+{% if is_reserved %}
+    {% if chart %}
+    <p class="muted">
+        Set the <strong>default</strong> price for each section on
+        <em>{{ chart.name }}</em> — it applies to this section on every reserved
+        performance using this chart. An <strong>override</strong> replaces the
+        default for <em>this performance only</em> (e.g. a higher evening price).
+        Leave a cell blank to leave those seats unpriced (they can't be sold until
+        priced). Reserved-seat visual overrides live on
+        <a href="{% url 'dashboard_performance_pricing_zones' performance.pk %}">Pricing zones</a>.
+    </p>
+    <form method="post" class="dash-form">
+        {% csrf_token %}
+        <div class="dash-table-wrap">
+        <table class="dash-table">
+            <thead>
+                <tr>
+                    <th>Section</th>
+                    <th>Default price</th>
+                    <th>This performance (override)</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+                <tr>
+                    <td>
+                        {{ row.section.name }}
+                        {% if row.section.tier %}<span class="muted">· {{ row.section.tier }}</span>{% endif %}
+                        {% if not row.has_default and not row.has_override %}
+                            <span class="badge badge--draft">Not priced</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <label class="sr-only" for="id_default_{{ row.section.id }}">{{ row.section.name }} default price</label>
+                        <span class="price-input">$
+                            <input type="number" step="0.01" min="0" inputmode="decimal"
+                                   name="default_{{ row.section.id }}" id="id_default_{{ row.section.id }}"
+                                   value="{{ row.default_value }}" placeholder="—">
+                        </span>
+                        {% if row.default_error %}<span class="field-error">{{ row.default_error }}</span>{% endif %}
+                    </td>
+                    <td>
+                        <label class="sr-only" for="id_override_{{ row.section.id }}">{{ row.section.name }} override price for this performance</label>
+                        <span class="price-input">$
+                            <input type="number" step="0.01" min="0" inputmode="decimal"
+                                   name="override_{{ row.section.id }}" id="id_override_{{ row.section.id }}"
+                                   value="{{ row.override_value }}" placeholder="default">
+                        </span>
+                        {% if row.override_error %}<span class="field-error">{{ row.override_error }}</span>{% endif %}
+                    </td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="3" class="muted">This chart has no sections yet — add sections in the chart editor before pricing.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
         </div>
-    {% endfor %}
-    <button type="submit" class="button">Add</button>
-</form>
+        {% if rows %}<button type="submit" class="button">Save pricing</button>{% endif %}
+    </form>
+    {% else %}
+    <p class="muted">This reserved performance has no seating chart, so there are no sections to price. Assign a chart to the venue first.</p>
+    {% endif %}
+
+{% else %}
+    <div class="dash-table-wrap">
+    <table class="dash-table">
+        <thead><tr><th>Name</th><th>Amount</th></tr></thead>
+        <tbody>
+        {% for tier in tiers %}
+            <tr>
+                <td>{{ tier.name }}</td>
+                <td>${{ tier.amount }} {{ tier.currency }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="2" class="muted">No price tiers yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+
+    <h2>Add price tier</h2>
+    <form method="post" class="dash-form">
+        {% csrf_token %}
+        {% for field in form %}
+            <div class="field">
+                {{ field.label_tag }}
+                {{ field }}
+                {{ field.errors }}
+            </div>
+        {% endfor %}
+        <button type="submit" class="button">Add</button>
+    </form>
+{% endif %}
 {% endblock %}

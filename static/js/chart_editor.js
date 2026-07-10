@@ -486,6 +486,13 @@ function chartEditor(config) {
                 //   ~0.35em above the alphabetic baseline).
                 label.setAttribute("text-anchor", "middle");
                 label.setAttribute("dy", "0.35em");
+                // WCAG contrast: the seat is filled with the section's
+                // staff-chosen color, so the number's ink must be black or
+                // white per whichever reads on THAT fill (see
+                // seat_contrast.js). Set via inline `style.fill` -- a CSS
+                // presentation rule (.editor-seat-label) would otherwise win
+                // over a plain `fill` attribute.
+                label.style.fill = window.SeatContrast.textColor(section.color);
                 label.textContent = seat.number;
                 g.appendChild(label);
             }

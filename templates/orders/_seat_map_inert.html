@@ -53,7 +53,10 @@ form. The Alpine component only positions seats -- it has no selection state.
                 const top = (seat.y - minY + PAD) * SCALE;
                 return (
                     'position:absolute; left:' + left + 'px; top:' + top + 'px;' +
-                    ' transform:translate(-50%, -50%);'
+                    ' transform:translate(-50%, -50%);' +
+                    // WCAG contrast against the neutral inert fill (#e5e7eb,
+                    // .seat-btn--inert in app.css) -- see seat_contrast.js.
+                    ' color:' + window.SeatContrast.textColor('#e5e7eb') + ';'
                 );
             },
         };

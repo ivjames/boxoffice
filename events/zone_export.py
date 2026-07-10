@@ -41,6 +41,7 @@ from django.utils import timezone
 from django.utils.dateformat import format as django_date_format
 
 from .pricing import zones_by_seat_id
+from .seat_contrast import text_color_hex, text_color_rgb
 from .zones import zone_map_geometry
 
 # -- shared constants ------------------------------------------------------
@@ -246,11 +247,13 @@ def _render_png(performance, data, size, labels, legend):
                 bbox = draw.textbbox((0, 0), text, font=label_font)
                 tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
                 if tw <= seat_r * 2.6:
+                    # WCAG contrast: black or white per the seat's fill so the
+                    # label reads on a dark zone AND a pale one (seat_contrast).
                     draw.text(
                         (cx - tw / 2 - bbox[0], cy - th / 2 - bbox[1]),
                         text,
                         font=label_font,
-                        fill=(17, 24, 39),
+                        fill=text_color_rgb(fill),
                     )
     else:
         draw.rectangle(
@@ -356,12 +359,15 @@ def _render_pdf(performance, data, size, labels, legend):
             px = map_x0 + local_x
             py = map_y0 + (map_h - local_y_from_top)  # flip: device y-down -> PDF y-up
             zone = data["zone_by_seat"].get(seat.pk)
-            c.setFillColor(HexColor(zone.color if zone is not None else NEUTRAL_SEAT_HEX))
+            seat_hex = zone.color if zone is not None else NEUTRAL_SEAT_HEX
+            c.setFillColor(HexColor(seat_hex))
             c.circle(px, py, seat_r, fill=1, stroke=0)
             if labels and seat_r >= 3.5:
                 text = f"{seat.row_label}{seat.number}"
                 if font_size * 0.6 * len(text) <= seat_r * 2.4:
-                    c.setFillColor(HexColor("#111827"))
+                    # WCAG contrast: black or white per the seat's fill so the
+                    # label reads on a dark zone AND a pale one (seat_contrast).
+                    c.setFillColor(HexColor(text_color_hex(_hex_to_rgb(seat_hex))))
                     c.setFont("Helvetica", font_size)
                     c.drawCentredString(px, py - font_size * 0.35, text)
         c.setFillColor(black)

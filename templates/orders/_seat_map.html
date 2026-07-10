@@ -126,6 +126,29 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
                 const zoned = seat.zone_color ? ' seat-btn--zoned' : '';
                 return (this.selected.includes(seat.id) ? 'seat-btn--selected' : 'seat-btn--available') + zoned;
             },
+            // The concrete fill each seat actually renders with -- mirrors the
+            // .seat-btn* background rules in app.css so the label ink can be
+            // contrasted against it. `accentColor`/whiteMixed cover the two
+            // arbitrary, staff-chosen colors a seat can take (the org accent
+            // for a plain selected seat, the zone color for a zoned one).
+            effectiveFill(seat) {
+                if (!this.isSelectable(seat)) return '#d1d5db'; // .seat-btn--unavailable
+                const selected = this.selected.includes(seat.id);
+                if (seat.zone_color) {
+                    // .seat-btn--zoned(.selected): solid zone color when picked,
+                    // else a 20% zone tint over white (color-mix in app.css).
+                    return selected ? seat.zone_color : window.SeatContrast.mix(seat.zone_color, '#ffffff', 0.2);
+                }
+                return selected ? this.accentColor() : '#ffffff'; // --accent-color / .seat-btn white
+            },
+            accentColor() {
+                if (this._accent == null) {
+                    const v = getComputedStyle(document.documentElement).getPropertyValue('--accent-color');
+                    this._accent = (v && v.trim()) || '#e11d48';
+                }
+                return this._accent;
+            },
+            _accent: null,
             seatStyle(seat) {
                 // Absolute placement by real coordinates (see the SCALE/PAD
                 // note above); translate(-50%,-50%) centers the button on its
@@ -138,6 +161,11 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
                 if (seat.zone_color && this.isSelectable(seat)) {
                     style += ' --zone-color:' + seat.zone_color + ';';
                 }
+                // WCAG contrast: black or white row/number per the seat's
+                // actual fill (see seat_contrast.js). Inline `color` overrides
+                // the .seat-btn* class rules; reads this.selected, so Alpine
+                // re-runs it when a seat is picked/unpicked.
+                style += ' color:' + window.SeatContrast.textColor(this.effectiveFill(seat)) + ';';
                 return style;
             },
             get total() {

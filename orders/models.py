@@ -163,6 +163,19 @@ class Order(TenantScopedModel):
     performance = models.ForeignKey(Performance, on_delete=models.PROTECT, related_name="orders")
     buyer_email = models.EmailField()
     buyer_name = models.CharField(max_length=255, blank=True)
+    # The buyer's per-theater guest account, keyed off buyer_email at
+    # fulfillment (payments.services.fulfill_hold -> guests.GuestAccount).
+    # Nullable/SET_NULL: an order can exist without one (a Stripe session that
+    # carried no email, or a comp), and deleting a guest must not delete their
+    # order history -- buyer_email stays the authoritative contact on the row
+    # regardless. This is what lets the guest portal list "all your orders".
+    guest = models.ForeignKey(
+        "guests.GuestAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="orders",
+    )
     total = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 

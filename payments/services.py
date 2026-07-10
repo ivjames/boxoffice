@@ -41,6 +41,7 @@ from django.utils import timezone
 import stripe
 
 from events.models import GAAllocation
+from guests.models import GuestAccount
 from orders import services as order_services
 from orders.models import Hold, Order, OrderItem, Payment, Ticket
 from venues.models import Seat
@@ -247,11 +248,22 @@ def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe
     organization = hold.organization
     total = order_services.hold_total(hold)
 
+    # Attach (or create) the buyer's per-theater guest account so this order
+    # shows up in their self-service portal (guests/). Keyed off buyer_email;
+    # a blank email (possible on a Stripe session that carried none) just
+    # leaves guest=None -- see GuestAccountManager.get_or_create_for_email.
+    # Done inside this same transaction so a fulfilled order and its guest
+    # link commit atomically.
+    guest, _ = GuestAccount.objects.get_or_create_for_email(
+        organization, buyer_email, name=buyer_name
+    )
+
     order = Order.objects.create(
         organization=organization,
         performance=hold.performance,
         buyer_email=buyer_email,
         buyer_name=buyer_name,
+        guest=guest,
         total=total,
         status=Order.Status.PAID,
         stripe_checkout_session_id=stripe_checkout_session_id,

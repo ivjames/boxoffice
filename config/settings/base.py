@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "tenants",
     "accounts",
+    "guests",
     "venues",
     "events",
     "orders",
@@ -90,6 +91,8 @@ TEMPLATES = [
                 "tenants.context_processors.organization",
                 # Exposes the current staff Membership (or None) as `staff_membership`.
                 "accounts.context_processors.staff_membership",
+                # Exposes the signed-in guest ticket-buyer (or None) as `guest_account`.
+                "guests.context_processors.guest_account",
                 # Exposes the session's live cart item count as `cart_count`.
                 "orders.context_processors.cart_count",
                 # Exposes settings.ENABLE_TEST_CHECKOUT as `test_checkout_enabled`.

@@ -43,7 +43,7 @@
                         </div>
                         <div class="field">
                             <label for="test-buyer-email-{{ item.hold.pk }}">Email</label>
-                            <input type="email" id="test-buyer-email-{{ item.hold.pk }}" name="buyer_email" autocomplete="email" required>
+                            <input type="email" id="test-buyer-email-{{ item.hold.pk }}" name="buyer_email" autocomplete="email" value="{{ prefill_email|default:'' }}" required>
                         </div>
                         <button type="submit" class="button button--test">Pay (TEST — no real charge)</button>
                     </form>

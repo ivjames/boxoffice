@@ -1,0 +1,10 @@
+Hi{% if guest.name %} {{ guest.name }}{% endif %},
+
+Here's your secure link to view your tickets from {{ organization.name }}:
+
+{{ login_link }}
+
+This link signs you in without a password and expires in 24 hours. If you
+didn't request it, you can safely ignore this email.
+
+— {{ organization.name }}

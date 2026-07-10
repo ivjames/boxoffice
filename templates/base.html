@@ -49,6 +49,7 @@
             <nav id="site-nav" class="site-nav" :class="{ 'site-nav--open': navOpen }">
                 {% if organization %}
                     <a href="{% url 'home' %}" class="site-nav__link{% if request.resolver_match.url_name == 'home' %} is-active{% endif %}">Events</a>
+                    <a href="{% url 'guest_portal' %}" class="site-nav__link{% if request.resolver_match.url_name == 'guest_portal' %} is-active{% endif %}">My tickets</a>
                     <a href="{% url 'cart' %}" class="site-nav__link site-nav__cart{% if request.resolver_match.url_name == 'cart' %} is-active{% endif %}">
                         Cart
                         {% if cart_count %}<span class="site-nav__badge">{{ cart_count }}</span>{% endif %}

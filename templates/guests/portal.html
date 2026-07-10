@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}My tickets — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <a class="back-link" href="{% url 'home' %}">&larr; Back to {{ organization.name }}</a>
+
+    <div class="portal-header">
+        <h1>My tickets</h1>
+        <form method="post" action="{% url 'guest_logout' %}">
+            {% csrf_token %}
+            <button type="submit" class="button button--secondary">Sign out</button>
+        </form>
+    </div>
+    <p class="muted">Signed in as {{ guest.email }}.</p>
+
+    {% if order_rows %}
+        <div class="order-list">
+            {% for row in order_rows %}
+                <div class="order-list__item">
+                    <div class="order-list__main">
+                        <h2>{{ row.order.performance.event.title }}</h2>
+                        <p>
+                            {{ row.order.performance.starts_at|date:"D, M j Y — g:i A" }} ·
+                            {{ row.order.performance.venue.name }}
+                        </p>
+                        <p class="muted">
+                            {{ row.ticket_count }} ticket{{ row.ticket_count|pluralize }} ·
+                            ${{ row.order.total }} ·
+                            <span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span>
+                        </p>
+                        <p class="muted">Ordered {{ row.order.created_at|date:"M j, Y" }}</p>
+                    </div>
+                    <div class="order-list__actions">
+                        <a class="button" href="{% url 'ticket_detail' token=row.order.token %}">View / print</a>
+                        <a class="button button--secondary" href="{% url 'ticket_pdf' token=row.order.token %}">Download PDF</a>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No orders on this account yet.</p>
+            <p class="muted"><a href="{% url 'home' %}">Browse shows</a> to find something to see.</p>
+        </div>
+    {% endif %}
+{% endblock %}

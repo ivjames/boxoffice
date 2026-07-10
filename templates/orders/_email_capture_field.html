@@ -1,0 +1,13 @@
+{% comment %}
+Buyer email captured during ticket selection (posted to hold_create, which
+stashes it on the session -- see orders.views.hold_create). Optional here:
+it pre-fills checkout and starts the buyer's account, but the durable
+account link is made at payment. `prefill_email` is passed by the view
+(a signed-in guest's address, or whatever was captured earlier).
+{% endcomment %}
+<div class="field field--email-capture">
+    <label for="capture-email">Email <span class="muted">(so you can find your tickets later)</span></label>
+    <input type="email" id="capture-email" name="buyer_email"
+           autocomplete="email" placeholder="you@example.com"
+           value="{{ prefill_email|default:'' }}">
+</div>

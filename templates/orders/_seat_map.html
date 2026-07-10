@@ -54,6 +54,7 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
                 Selected: <span x-text="selected.length"></span> seat(s) — <strong><span x-text="'$' + total.toFixed(2)"></span></strong>
             </span>
         </p>
+        {% include "orders/_email_capture_field.html" %}
         <button type="submit" class="button" :disabled="selected.length === 0">Reserve selected seats</button>
     </form>
 </div>

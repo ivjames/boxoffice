@@ -229,3 +229,42 @@ Three fixes from continued real-device testing:
    zoomed in/out. Kept in user units rather than `non-scaling-stroke`, which
    older iPad WebKit ignores inside a `<pattern>` (falling back to a 1-unit
    stroke that would flood each tile solid).
+
+## Round 7 refinements (undo / redo)
+A client-only undo/redo history for the editor. Purely front-end: undo lives
+entirely in `chartEditor()`'s Alpine state; the server still only ever sees
+state on **Save** (`buildPayload()` is unchanged).
+
+1. **Two snapshot stacks, coalesced per gesture.** A snapshot is a JSON-safe
+   deep copy of each section's shaping params + `arc_radius`/`arc_amount` + the
+   `removedIds`/`accessibleIds` seat-override Sets (as arrays), plus
+   `sectionOrder` and `selectedId` (`snapshotState()`). `undo()`/`redo()` swap
+   snapshots between the two stacks. Each *gesture* — a slider drag, an
+   on-canvas handle drag, a stepper tap, typing a number, a popover toggle —
+   collapses into ONE history entry.
+2. **The x-model trap, and why the baseline is snapped at gesture START.**
+   `x-model` writes the new value to state BEFORE the `@input` handler fires, so
+   the pre-edit value is unreadable from inside `onParamInput()`. The design
+   sidesteps it: `beginCoalesce()` snapshots the pre-edit baseline at the
+   gesture's *start* (drag `startHandleDrag`/`startBodyDrag`; slider
+   `@pointerdown`; number/select `@focus`; discrete steppers/toggles/popover
+   snapshot before mutating), and `endCoalesce()` pushes it at the *end*
+   (`endHandleDrag`; slider/number `@change`) only if something material
+   actually changed — so a tap, a slider grabbed-but-not-moved, or a field
+   focused-but-not-edited leaves no trace. Selection is recorded (so undo
+   returns you to the section you were editing) but ignored by the change test
+   (`materialKey()`), so tapping between sections never pollutes the history.
+3. **restore() re-renders imperatively.** Seats aren't Alpine-bound, so
+   `restoreState()` re-applies the snapshot to state and then calls
+   `renderSection()` for every section, prunes any orphan section `<g>`, and
+   `refreshGroupClasses()` — mirroring what `init()` does on load.
+4. **Scope: shaping + seat overrides only; NOT create/reorder.**
+   `submitNewSection()` creates a real `Section` row server-side immediately and
+   Save never deletes omitted sections, so undoing a create client-side would
+   orphan a DB row. Inline create and reorder therefore **clear** the history
+   (`clearHistory()`) rather than leave entries that would restore a stale
+   section set/order.
+5. **UI.** Toolbar Undo/Redo buttons (required for touch — no keyboard) plus
+   Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z (and Ctrl+Y) shortcuts. The shortcuts are
+   deliberately inert while a form field has focus, so the browser's native
+   text-undo keeps working inside the number/text inputs.

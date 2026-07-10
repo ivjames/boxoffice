@@ -263,6 +263,26 @@ function chartEditor(config) {
         // enough to draw -- see updateLabelVisibility()/renderSection().
         labelsVisible: true,
 
+        // -- undo / redo (client-only) ----------------------------------------
+        // Two stacks of state snapshots. Scoped to SHAPING edits + seat
+        // overrides (params, arc, removed/accessible seats) -- NOT section
+        // create or reorder, which touch server rows / the section set and
+        // would orphan a DB row if reversed client-side (submitNewSection/
+        // reorderSection CLEAR this history instead -- see clearHistory()).
+        // Selection IS recorded so undo returns you to the section you were
+        // editing, but a pure selection change never lands an entry (material
+        // equality ignores selectedId -- see materialKey()). A whole gesture
+        // (a slider drag, an on-canvas handle drag, typing a number) collapses
+        // into ONE entry: the pre-edit baseline is snapshotted at gesture
+        // START -- BEFORE x-model writes the new value, which is the "you
+        // can't read the old value inside @input" trap that shaped this whole
+        // design -- and pushed at gesture END only if something actually
+        // changed (beginCoalesce()/endCoalesce()).
+        undoStack: [],
+        redoStack: [],
+        _pendingBaseline: null,
+        _historyLimit: 100,
+
         init() {
             const raw = JSON.parse(document.getElementById("editor-sections-data").textContent);
             for (const r of raw) {
@@ -348,6 +368,14 @@ function chartEditor(config) {
         get selectedSeatCount() {
             const s = this.selected;
             return s ? s.seatCount : 0;
+        },
+
+        get canUndo() {
+            return this.undoStack.length > 0;
+        },
+
+        get canRedo() {
+            return this.redoStack.length > 0;
         },
 
         // -- geometry / rendering --------------------------------------------
@@ -547,8 +575,10 @@ function chartEditor(config) {
         },
 
         onOffsetModeInput(id, mode) {
+            this.beginCoalesce();
             this.sections[id].offset_mode = mode;
             this.onParamInput(id);
+            this.endCoalesce();
         },
 
         // Round 2 (docs/EDITOR.md #2): the Center/Origin/Custom selector.
@@ -558,6 +588,7 @@ function chartEditor(config) {
         // changes -- from there, dragging the marker (onHandleDrag's
         // 'move_pivot' case) moves it exactly where the user drops it.
         onPivotModeInput(id, mode) {
+            this.beginCoalesce();
             const s = this.sections[id];
             if (mode === "custom" && s.pivot_mode !== "custom") {
                 const [px, py] = window.SeatGeometry.pivotLocal(this.geomParams(s));
@@ -566,18 +597,23 @@ function chartEditor(config) {
             }
             s.pivot_mode = mode;
             this.onParamInput(id);
+            this.endCoalesce();
         },
 
         stepRows(id, delta) {
+            this.beginCoalesce();
             const s = this.sections[id];
             s.rows = Math.max(1, s.rows + delta);
             this.onParamInput(id);
+            this.endCoalesce();
         },
 
         stepSeatsPerRow(id, delta) {
+            this.beginCoalesce();
             const s = this.sections[id];
             s.seats_per_row = Math.max(1, s.seats_per_row + delta);
             this.onParamInput(id);
+            this.endCoalesce();
         },
 
         // Round 3 #9: alt-row add/drop is a brick-stagger nudge (+1 seat
@@ -587,9 +623,11 @@ function chartEditor(config) {
         // chart_editor_save, so a stale/tampered client value can't sneak
         // a bigger delta into storage either).
         stepAltDelta(id, delta) {
+            this.beginCoalesce();
             const s = this.sections[id];
             s.alt_row_seat_delta = clamp(s.alt_row_seat_delta + delta, -1, 1);
             this.onParamInput(id);
+            this.endCoalesce();
         },
 
         // Round 4 correction (docs/EDITOR.md): round 3 #8 raised this to a
@@ -633,6 +671,10 @@ function chartEditor(config) {
                 const data = await resp.json().catch(() => null);
                 if (resp.ok && data && data.ok && Array.isArray(data.order)) {
                     this.sectionOrder = data.order;
+                    // Reorder isn't undoable (it's a server mutation); wipe
+                    // history so an older snapshot's stale order can't be
+                    // restored over it. See clearHistory().
+                    this.clearHistory();
                 }
             } catch (e) {
                 // Best-effort -- the sidebar list simply doesn't reorder;
@@ -646,6 +688,166 @@ function chartEditor(config) {
 
         moveSectionDown(id) {
             this.reorderSection(id, "down");
+        },
+
+        // -- undo / redo ------------------------------------------------------
+        //
+        // See the undoStack field's comment for the scope + coalescing story.
+        // The moving parts: snapshotState() captures a JSON-safe deep copy of
+        // all undoable state; beginCoalesce()/endCoalesce() bracket a gesture
+        // (baseline snapped at the pre-edit start, pushed at the end only if
+        // material state changed); restoreState() re-applies a snapshot and
+        // re-renders the seats imperatively (they aren't Alpine-bound).
+
+        // Deep, JSON-safe snapshot of every UNDOABLE piece of editor state:
+        // each section's shaping params + arc + the two seat-override Sets
+        // (materialized to arrays -- a Set isn't JSON-serializable and we
+        // compare snapshots by value), plus the section order and current
+        // selection.
+        snapshotState() {
+            const sections = {};
+            for (const id of this.sectionOrder) {
+                const s = this.sections[id];
+                if (!s) continue;
+                const params = {};
+                for (const f of PARAM_FIELDS) params[f] = s[f];
+                params.arc_radius = s.arc_radius;
+                params.arc_amount = s.arc_amount;
+                params.removedIds = [...s.removedIds];
+                params.accessibleIds = [...s.accessibleIds];
+                sections[id] = params;
+            }
+            return {
+                sections,
+                sectionOrder: [...this.sectionOrder],
+                selectedId: this.selectedId,
+            };
+        },
+
+        // The part of a snapshot that decides whether anything CHANGED --
+        // deliberately EXCLUDES selectedId, so tapping between sections (which
+        // snapshotState records so undo can restore it) never lands a no-op
+        // entry on the stack; only real shape/seat edits do.
+        materialKey(snap) {
+            return JSON.stringify({ sections: snap.sections, sectionOrder: snap.sectionOrder });
+        },
+
+        // Re-apply a snapshot to live state, then RE-RENDER imperatively --
+        // seats are drawn by hand (not Alpine-bound), so nothing repaints on
+        // its own. Rebuilds every section's <circle>s (renderSection), drops
+        // any orphan section <g> no longer in the order, and re-highlights the
+        // selected group.
+        restoreState(snap) {
+            for (const id of snap.sectionOrder) {
+                const s = this.sections[id];
+                const p = snap.sections[id];
+                if (!s || !p) continue;
+                for (const f of PARAM_FIELDS) s[f] = p[f];
+                s.arc_radius = p.arc_radius;
+                s.arc_amount = p.arc_amount;
+                s.removedIds = new Set(p.removedIds);
+                s.accessibleIds = new Set(p.accessibleIds);
+            }
+            this.sectionOrder = [...snap.sectionOrder];
+            if (snap.selectedId != null && this.sections[snap.selectedId]) {
+                this.selectedId = snap.selectedId;
+            } else if (!this.sections[this.selectedId]) {
+                this.selectedId = this.sectionOrder[0] || null;
+            }
+            this.dirty = true;
+            this.closePopover();
+            this.pruneOrphanGroups();
+            for (const id of this.sectionOrder) this.renderSection(id);
+            this.refreshGroupClasses();
+        },
+
+        // Remove any section <g> whose id is no longer in sectionOrder. Create
+        // currently clears history so an undo can't cross back over an
+        // inline-created section, but this keeps restoreState() correct even
+        // if that ever changes.
+        pruneOrphanGroups() {
+            const keep = new Set(this.sectionOrder.map(String));
+            this.$refs.svg.querySelectorAll("[data-section-group]").forEach((g) => {
+                if (!keep.has(g.getAttribute("data-section-group"))) g.remove();
+            });
+        },
+
+        // Start of a coalesced edit gesture: snapshot the PRE-edit baseline
+        // now, BEFORE any x-model write (the trap this whole design routes
+        // around). Defensively finalizes a prior gesture whose end event never
+        // fired (a field focused then abandoned without a change, a slider
+        // grabbed but released without moving) so a stale baseline can't leak
+        // into this one.
+        beginCoalesce() {
+            if (this._pendingBaseline) this.endCoalesce();
+            this._pendingBaseline = this.snapshotState();
+        },
+
+        // End of a coalesced edit gesture: push the baseline onto the undo
+        // stack IFF the gesture actually changed something material, and drop
+        // the redo stack. A gesture that changed nothing (a tap, a slider
+        // grabbed but not moved, a field focused but not edited) leaves no
+        // trace.
+        endCoalesce() {
+            const baseline = this._pendingBaseline;
+            this._pendingBaseline = null;
+            if (!baseline) return;
+            if (this.materialKey(baseline) === this.materialKey(this.snapshotState())) return;
+            this.undoStack.push(baseline);
+            if (this.undoStack.length > this._historyLimit) this.undoStack.shift();
+            this.redoStack = [];
+        },
+
+        // Structural changes (inline section create, reorder) can't be safely
+        // reversed client-side -- undo scope is shaping + seat overrides only
+        // -- so they WIPE the history rather than leave entries that would
+        // restore a stale section set/order (a pre-create snapshot is missing
+        // the new section; undoing to it would orphan a real DB row).
+        clearHistory() {
+            this.undoStack = [];
+            this.redoStack = [];
+            this._pendingBaseline = null;
+        },
+
+        undo() {
+            this.endCoalesce(); // finalize any in-flight gesture first
+            if (!this.undoStack.length) return;
+            const current = this.snapshotState();
+            const prev = this.undoStack.pop();
+            this.redoStack.push(current);
+            this.restoreState(prev);
+        },
+
+        redo() {
+            this.endCoalesce();
+            if (!this.redoStack.length) return;
+            const current = this.snapshotState();
+            const next = this.redoStack.pop();
+            this.undoStack.push(current);
+            this.restoreState(next);
+        },
+
+        // Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z or Ctrl+Y = redo. Deliberately
+        // INERT while a form field (the number/text inputs, selects) has focus
+        // so the browser's native text-undo keeps working inside those -- the
+        // toolbar Undo/Redo buttons (required for touch, which has no
+        // keyboard) cover editing-a-field cases.
+        onEditorKeydown(evt) {
+            if (!(evt.metaKey || evt.ctrlKey)) return;
+            const key = (evt.key || "").toLowerCase();
+            if (key !== "z" && key !== "y") return;
+            const t = evt.target;
+            const tag = t && t.tagName ? t.tagName.toLowerCase() : "";
+            if (tag === "input" || tag === "textarea" || tag === "select" || (t && t.isContentEditable)) {
+                return;
+            }
+            if (key === "y" || (key === "z" && evt.shiftKey)) {
+                evt.preventDefault();
+                this.redo();
+            } else if (key === "z") {
+                evt.preventDefault();
+                this.undo();
+            }
         },
 
         // -- transform box: local <-> world, handle positions -----------------
@@ -1067,6 +1269,11 @@ function chartEditor(config) {
             this.selectSection(id);
             const s = this.sections[id];
             if (!s) return;
+            // Bracket the whole gesture into one undo entry. A pure TAP (never
+            // passes the drag threshold) changes nothing material, so
+            // endHandleDrag()'s endCoalesce() discards this baseline -- only a
+            // real move lands an entry.
+            this.beginCoalesce();
             this.dragMode = "origin";
             this._dragSectionId = id;
             this._dragStart = {
@@ -1097,6 +1304,9 @@ function chartEditor(config) {
             if (!this.selected) return;
             evt.preventDefault();
             evt.stopPropagation();
+            // Bracket the whole handle drag into one undo entry (pre-edit
+            // baseline snapped now, pushed in endHandleDrag() if it moved).
+            this.beginCoalesce();
             this.dragMode = mode;
             this._dragSectionId = this.selectedId;
             // Stash the section's origin at gesture start so the "origin"
@@ -1263,6 +1473,10 @@ function chartEditor(config) {
         },
 
         endHandleDrag(evt) {
+            // Close the undo bracket opened in startHandleDrag()/startBodyDrag()
+            // -- pushes an entry only if the drag actually changed something
+            // (so a tap-to-open-popover leaves no trace).
+            this.endCoalesce();
             if (this._captureTarget && this._capturePointerId != null) {
                 try {
                     if (this._captureTarget.releasePointerCapture)
@@ -1440,6 +1654,7 @@ function chartEditor(config) {
 
         popoverToggleAda() {
             if (!this.popover) return;
+            this.beginCoalesce();
             const s = this.sections[this.popover.sectionId];
             const key = seatKey(this.popover.row, this.popover.number);
             if (s.accessibleIds.has(key)) {
@@ -1450,16 +1665,19 @@ function chartEditor(config) {
             this.popover.accessible = s.accessibleIds.has(key);
             this.dirty = true;
             this.renderSection(this.popover.sectionId);
+            this.endCoalesce();
         },
 
         popoverDeleteSeat() {
             if (!this.popover) return;
+            this.beginCoalesce();
             const s = this.sections[this.popover.sectionId];
             const key = seatKey(this.popover.row, this.popover.number);
             s.removedIds.add(key);
             s.accessibleIds.delete(key);
             this.dirty = true;
             this.renderSection(this.popover.sectionId);
+            this.endCoalesce();
             this.popover = null;
         },
 
@@ -1532,6 +1750,11 @@ function chartEditor(config) {
                 const section = makeSection(data.section);
                 this.sections[section.id] = section;
                 this.sectionOrder.push(section.id);
+                // Inline create makes a real Section row server-side (see this
+                // method's doc comment) -- it isn't undoable, so wipe history
+                // rather than let an undo restore a snapshot missing this
+                // section and orphan the DB row. See clearHistory().
+                this.clearHistory();
                 this.newSectionOpen = false;
                 this.$nextTick(() => {
                     this.renderSection(section.id);

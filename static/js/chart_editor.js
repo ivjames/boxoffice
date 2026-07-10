@@ -24,6 +24,52 @@
  * static/js/editor_viewport.js module, included by both this file and
  * zone_editor.js -- see that file for the vertical-0.5x-drag bug fix.
  *
+ * Round 3 (docs/EDITOR.md "Round 3 refinements", real iPad + desktop
+ * testing) rebuilds the on-canvas TRANSFORM SYSTEM, which was the actual
+ * crux of that feedback:
+ *   - A 4th corner handle (handleTL()) was simply missing -- the transform
+ *     box's "top-left" corner was drawn from handleOrigin() (the RAW,
+ *     unrotated origin_x/origin_y), while the other 3 corners went through
+ *     worldFromLocal() (rotation-aware). That mismatch is exactly why the
+ *     box "didn't rotate with the section": 3 of its 4 points swung with
+ *     `rotation`, one didn't, so the outline sheared instead of turning as
+ *     a rigid rectangle. All 4 corners now go through worldFromLocal(),
+ *     so the whole frame rotates as one rigid shape (see handleTL/TR/BL/BR
+ *     below).
+ *   - Touch hit zones: every handle now renders TWO circles -- a small
+ *     visible dot (pointer-events: none, purely decorative) and a larger
+ *     INVISIBLE hit circle on top (pointer-events: all, fill: transparent
+ *     but that's fine -- SVG `pointer-events: all` fires regardless of
+ *     paint, unlike the default `visiblePainted`) sized well beyond the
+ *     dot and sized up further under `@media (pointer: coarse)` (see
+ *     app.css's --chart-editor-hit-scale). setPointerCapture (already
+ *     wired in startHandleDrag) keeps a drag glued to that hit circle even
+ *     if the pointer slides off it mid-drag.
+ *   - Cursors: cornerCursor() below picks nwse-resize/nesw-resize/ns-resize/
+ *     ew-resize per corner, ROTATED by the section's current `rotation` (a
+ *     corner's natural resize direction visually turns with the block) --
+ *     desktop-only affordance, harmless on touch.
+ *   - The offset/skew handle moved off the seat block entirely (see
+ *     handleOffsetLocal()) instead of sitting at local (row_x_offset, row
+ *     height), which routinely landed right on top of a real seat.
+ *   - The transform box (corner handles + offset handle) is no longer
+ *     hidden outright for arc sections -- only its offset handle is (round-
+ *     3 #10: offset is a no-op for fanned rows, see _fanned_local's
+ *     docstring -- it never reads row_x_offset), so the resize (pitch)
+ *     handles -- and the sidebar's Seat/Row pitch sliders, which were
+ *     never actually gated -- stay usable with arc on (round-3 #7).
+ *   - Seat labels (round-3 #5) render as <text> children in renderSection(),
+ *     hidden via updateLabelVisibility() when zoomed out far enough that
+ *     they'd be illegible anyway.
+ *   - Enabling/tightening arc no longer translates the section (round-3
+ *     #6, "still broken after round 1"): onArcToggle/onArcAmountInput now
+ *     run every arc_radius change through seat_geometry.js's
+ *     rebalanceOriginForArcChange first -- see that function's doc comment
+ *     for the actual root cause (grid's local (0,0) is the front-LEFT seat,
+ *     fanned's is front-CENTER, so a bare mode switch with origin held
+ *     fixed jumps the block sideways even though a fixed-mode radius
+ *     change alone was already jump-free after round 1).
+ *
  * Round 2 (docs/EDITOR.md "Round 2 refinements", post-review feedback)
  * adds: paired slider+number inputs (plain HTML/Alpine, template-only --
  * no JS changes needed since both inputs just x-model the same property);
@@ -141,6 +187,16 @@ function chartEditor(config) {
         newSectionForm: { name: "", tier: "" },
         newSectionSaving: false,
         newSectionError: null,
+        // Round 3 #11: snap-to-grid, OFF by default -- see snapValue()/
+        // maybeSnap() below, applied to POSITION-like handle drags (move
+        // section, move pivot, offset) so it "pairs with the background
+        // scale grid" (docs/EDITOR.md) rather than snapping spacing values
+        // (seat_pitch/row_pitch), which are usually sub-1-unit and would be
+        // useless rounded to a whole grid square.
+        snapEnabled: false,
+        // Round 3 #5: whether seat number labels are currently legible
+        // enough to draw -- see updateLabelVisibility()/renderSection().
+        labelsVisible: true,
 
         init() {
             const raw = JSON.parse(document.getElementById("editor-sections-data").textContent);
@@ -155,7 +211,15 @@ function chartEditor(config) {
             // on an inline <svg> (HTML parsing lowercases the attribute
             // name before Alpine sees it), so push it imperatively on every
             // reactive change instead.
-            this.$watch("viewBox", () => this.syncViewBoxAttr());
+            this.$watch("viewBox", () => {
+                this.syncViewBoxAttr();
+                // Round 3 #5: labels degrade gracefully (hide) once the
+                // section is zoomed out far enough that they'd render as
+                // illegible sub-pixel-ish text -- re-evaluated on every
+                // zoom/pan since scaleX changes with the viewBox, not with
+                // any per-section param renderSection() already reacts to.
+                this.updateLabelVisibility();
+            });
             // The selected section's <g> gets a highlight class -- applied
             // imperatively (see refreshGroupClasses()) rather than an
             // Alpine :class binding, since groups themselves are now
@@ -168,6 +232,7 @@ function chartEditor(config) {
                 this.refreshGroupClasses();
                 this.fitAll();
                 this.syncViewBoxAttr();
+                this.updateLabelVisibility();
             });
             window.addEventListener("beforeunload", (evt) => {
                 if (this.dirty) {
@@ -289,7 +354,38 @@ function chartEditor(config) {
                     `${section.name} ${seat.row}${seat.number}` + (seat.accessible ? " (accessible)" : "");
                 circle.appendChild(title);
                 g.appendChild(circle);
+
+                // Round 3 #5: seat numbers, rendered inside the circle --
+                // pointer-events: none (app.css) so they never steal the
+                // seat's own pointerdown/click, and hidden wholesale via
+                // the SVG root's class (see updateLabelVisibility()) once
+                // zoomed out far enough to be illegible rather than drawn
+                // as unreadable sub-pixel text.
+                const label = document.createElementNS(SVG_NS, "text");
+                label.setAttribute("x", seat.x);
+                label.setAttribute("y", seat.y);
+                label.setAttribute("font-size", SEAT_RADIUS * 0.9);
+                label.setAttribute("class", "editor-seat-label");
+                label.textContent = seat.number;
+                g.appendChild(label);
             }
+        },
+
+        // Round 3 #5: hides seat labels once the seat's ON-SCREEN radius
+        // (SEAT_RADIUS converted from SVG user-units to client px via the
+        // viewport's current scale -- see editor_viewport.js's
+        // contentBox()) drops below a legibility floor, e.g. after
+        // zooming/panning out. Toggles one class on the <svg> root (CSS
+        // handles the actual hide, static/css/app.css) rather than
+        // touching every <text> node, so it's cheap to run on every
+        // viewBox change.
+        updateLabelVisibility() {
+            const svg = this.$refs.svg;
+            if (!svg) return;
+            const box = this.contentBox();
+            const screenSeatPx = box.scaleX ? SEAT_RADIUS / box.scaleX : 0;
+            this.labelsVisible = screenSeatPx >= 5.5;
+            svg.classList.toggle("chart-editor__svg--labels-hidden", !this.labelsVisible);
         },
 
         onParamInput(id) {
@@ -297,18 +393,55 @@ function chartEditor(config) {
             this.renderSection(id);
         },
 
+        // Round 3 #6 ("arc STILL offsets the section" -- the fix, applied):
+        // every arc_radius change -- enabling, disabling, or dragging the
+        // amount slider -- goes through applyArcRadiusChange() below, which
+        // rebalances origin_x/origin_y FIRST so the section's front-center
+        // reference point doesn't move (see seat_geometry.js's
+        // rebalanceOriginForArcChange / generation.py's matching function
+        // for why the ENABLE/DISABLE transition -- not a fixed-mode radius
+        // change, which was already jump-free after round 1 -- was the
+        // actual surviving bug: grid's local (0,0) is the front-LEFT seat,
+        // fanned's is front-CENTER).
+
+        applyArcRadiusChange(id, newRadius) {
+            const s = this.sections[id];
+            // Row 0 is always `seats_per_row` seats exactly -- alt_row_seat_delta
+            // (ALTERNATING offset_mode) only ever touches ODD row indices
+            // (see compute_row_counts / computeRowCounts), so row 0's count
+            // is never ragged regardless of offset_mode.
+            const [ox, oy] = window.SeatGeometry.rebalanceOriginForArcChange(
+                this.geomParamsRaw(s), newRadius, s.seats_per_row
+            );
+            s.origin_x = ox;
+            s.origin_y = oy;
+            s.arc_radius = newRadius;
+        },
+
+        // Like geomParams(), but with the section's ACTUAL current
+        // arc_radius (not gated by arc_enabled) -- rebalanceOriginForArcChange
+        // needs the true "from" radius to compute a correct correction,
+        // whereas the live seat renderer (geomParams()) intentionally
+        // treats a disabled-but-remembered arc_amount as "off".
+        geomParamsRaw(section) {
+            return { ...this.geomParams(section), arc_radius: section.arc_radius };
+        },
+
         onArcToggle(id) {
             const s = this.sections[id];
-            s.arc_enabled = !s.arc_enabled;
-            if (s.arc_enabled && !s.arc_amount) s.arc_amount = 20;
-            s.arc_radius = arcAmountToRadius(s.arc_enabled ? s.arc_amount : 0);
+            const enabling = !s.arc_enabled;
+            if (enabling && !s.arc_amount) s.arc_amount = 20;
+            const newRadius = enabling ? arcAmountToRadius(s.arc_amount) : 0;
+            this.applyArcRadiusChange(id, newRadius);
+            s.arc_enabled = enabling;
             this.onParamInput(id);
         },
 
         onArcAmountInput(id) {
             const s = this.sections[id];
-            s.arc_radius = arcAmountToRadius(s.arc_amount);
-            s.arc_enabled = s.arc_radius > 0;
+            const newRadius = arcAmountToRadius(s.arc_amount);
+            this.applyArcRadiusChange(id, newRadius);
+            s.arc_enabled = newRadius > 0;
             this.onParamInput(id);
         },
 
@@ -346,10 +479,25 @@ function chartEditor(config) {
             this.onParamInput(id);
         },
 
+        // Round 3 #9: alt-row add/drop is a brick-stagger nudge (+1 seat
+        // longer / -1 seat shorter on every other row), not a general
+        // seat-count control -- clamp to -1/0/+1 client-side (the save
+        // endpoint clamps the same way server-side, see dashboard/views.py's
+        // chart_editor_save, so a stale/tampered client value can't sneak
+        // a bigger delta into storage either).
         stepAltDelta(id, delta) {
             const s = this.sections[id];
-            s.alt_row_seat_delta = s.alt_row_seat_delta + delta;
+            s.alt_row_seat_delta = clamp(s.alt_row_seat_delta + delta, -1, 1);
             this.onParamInput(id);
+        },
+
+        // Round 3 #8: the offset-amount slider/number's range was reported
+        // too small to be useful -- raised to a generous absolute floor
+        // (2x the old +/-10) AND scaled with the CURRENT seat_pitch (up to
+        // ~4x it), so a section with an unusually wide seat_pitch gets an
+        // even bigger range instead of being capped at the floor.
+        offsetRange(section) {
+            return Math.max(20, (section.seat_pitch || 1) * 4);
         },
 
         // -- selection --------------------------------------------------------
@@ -463,8 +611,21 @@ function chartEditor(config) {
         originMarkerXY() {
             const s = this.selected;
             if (!s) return [0, 0];
-            const dx = -Math.max(0.5, s.seat_pitch * 0.6);
-            const dy = -Math.max(0.5, s.row_pitch * 0.6);
+            // Round 3 #3 fallout: the floor here used to be 0.5 -- fine
+            // when every handle's HIT zone was tiny (r ~0.28-0.32), but the
+            // move-section marker sits exactly ON TOP of handleTL() at
+            // rotation=0 (both are the section's origin point -- see
+            // handleTL()'s doc comment), and the origin marker's hit circle
+            // is painted AFTER (on top of) the transform box's, so a big
+            // enough hit zone on BOTH silently made TL's resize handle
+          // ungrabbable (confirmed by driving the editor under an emulated
+            // touch/coarse-pointer context: dragging what looked like TL
+            // moved the whole section instead of resizing it). The floor is
+            // now comfortably bigger than the largest hit-zone radius the
+            // two handles can have between them (see app.css's
+            // --chart-editor-hit-scale) so they never overlap.
+            const dx = -Math.max(1.75, s.seat_pitch * 0.6);
+            const dy = -Math.max(1.75, s.row_pitch * 0.6);
             return [s.origin_x + dx, s.origin_y + dy];
         },
 
@@ -481,9 +642,26 @@ function chartEditor(config) {
             const s = this.selected;
             if (!s) return [0, 0];
             const [px, py] = this.pivotWorldXY();
-            const dx = Math.max(0.5, s.seat_pitch * 0.6);
-            const dy = Math.max(0.5, s.row_pitch * 0.6);
+            // Round 3 #3 fallout -- same reasoning as originMarkerXY()'s
+            // floor above (clearance from the nearest resize-handle hit
+            // zone, not just from the origin marker itself).
+            const dx = Math.max(1.75, s.seat_pitch * 0.6);
+            const dy = Math.max(1.75, s.row_pitch * 0.6);
             return [px + dx, py + dy];
+        },
+
+        // Round 3 #1/#2: the 4th corner. Previously the transform box's
+        // "top-left" outline point was drawn from handleOrigin() (raw,
+        // UNROTATED origin_x/origin_y) while TR/BL/BR went through
+        // worldFromLocal() (rotation-aware) -- that mismatch is why the box
+        // didn't rotate as a rigid shape with the section (see this file's
+        // header comment). handleTL() now goes through the exact same
+        // worldFromLocal() pipeline as the other three, so all 4 corners
+        // -- and the lines connecting them -- rotate together.
+        handleTL() {
+            const s = this.selected;
+            if (!s) return [0, 0];
+            return this.worldFromLocal(s, 0, 0);
         },
 
         handleTR() {
@@ -507,6 +685,31 @@ function chartEditor(config) {
             return this.worldFromLocal(s, w, h);
         },
 
+        // Round 3 #4: which resize cursor a corner shows on hover, ROTATED
+        // by the section's current `rotation` so it visually matches the
+        // block's actual on-screen orientation (a corner that reads as
+        // nwse-resize at rotation=0 may read as ns-resize once the block is
+        // turned 45deg) -- bucketed into the 4 discrete cursors CSS offers
+        // (native CSS can't animate a resize cursor to an arbitrary angle).
+        // `cornerLocalX/Y` is the corner's LOCAL point (e.g. (0,0) for TL,
+        // (w,h) for BR); direction is measured from the block's own local
+        // center so it's meaningful even for a very wide/short or narrow/
+        // tall block, not just a perfect square.
+        cornerCursor(cornerLocalX, cornerLocalY) {
+            const s = this.selected;
+            if (!s) return "nwse-resize";
+            const [w, h] = this.localWH(s);
+            const [dx, dy] = window.SeatGeometry.rotate(
+                cornerLocalX - w / 2, cornerLocalY - h / 2, s.rotation
+            );
+            let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+            angle = ((angle % 180) + 180) % 180; // 0..180 -- opposite corners share a cursor
+            if (angle < 22.5 || angle >= 157.5) return "ew-resize";
+            if (angle < 67.5) return "nwse-resize";
+            if (angle < 112.5) return "ns-resize";
+            return "nesw-resize";
+        },
+
         rotateHandleLocal(s) {
             const [w] = this.localWH(s);
             const dist = Math.max(1.5, w * 0.15 + 1.5);
@@ -520,14 +723,47 @@ function chartEditor(config) {
             return this.worldFromLocal(s, lx, ly);
         },
 
+        // Round 3 #4: the offset/skew handle's LOCAL position, pushed
+        // clear of the seat block (below the last row, by a margin scaled
+        // off row_pitch) instead of sitting AT local (row_x_offset, <a row's
+        // y>), which routinely landed right on top of a real seat and made
+        // the handle impossible to grab without hitting a seat's own
+        // pointerdown first. Local X still tracks the current offset
+        // amount 1:1 (so the handle visibly slides as row_x_offset
+        // changes, same affordance as before) -- only Y moved.
+        handleOffsetLocal(s) {
+            const [w, h] = this.localWH(s);
+            // Round 3 #3 fallout: the floor here used to be 1 -- comfortably
+            // clear of a SEAT, but not of the BL corner's now-larger hit
+            // zone (same overlap problem as originMarkerXY()'s comment
+            // above -- confirmed the same way, under an emulated touch
+            // context). Bigger floor keeps clearance from BL's hit circle
+            // too, not just from the row of seats.
+            const margin = Math.max(2.5, s.row_pitch * 1.5);
+            const lx =
+                s.offset_mode === "alternating"
+                    ? s.row_x_offset
+                    : Math.max(0, s.rows - 1) * s.row_x_offset;
+            return [clamp(lx, -w - margin, w + margin), h + margin];
+        },
+
         handleOffset() {
             const s = this.selected;
             if (!s) return [0, 0];
-            const [, h] = this.localWH(s);
-            if (s.offset_mode === "alternating") {
-                return this.worldFromLocal(s, s.row_x_offset, Math.min(h, s.row_pitch));
-            }
-            return this.worldFromLocal(s, Math.max(0, s.rows - 1) * s.row_x_offset, h);
+            return this.worldFromLocal(s, ...this.handleOffsetLocal(s));
+        },
+
+        // Round 3 #11: snap-to-grid, OFF by default (this.snapEnabled).
+        // Snaps to whole units -- the SAME 1-unit spacing as the minor
+        // background grid (static/css/app.css's #editor-grid-minor /
+        // template's <pattern>), so a snapped drag visibly lines up with
+        // the grid lines staff can see. Applied to POSITION values (move
+        // section, move pivot, offset amount) below, NOT seat_pitch/
+        // row_pitch -- those are spacing values usually well under 1 unit
+        // (a typical seat_pitch is 0.2-5), so rounding them to a whole grid
+        // unit would make fine spacing control unusable.
+        snapValue(value) {
+            return this.snapEnabled ? Math.round(value) : value;
         },
 
         // -- transform box: dragging --------------------------------------
@@ -560,10 +796,11 @@ function chartEditor(config) {
                 // Translate the whole section -- a pure pointer-delta drag,
                 // unaffected by rotation/pivot (see handleOrigin()'s doc
                 // comment: origin_x/origin_y is the placement anchor, not a
-                // rotated local point).
+                // rotated local point). Round 3 #11: snapped to the grid
+                // (WORLD position, not the delta) when snap-to-grid is on.
                 const [startPx, startPy] = this._dragStart.pointer;
-                s.origin_x += px - startPx;
-                s.origin_y += py - startPy;
+                s.origin_x = this.snapValue(s.origin_x + (px - startPx));
+                s.origin_y = this.snapValue(s.origin_y + (py - startPy));
                 this._dragStart.pointer = [px, py];
             } else if (this.dragMode === "move_pivot") {
                 // Reposition the ROTATION PIVOT (Round 2, docs/EDITOR.md
@@ -573,9 +810,11 @@ function chartEditor(config) {
                 // dropped world point back to local is just subtraction --
                 // no toLocal()/rotation-inversion needed. Always switches
                 // pivot_mode to CUSTOM, regardless of what it was before.
+                // Round 3 #11: snapped (in WORLD space, same as origin
+                // above) when snap-to-grid is on.
                 s.pivot_mode = "custom";
-                s.pivot_x = px - s.origin_x;
-                s.pivot_y = py - s.origin_y;
+                s.pivot_x = this.snapValue(px) - s.origin_x;
+                s.pivot_y = this.snapValue(py) - s.origin_y;
             } else if (this.dragMode === "seat_pitch" || this.dragMode === "both") {
                 const denom = Math.max(1, s.seats_per_row - 1);
                 const [lx] = this.toLocal(s, px, py);
@@ -601,12 +840,18 @@ function chartEditor(config) {
                 s.rotation = clamp(deg, -45, 45);
             }
             if (this.dragMode === "offset") {
+                // Round 3 #8/#11: clamp matches the sidebar slider's
+                // dynamic range (offsetRange(), scaled off seat_pitch) so
+                // dragging the on-canvas handle can't exceed what the
+                // number input allows, and snaps to the grid same as the
+                // other position-like handles when snap-to-grid is on.
+                const bound = this.offsetRange(s);
                 const [lx] = this.toLocal(s, px, py);
                 if (s.offset_mode === "alternating") {
-                    s.row_x_offset = clamp(lx, -30, 30);
+                    s.row_x_offset = this.snapValue(clamp(lx, -bound, bound));
                 } else {
                     const denom = Math.max(1, s.rows - 1);
-                    s.row_x_offset = clamp(lx / denom, -30, 30);
+                    s.row_x_offset = this.snapValue(clamp(lx / denom, -bound, bound));
                 }
             }
             this.dirty = true;
@@ -665,12 +910,17 @@ function chartEditor(config) {
             // coordinates for the clipped-out element, but clicking there
             // hit whatever page content sat behind/above the canvas).
             if (this.selected) {
+                // Round 3 #7: the transform box's corner (resize) handles
+                // are no longer hidden for arc sections (only the offset
+                // handle is, since offset is a no-op with arc on -- round-3
+                // #10), so they need room in Fit too, unconditionally.
                 const points = [
                     this.handleOrigin(), this.handleRotate(), this.originMarkerXY(),
                     this.pivotWorldXY(), this.rotationPivotMarkerXY(),
+                    this.handleTL(), this.handleTR(), this.handleBL(), this.handleBR(),
                 ];
                 if (!this.selected.arc_enabled) {
-                    points.push(this.handleTR(), this.handleBL(), this.handleBR(), this.handleOffset());
+                    points.push(this.handleOffset());
                 }
                 for (const [x, y] of points) {
                     minX = Math.min(minX, x);

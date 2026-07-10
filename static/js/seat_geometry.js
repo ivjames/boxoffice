@@ -149,6 +149,44 @@ function pivotXY(section) {
 }
 
 /*
+ * Local (pre-rotation) front-center reference point, evaluated for a
+ * HYPOTHETICAL `arcRadius` rather than `section.arc_radius` -- mirrors
+ * generation.py's `front_center_local` EXACTLY (see its docstring for why
+ * grid/raked's local (0,0) is front-LEFT but this is front-CENTER, and why
+ * fanned's local (0,0) already IS front-center for any radius).
+ */
+function frontCenterLocal(section, rowSeatCount, arcRadius) {
+    if (arcRadius) return [0, 0];
+    const centerOffset = (rowSeatCount - 1) / 2;
+    return [centerOffset * section.seat_pitch, 0];
+}
+
+// World (x, y) of frontCenterLocal -- mirrors generation.py's front_center_xy.
+function frontCenterXY(section, rowSeatCount, arcRadius) {
+    const [lx, ly] = frontCenterLocal(section, rowSeatCount, arcRadius);
+    const [px, py] = pivotLocal(section);
+    const [rx, ry] = rotate(lx - px, ly - py, section.rotation);
+    return [section.origin_x + px + rx, section.origin_y + py + ry];
+}
+
+/*
+ * The Round-3 "arc still offsets the section" fix (docs/EDITOR.md #6):
+ * (origin_x, origin_y) that keep the front-center reference point fixed
+ * when `section.arc_radius` is about to change to `newArcRadius` -- see
+ * generation.py's `rebalance_origin_for_arc_change` docstring for the full
+ * story (grid's front-LEFT vs fanned's front-CENTER local-(0,0) mismatch,
+ * which is what actually jumps the section on ENABLE/DISABLE, not on a
+ * plain radius-to-radius "tightening" change -- that was already
+ * jump-free). Does not mutate `section`; chart_editor.js applies the
+ * result on every arc_radius change.
+ */
+function rebalanceOriginForArcChange(section, newArcRadius, rowSeatCount) {
+    const [beforeX, beforeY] = frontCenterXY(section, rowSeatCount, section.arc_radius);
+    const [afterX, afterY] = frontCenterXY(section, rowSeatCount, newArcRadius);
+    return [section.origin_x + (beforeX - afterX), section.origin_y + (beforeY - afterY)];
+}
+
+/*
  * Full live seat list for `section` -- mirrors venues.generation.
  * generate_seats's per-seat loop (labels/numbers/xy/is_accessible), minus
  * the DB round-trip, PLUS the removedIds/accessibleIds identity overrides
@@ -197,5 +235,8 @@ window.SeatGeometry = {
     seatXY,
     pivotLocal,
     pivotXY,
+    frontCenterLocal,
+    frontCenterXY,
+    rebalanceOriginForArcChange,
     computeSectionSeats,
 };

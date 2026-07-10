@@ -1144,6 +1144,13 @@ table.dash-table th {
     user-select: none;
 }
 
+/* Round 3 #5: hide seat labels once zoomed out far enough to be illegible
+   (toggled by chart_editor.js's updateLabelVisibility()) instead of drawing
+   unreadable sub-pixel text. */
+.chart-editor__svg--labels-hidden .editor-seat-label {
+    display: none;
+}
+
 .chart-editor__sidebar {
     flex: 0 0 20rem;
     max-width: 100%;
@@ -1224,11 +1231,20 @@ table.dash-table th {
    some browsers; `pointer: coarse` covers the common case directly. */
 :root {
     --chart-editor-handle-scale: 1;
+    /* Round 3 #3: the INVISIBLE hit-zone multiplier -- always noticeably
+       bigger than the visible-dot scale above so every handle's grabbable
+       area extends well beyond what you can see, on every pointer type. */
+    --chart-editor-hit-scale: 1;
 }
 
 @media (pointer: coarse), (hover: none) {
     :root {
         --chart-editor-handle-scale: 1.7;
+        /* Chunky, reliable touch targets (round 3 #3, the top touch
+           priority): iPad touch is flaky against small hit areas, so
+           coarse/touch pointers get a much larger invisible hit zone on
+           top of the already-bigger visible dot. */
+        --chart-editor-hit-scale: 1.8;
     }
 }
 
@@ -1240,7 +1256,7 @@ table.dash-table th {
 .chart-editor__handle,
 .chart-editor__pivot,
 .chart-editor__rotation-pivot {
-    pointer-events: all;
+    pointer-events: none;
     fill: #fff;
     stroke: #111827;
     stroke-width: 0.08;
@@ -1248,33 +1264,71 @@ table.dash-table th {
     r: calc(0.28 * var(--chart-editor-handle-scale));
 }
 
+/* Round 3 #1/#3: every handle is now TWO circles -- the visible dot above
+   (decorative, pointer-events: none so it never competes with its own hit
+   zone for the topmost-element-wins SVG hit test) and this larger,
+   invisible one, which is the actual pointerdown/hover/title target.
+   `fill: transparent` + `pointer-events: all` still receives events (SVG's
+   default pointer-events value, visiblePainted, would NOT -- transparent
+   fill doesn't count as "painted" -- see chart_editor.js's header comment).
+   Always noticeably bigger than its sibling dot ("well beyond the visible
+   dot" per docs/EDITOR.md), bigger still under (pointer: coarse). */
+.chart-editor__handle-hit {
+    pointer-events: all;
+    fill: transparent;
+    r: calc(0.55 * var(--chart-editor-hit-scale));
+}
+
+/* Round 3 #4: hover cursors live on the HIT circle (it's the element that
+   actually receives pointer/hover events -- see the comment above). Corner
+   resize cursors are set INLINE instead (chart_editor.js's cornerCursor()),
+   since which of nwse/nesw/ns/ew is "correct" depends on the section's
+   current rotation; `.chart-editor__handle-hit--resize` here is just the
+   pre-hydration/no-JS fallback. */
+.chart-editor__handle-hit--resize {
+    cursor: nwse-resize;
+}
+
+.chart-editor__handle-hit--offset {
+    cursor: ew-resize;
+}
+
+.chart-editor__handle-hit--rotate {
+    cursor: grab;
+}
+
+.chart-editor__handle-hit--pivot {
+    cursor: move;
+}
+
+.chart-editor__handle-hit--rotation-pivot {
+    cursor: crosshair;
+}
+
 .chart-editor__handle--resize {
     r: calc(0.32 * var(--chart-editor-handle-scale));
-    cursor: nwse-resize;
 }
 
 .chart-editor__handle--offset {
     r: calc(0.28 * var(--chart-editor-handle-scale));
     fill: #d97706;
-    cursor: ew-resize;
 }
 
 .chart-editor__handle--rotate {
     r: calc(0.3 * var(--chart-editor-handle-scale));
     fill: #7c3aed;
-    cursor: grab;
 }
 
 .chart-editor__pivot {
+    pointer-events: none;
     r: calc(0.26 * var(--chart-editor-handle-scale));
     fill: #e11d48;
-    cursor: move;
 }
 
 .chart-editor__rotation-pivot {
+    pointer-events: none;
     r: calc(0.26 * var(--chart-editor-handle-scale));
     fill: #0891b2;
-    cursor: crosshair;
 }
 
 .chart-editor__handle-line {
@@ -1466,6 +1520,23 @@ table.dash-table th {
 .chart-editor__toggle button.is-active {
     background: var(--accent-color);
     color: #fff;
+}
+
+.chart-editor__toggle button:disabled,
+.chart-editor__stepper button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Round 3 #11: snap-to-grid toolbar toggle, OFF by default (chart_editor.js's
+   snapEnabled). */
+.chart-editor__snap-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--muted-color);
+    cursor: pointer;
 }
 
 .chart-editor__stepper {

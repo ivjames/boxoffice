@@ -229,6 +229,70 @@ def pivot_xy(section):
     return section.origin_x + pivot_x, section.origin_y + pivot_y
 
 
+def front_center_local(section, row_seat_count, arc_radius):
+    """Local (pre-rotation) position of the section's FRONT-CENTER
+    reference point -- row_index=0, the row's midpoint -- evaluated for a
+    HYPOTHETICAL `arc_radius` rather than `section.arc_radius`, so callers
+    can compare a section's shape "as grid/raked" against "as fanned"
+    without mutating it (see `rebalance_origin_for_arc_change` below, the
+    Round-3 "arc still offsets the section" fix, docs/EDITOR.md #6).
+
+    Grid/raked (`arc_radius` falsy): `_grid_or_raked_local`'s local (0, 0)
+    is the front-LEFT seat, not front-center (that's Phase A's original,
+    still-pinned convention -- see GeometryTests.test_grid_is_a_plain_
+    rectangle), so front-center is `_grid_or_raked_local`'s row-0 point at
+    `seat_index = (row_seat_count - 1) / 2` (the row's midpoint, matching
+    `_fanned_local`'s `center_offset` -- interpolated, not rounded, so it's
+    exact even for an even seat count with no literal center seat).
+
+    Fanned (`arc_radius` truthy): `_fanned_local`'s local (0, 0) IS the
+    front-center point by construction (theta=0 at `seat_index =
+    center_offset` -- see its docstring), for ANY `arc_radius` -- that's
+    the existing, already-correct "curve in place" invariant
+    (GeometryTests.test_arc_radius_does_not_translate_the_section).
+    """
+    if arc_radius:
+        return 0.0, 0.0
+    center_offset = (row_seat_count - 1) / 2.0
+    return center_offset * section.seat_pitch, 0.0
+
+
+def front_center_xy(section, row_seat_count, arc_radius):
+    """World (x, y) of `front_center_local`, run through the same
+    pivot-rotate-translate pipeline `_seat_xy` uses -- mirrored by
+    seat_geometry.js's `frontCenterXY`."""
+    local_x, local_y = front_center_local(section, row_seat_count, arc_radius)
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    rel_x, rel_y = _rotate(local_x - pivot_x, local_y - pivot_y, section.rotation)
+    return section.origin_x + pivot_x + rel_x, section.origin_y + pivot_y + rel_y
+
+
+def rebalance_origin_for_arc_change(section, new_arc_radius, row_seat_count):
+    """The (origin_x, origin_y) that keep `section`'s front-center
+    reference point exactly where it currently is when `section.arc_radius`
+    is about to change to `new_arc_radius` -- covers BOTH the "tightening"
+    case (arc_radius -> a different arc_radius, already invariant by
+    construction, so this is a no-op correction) AND the "enabling/
+    disabling" case (None/0 <-> a radius), which is NOT a no-op: grid mode's
+    local (0, 0) is the front-LEFT seat while fanned mode's is front-CENTER
+    (see `front_center_local`'s docstring for why that mismatch can't be
+    resolved by changing either geometry's own formula without breaking the
+    OTHER mode's pinned tests), so switching modes with `origin_x/origin_y`
+    held fixed visibly shifts the whole block sideways by roughly half its
+    width -- confirmed as the actual round-3 "arc still offsets the
+    section" symptom (toggling the arc checkbox jumps the section; a fixed
+    arc_radius slider alone was already jump-free). Callers (chart_editor.js's
+    `onArcToggle`/`onArcAmountInput`, mirrored via seat_geometry.js's
+    `rebalanceOriginForArcChange`) apply this EVERY time arc_radius changes
+    for any reason, so the correction is simply a zero vector on a pure
+    radius-to-radius change and a real compensating shift on a mode switch.
+    Does not mutate `section`.
+    """
+    before_x, before_y = front_center_xy(section, row_seat_count, section.arc_radius)
+    after_x, after_y = front_center_xy(section, row_seat_count, new_arc_radius)
+    return section.origin_x + (before_x - after_x), section.origin_y + (before_y - after_y)
+
+
 def _seat_xy(section, row_index, seat_index, row_seat_count):
     """Dispatch to the right local geometry for `section` (see module
     docstring), then rotate around the section's configured pivot

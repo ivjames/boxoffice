@@ -35,7 +35,8 @@ def export_chart_data(chart):
               "numbering_scheme": "sequential", "row_label_scheme": "skip_io",
               "layout": {
                 "origin_x": 0.0, "origin_y": 0.0, "rotation": 0.0,
-                "seat_pitch": 1.0, "row_pitch": 1.0, "arc_radius": null
+                "seat_pitch": 1.0, "row_pitch": 1.0, "arc_radius": null,
+                "pivot_mode": "center", "pivot_x": 0.0, "pivot_y": 0.0
               },
               "rows": [
                 {"row_label": "A", "seats": [
@@ -77,6 +78,14 @@ def export_chart_data(chart):
                     "seat_pitch": section.seat_pitch,
                     "row_pitch": section.row_pitch,
                     "arc_radius": section.arc_radius,
+                    # Round 2's configurable rotation pivot (docs/EDITOR.md
+                    # #2) -- round-tripped since round 3 (#12): without
+                    # these, an exported/reimported chart with a CUSTOM
+                    # pivot would silently reset to the CENTER default and
+                    # rotate around the wrong point.
+                    "pivot_mode": section.pivot_mode,
+                    "pivot_x": section.pivot_x,
+                    "pivot_y": section.pivot_y,
                 },
                 "rows": [
                     {
@@ -165,6 +174,9 @@ def import_chart_data(venue, data, *, name=None, replace=False):
             seat_pitch=layout.get("seat_pitch", 1.0),
             row_pitch=layout.get("row_pitch", 1.0),
             arc_radius=layout.get("arc_radius"),
+            pivot_mode=layout.get("pivot_mode", Section.PivotMode.CENTER),
+            pivot_x=layout.get("pivot_x", 0.0),
+            pivot_y=layout.get("pivot_y", 0.0),
         )
         seats = [
             Seat(

@@ -1061,6 +1061,47 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertEqual(sorted(s.x for s in by_row["A"]), [0.0, 1.0, 2.0])
         self.assertEqual(sorted(s.x for s in by_row["B"]), [0.5, 1.5, 2.5, 3.5])
 
+    def test_save_clamps_alt_row_seat_delta_to_plus_minus_one(self):
+        # Round 3 (docs/EDITOR.md #9): alt-row add/drop is a small
+        # brick-stagger nudge -- the editor's stepper already clamps to
+        # -1/0/+1 client-side, but the save endpoint is the authoritative
+        # backstop against a stale/tampered client payload sending a bigger
+        # delta straight through.
+        self._login_as("manager")
+        resp = self._post_json(
+            self._save_url(),
+            {
+                "sections": {
+                    str(self.section.pk): self._params_payload(
+                        rows=2, seats_per_row=3, offset_mode="alternating",
+                        row_x_offset=0.5, alt_row_seat_delta=7,
+                    )
+                }
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.section.refresh_from_db()
+        self.assertEqual(self.section.alt_row_seat_delta, 1)
+
+        resp = self._post_json(
+            self._save_url(),
+            {
+                "sections": {
+                    str(self.section.pk): self._params_payload(
+                        rows=2, seats_per_row=3, offset_mode="alternating",
+                        row_x_offset=0.5, alt_row_seat_delta=-9,
+                    )
+                }
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.section.refresh_from_db()
+        self.assertEqual(self.section.alt_row_seat_delta, -1)
+
     def test_save_persists_removed_and_accessible_overrides(self):
         self._login_as("manager")
         seat_a1 = self.section.seats.get(row_label="A", number="1")

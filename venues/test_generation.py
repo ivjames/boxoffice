@@ -18,10 +18,12 @@ from orders.models import Order, Ticket
 from venues.generation import (
     SeatGenerationError,
     compute_row_counts,
+    front_center_xy,
     generate_row_labels,
     generate_seat_numbers,
     generate_seats,
     pivot_xy,
+    rebalance_origin_for_arc_change,
 )
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
@@ -461,6 +463,99 @@ class GeometryTests(TestCase):
         seats = sorted(section.seats.all(), key=lambda s: s.x)
         self.assertEqual([s.x for s in seats], [0.0, 1.0])
         self.assertEqual([s.y for s in seats], [0.0, 0.0])
+
+    # -- Round 3 (docs/EDITOR.md "Round 3 refinements" #6): "arc STILL
+    # offsets the section" -- tightening (a fixed arc_radius changing to a
+    # different arc_radius, arc staying ON) was ALREADY translation-free
+    # after round 1 (see test_arc_radius_does_not_translate_the_section
+    # above); what survived two rounds is ENABLING/DISABLING arc, which
+    # jumps the section sideways by roughly half its width because grid/
+    # raked's local (0, 0) is the front-LEFT seat while fanned's is
+    # front-CENTER (see front_center_local's docstring) -- these tests
+    # pin BOTH the raw invariant (front-center is arc_radius-invariant
+    # WHILE arc stays on, even with a non-trivial rotation + the default
+    # CENTER pivot) and the actual fix (rebalance_origin_for_arc_change,
+    # applied by the editor on every arc toggle/slider change).
+
+    def test_front_center_is_invariant_to_arc_radius_while_arc_stays_on(self):
+        # A multi-seat, multi-row, ROTATED section (the default CENTER
+        # pivot is where a naive fix would still leak a translation, since
+        # the pivot itself doesn't move with arc_radius but rotation does
+        # apply around it) -- front-center (row 0's midpoint) must land at
+        # the exact same world point for every arc_radius.
+        section = self.make_section(
+            origin_x=10.0, origin_y=5.0, rotation=15.0, seat_pitch=1.4, row_pitch=1.2,
+            rows=6, seats_per_row=9,  # odd count -> row 0 has a literal center seat (index 4)
+        )
+        positions = set()
+        for radius in (42.0, 20.0, 5.0, 500.0):
+            xy = front_center_xy(section, row_seat_count=9, arc_radius=radius)
+            positions.add((round(xy[0], 9), round(xy[1], 9)))
+        self.assertEqual(len(positions), 1, f"front-center moved across arc_radius values: {positions}")
+
+        # The same holds end-to-end through generate_seats: row A's middle
+        # seat (seat_index=4 of 9) is where front_center_xy says it should be.
+        for radius in (42.0, 20.0, 5.0):
+            trial = self.make_section(
+                name=f"Trial-{radius}", origin_x=10.0, origin_y=5.0, rotation=15.0,
+                seat_pitch=1.4, row_pitch=1.2, rows=6, seats_per_row=9, arc_radius=radius,
+            )
+            generate_seats(trial, [9] * 6)
+            middle_seat = self.seats_by_row(trial)["A"][4]
+            expected_x, expected_y = front_center_xy(trial, row_seat_count=9, arc_radius=radius)
+            self.assertAlmostEqual(middle_seat.x, expected_x, places=6)
+            self.assertAlmostEqual(middle_seat.y, expected_y, places=6)
+
+    def test_rebalance_origin_for_arc_change_is_a_no_op_between_two_radii(self):
+        # Tightening (radius -> a different radius, arc staying ON) never
+        # needed a correction -- the rebalance is a pure no-op there.
+        section = self.make_section(
+            origin_x=3.0, origin_y=-2.0, rotation=20.0, seat_pitch=1.1, row_pitch=0.9,
+            rows=4, seats_per_row=6, arc_radius=42.0,
+        )
+        new_x, new_y = rebalance_origin_for_arc_change(section, new_arc_radius=5.0, row_seat_count=6)
+        self.assertAlmostEqual(new_x, section.origin_x, places=6)
+        self.assertAlmostEqual(new_y, section.origin_y, places=6)
+
+    def test_rebalance_origin_for_arc_change_fixes_the_enable_jump(self):
+        # THE fix, stated directly: enabling arc on a straight section
+        # (or disabling it back) must not move the front-center seat --
+        # applying the rebalanced origin makes that true even though
+        # generate_seats's raw grid/fanned formulas alone would jump it
+        # (see this method's sibling test below for the "before" jump).
+        grid_section = self.make_section(
+            origin_x=10.0, origin_y=5.0, rotation=15.0, seat_pitch=1.4, row_pitch=1.2,
+            rows=6, seats_per_row=9, arc_radius=None,
+        )
+        before_x, before_y = front_center_xy(grid_section, row_seat_count=9, arc_radius=None)
+
+        new_x, new_y = rebalance_origin_for_arc_change(
+            grid_section, new_arc_radius=42.0, row_seat_count=9
+        )
+        grid_section.origin_x, grid_section.origin_y = new_x, new_y
+        after_x, after_y = front_center_xy(grid_section, row_seat_count=9, arc_radius=42.0)
+
+        self.assertAlmostEqual(before_x, after_x, places=6)
+        self.assertAlmostEqual(before_y, after_y, places=6)
+
+    def test_without_rebalance_enabling_arc_jumps_the_section(self):
+        # Documents the actual bug rebalance_origin_for_arc_change fixes:
+        # holding origin_x/origin_y fixed while flipping arc_radius from
+        # None to a value visibly moves the front-left seat (proof the
+        # naive "just set arc_radius" toggle -- what chart_editor.js did
+        # before round 3 -- really did still translate the section).
+        section = self.make_section(origin_x=0.0, origin_y=0.0, seat_pitch=1.4, row_pitch=1.2)
+        generate_seats(section, [9])
+        front_left_before = min(section.seats.all(), key=lambda s: s.x)
+        before_x = front_left_before.x
+
+        section.seats.all().delete()
+        section.arc_radius = 42.0
+        section.save(update_fields=["arc_radius"])
+        generate_seats(section, [9])
+        front_left_after = min(section.seats.all(), key=lambda s: s.x)
+
+        self.assertNotAlmostEqual(before_x, front_left_after.x, places=3)
 
 
 class SeatOverrideTests(TestCase):

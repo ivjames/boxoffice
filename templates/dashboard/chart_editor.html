@@ -29,6 +29,10 @@
                 <span x-show="saving" x-cloak>Saving…</span>
             </button>
             <button type="button" class="button button--secondary" @click="fitAll()">Fit</button>
+            <label class="chart-editor__snap-toggle">
+                <input type="checkbox" x-model="snapEnabled">
+                Snap to grid
+            </label>
             <span class="chart-editor__dirty" x-show="dirty" x-cloak>Unsaved changes</span>
             <span class="chart-editor__saved" x-show="!dirty &amp;&amp; savedAt" x-cloak>Saved.</span>
             <span class="chart-editor__error" x-show="error" x-text="error" x-cloak></span>
@@ -75,29 +79,60 @@
                      later. Inserted just before the transform box below so seats always paint
                      under the handles regardless of insertion order. -->
 
-                <!-- transform box: corners/skew (hidden for arc sections -- see chart_editor.js).
-                     NOTE: deliberately a plain <g x-show=...>, NOT <template x-if> -- a <template>
-                     parsed inside <svg> gets SVG-namespaced by the browser and loses its
-                     `.content` (HTMLTemplateElement-only), so Alpine's x-if (which clones
-                     template.content) throws "Cannot read properties of undefined (reading
-                     'cloneNode')" and never renders anything. Same root cause documented in
-                     templates/orders/_seat_map.html for x-for; applies to x-if too. x-show just
-                     toggles style.display on a real, always-present element, so it's safe here. -->
-                <g class="chart-editor__transform-box" x-ref="transformBox" x-show="selected &amp;&amp; !selected.arc_enabled" x-cloak>
-                        <line class="chart-editor__handle-line" :x1="handleOrigin()[0]" :y1="handleOrigin()[1]" :x2="handleTR()[0]" :y2="handleTR()[1]"></line>
-                        <line class="chart-editor__handle-line" :x1="handleOrigin()[0]" :y1="handleOrigin()[1]" :x2="handleBL()[0]" :y2="handleBL()[1]"></line>
+                <!-- transform box: 4 corner resize handles + the offset/skew handle (round 3 #1/
+                     #2/#3/#4/#7: rebuilt so it reliably shows/rotates-with-the-block/has chunky
+                     touch hit zones -- see chart_editor.js's header comment for the full story).
+                     NOT hidden outright for arc sections any more -- only the offset handle is
+                     (round 3 #7/#10: offset is a no-op with arc on, but seat/row pitch -- which is
+                     what the 4 corner handles drive -- must stay usable). NOTE: deliberately a
+                     plain <g x-show=...>, NOT <template x-if> -- a <template> parsed inside <svg>
+                     gets SVG-namespaced by the browser and loses its `.content`
+                     (HTMLTemplateElement-only), so Alpine's x-if (which clones template.content)
+                     throws "Cannot read properties of undefined (reading 'cloneNode')" and never
+                     renders anything. Same root cause documented in templates/orders/_seat_map.html
+                     for x-for; applies to x-if too. x-show just toggles style.display on a real,
+                     always-present element, so it's safe here.
+
+                     Every handle below is TWO circles: a small visible dot (pointer-events: none,
+                     purely decorative) and a larger INVISIBLE "-hit" circle on top of it that
+                     actually receives pointerdown/hover/the <title> tooltip (round 3 #3 -- see
+                     app.css's .chart-editor__handle-hit for why an invisible fill still works, and
+                     --chart-editor-hit-scale for how much bigger it gets under (pointer: coarse)).
+                     Corner resize cursors are set INLINE (cornerCursor()) since which of
+                     nwse/nesw/ns/ew reads correctly rotates with the section (round 3 #4). -->
+                <g class="chart-editor__transform-box" x-ref="transformBox" x-show="selected" x-cloak>
+                        <line class="chart-editor__handle-line" :x1="handleTL()[0]" :y1="handleTL()[1]" :x2="handleTR()[0]" :y2="handleTR()[1]"></line>
+                        <line class="chart-editor__handle-line" :x1="handleTL()[0]" :y1="handleTL()[1]" :x2="handleBL()[0]" :y2="handleBL()[1]"></line>
                         <line class="chart-editor__handle-line" :x1="handleTR()[0]" :y1="handleTR()[1]" :x2="handleBR()[0]" :y2="handleBR()[1]"></line>
                         <line class="chart-editor__handle-line" :x1="handleBL()[0]" :y1="handleBL()[1]" :x2="handleBR()[0]" :y2="handleBR()[1]"></line>
-                        <line class="chart-editor__handle-line chart-editor__handle-line--offset" :x1="handleOrigin()[0]" :y1="handleOrigin()[1]" :x2="handleOffset()[0]" :y2="handleOffset()[1]"></line>
+                        <line class="chart-editor__handle-line chart-editor__handle-line--offset" x-show="selected &amp;&amp; !selected.arc_enabled" x-cloak
+                              :x1="handleBL()[0]" :y1="handleBL()[1]" :x2="handleOffset()[0]" :y2="handleOffset()[1]"></line>
 
-                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleTR()[0]" :cy="handleTR()[1]"
-                                @pointerdown="startHandleDrag('seat_pitch', $event)"><title>Resize -- seat spacing</title></circle>
-                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleBL()[0]" :cy="handleBL()[1]"
-                                @pointerdown="startHandleDrag('row_pitch', $event)"><title>Resize -- row spacing</title></circle>
-                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleBR()[0]" :cy="handleBR()[1]"
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleTL()[0]" :cy="handleTL()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleTL()[0]" :cy="handleTL()[1]"
+                                :style="'cursor:' + cornerCursor(0, 0)"
                                 @pointerdown="startHandleDrag('both', $event)"><title>Resize -- seat + row spacing</title></circle>
-                        <circle class="chart-editor__handle chart-editor__handle--offset" :cx="handleOffset()[0]" :cy="handleOffset()[1]"
-                                @pointerdown="startHandleDrag('offset', $event)"><title>Offset -- row stagger</title></circle>
+
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleTR()[0]" :cy="handleTR()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleTR()[0]" :cy="handleTR()[1]"
+                                :style="'cursor:' + (selected ? cornerCursor(localWH(selected)[0], 0) : 'nwse-resize')"
+                                @pointerdown="startHandleDrag('seat_pitch', $event)"><title>Resize -- seat spacing</title></circle>
+
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleBL()[0]" :cy="handleBL()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleBL()[0]" :cy="handleBL()[1]"
+                                :style="'cursor:' + (selected ? cornerCursor(0, localWH(selected)[1]) : 'nesw-resize')"
+                                @pointerdown="startHandleDrag('row_pitch', $event)"><title>Resize -- row spacing</title></circle>
+
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleBR()[0]" :cy="handleBR()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleBR()[0]" :cy="handleBR()[1]"
+                                :style="'cursor:' + (selected ? cornerCursor(localWH(selected)[0], localWH(selected)[1]) : 'nwse-resize')"
+                                @pointerdown="startHandleDrag('both', $event)"><title>Resize -- seat + row spacing</title></circle>
+
+                        <g x-show="selected &amp;&amp; !selected.arc_enabled" x-cloak>
+                            <circle class="chart-editor__handle chart-editor__handle--offset" :cx="handleOffset()[0]" :cy="handleOffset()[1]"></circle>
+                            <circle class="chart-editor__handle-hit chart-editor__handle-hit--offset" :cx="handleOffset()[0]" :cy="handleOffset()[1]"
+                                    @pointerdown="startHandleDrag('offset', $event)"><title>Offset -- row stagger</title></circle>
+                        </g>
                 </g>
 
                 <!-- Section origin ("move section") marker + rotate handle: shown for any
@@ -111,11 +146,13 @@
                         <line class="chart-editor__handle-line chart-editor__handle-line--rotate" :x1="pivotWorldXY()[0]" :y1="pivotWorldXY()[1]" :x2="handleRotate()[0]" :y2="handleRotate()[1]"></line>
                         <line class="chart-editor__pivot-connector" :x1="handleOrigin()[0]" :y1="handleOrigin()[1]" :x2="originMarkerXY()[0]" :y2="originMarkerXY()[1]"></line>
                         <circle class="chart-editor__pivot-point" :cx="handleOrigin()[0]" :cy="handleOrigin()[1]" r="0.08"></circle>
-                        <circle class="chart-editor__pivot" :cx="originMarkerXY()[0]" :cy="originMarkerXY()[1]"
+                        <circle class="chart-editor__pivot" :cx="originMarkerXY()[0]" :cy="originMarkerXY()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--pivot" :cx="originMarkerXY()[0]" :cy="originMarkerXY()[1]"
                                 @pointerdown="startHandleDrag('origin', $event)"><title>Move section</title></circle>
                         <line class="chart-editor__pivot-cross" :x1="originMarkerXY()[0] - 0.16" :y1="originMarkerXY()[1]" :x2="originMarkerXY()[0] + 0.16" :y2="originMarkerXY()[1]"></line>
                         <line class="chart-editor__pivot-cross" :x1="originMarkerXY()[0]" :y1="originMarkerXY()[1] - 0.16" :x2="originMarkerXY()[0]" :y2="originMarkerXY()[1] + 0.16"></line>
-                        <circle class="chart-editor__handle chart-editor__handle--rotate" :cx="handleRotate()[0]" :cy="handleRotate()[1]"
+                        <circle class="chart-editor__handle chart-editor__handle--rotate" :cx="handleRotate()[0]" :cy="handleRotate()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--rotate" :cx="handleRotate()[0]" :cy="handleRotate()[1]"
                                 @pointerdown="startHandleDrag('rotate', $event)"><title>Rotate around the pivot</title></circle>
 
                         <!-- Rotation pivot marker (round-2 refinement #2): defaults to the
@@ -128,7 +165,8 @@
                              puts CENTER right next to it. -->
                         <line class="chart-editor__rotation-pivot-connector" :x1="pivotWorldXY()[0]" :y1="pivotWorldXY()[1]" :x2="rotationPivotMarkerXY()[0]" :y2="rotationPivotMarkerXY()[1]"></line>
                         <circle class="chart-editor__rotation-pivot-point" :cx="pivotWorldXY()[0]" :cy="pivotWorldXY()[1]" r="0.08"></circle>
-                        <circle class="chart-editor__rotation-pivot" :cx="rotationPivotMarkerXY()[0]" :cy="rotationPivotMarkerXY()[1]"
+                        <circle class="chart-editor__rotation-pivot" :cx="rotationPivotMarkerXY()[0]" :cy="rotationPivotMarkerXY()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--rotation-pivot" :cx="rotationPivotMarkerXY()[0]" :cy="rotationPivotMarkerXY()[1]"
                                 @pointerdown="startHandleDrag('move_pivot', $event)"><title>Move pivot -- the point rotation turns around</title></circle>
                 </g>
             </svg>
@@ -268,29 +306,42 @@
                 <div class="field chart-editor__control">
                     <label>Offset mode</label>
                     <div class="chart-editor__toggle">
-                        <button type="button" :class="selected.offset_mode === 'repeated' ? 'is-active' : ''"
+                        <button type="button" :disabled="selected.arc_enabled" :class="selected.offset_mode === 'repeated' ? 'is-active' : ''"
                                 @click="onOffsetModeInput(selectedId, 'repeated')">Repeated</button>
-                        <button type="button" :class="selected.offset_mode === 'alternating' ? 'is-active' : ''"
+                        <button type="button" :disabled="selected.arc_enabled" :class="selected.offset_mode === 'alternating' ? 'is-active' : ''"
                                 @click="onOffsetModeInput(selectedId, 'alternating')">Alternating</button>
                     </div>
+                    <!-- Round 3 #10 (low priority, "clearly disable + label" option): offset is a
+                         no-op for arc/fanned sections -- _fanned_local (venues/generation.py) and
+                         its JS mirror never read row_x_offset at all, rows curve purely from
+                         arc_radius/seat_pitch. Disabling avoids a control that visibly does
+                         nothing (or worse, looks broken) while arc is on. -->
+                    <p class="muted" x-show="selected.arc_enabled" x-cloak>
+                        Offset doesn't apply to arc/curved sections -- curvature comes from Arc below.
+                    </p>
                 </div>
 
-                <div class="field chart-editor__control">
+                <div class="field chart-editor__control" x-show="!selected.arc_enabled" x-cloak>
                     <label for="editor-offset-amount">Offset amount</label>
                     <div class="chart-editor__slider-row">
-                        <input id="editor-offset-amount" type="range" class="chart-editor__slider chart-editor__slider--centered" min="-10" max="10" step="0.1"
+                        <input id="editor-offset-amount" type="range" class="chart-editor__slider chart-editor__slider--centered"
+                               :min="-offsetRange(selected)" :max="offsetRange(selected)" step="0.1"
                                x-model.number="selected.row_x_offset" @input="onParamInput(selectedId)">
-                        <input type="number" class="chart-editor__number" min="-10" max="10" step="0.1"
+                        <input type="number" class="chart-editor__number"
+                               :min="-offsetRange(selected)" :max="offsetRange(selected)" step="0.1"
                                x-model.number="selected.row_x_offset" @input="onParamInput(selectedId)">
                     </div>
                 </div>
 
-                <div class="field chart-editor__control" x-show="selected.offset_mode === 'alternating'" x-cloak>
+                <div class="field chart-editor__control" x-show="!selected.arc_enabled &amp;&amp; selected.offset_mode === 'alternating'" x-cloak>
                     <label>Alt-row seats +/&minus; <span class="chart-editor__control-value" x-text="(selected.alt_row_seat_delta > 0 ? '+' : '') + selected.alt_row_seat_delta"></span></label>
+                    <!-- Round 3 #9: constrained to -1/0/+1 (a brick-stagger nudge, not a general
+                         seat-count control) -- see chart_editor.js's stepAltDelta and
+                         dashboard/views.py's chart_editor_save for the client + server clamps. -->
                     <div class="chart-editor__stepper">
-                        <button type="button" @click="stepAltDelta(selectedId, -1)">&minus;</button>
+                        <button type="button" :disabled="selected.alt_row_seat_delta <= -1" @click="stepAltDelta(selectedId, -1)">&minus;</button>
                         <span x-text="selected.alt_row_seat_delta"></span>
-                        <button type="button" @click="stepAltDelta(selectedId, 1)">+</button>
+                        <button type="button" :disabled="selected.alt_row_seat_delta >= 1" @click="stepAltDelta(selectedId, 1)">+</button>
                     </div>
                 </div>
 

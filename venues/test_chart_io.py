@@ -68,6 +68,34 @@ class ChartIOTests(TestCase):
             Seat.objects.filter(section__chart=self.chart).count(),
         )
 
+    def test_round_trip_preserves_the_configurable_rotation_pivot(self):
+        # Round 3 (docs/EDITOR.md #12): pivot_mode/pivot_x/pivot_y (Round
+        # 2's configurable rotation pivot) must round-trip through export/
+        # import like every other layout param -- previously dropped, so a
+        # re-imported chart with a CUSTOM pivot silently reset to CENTER
+        # and rotated around the wrong point.
+        self.orchestra.pivot_mode = Section.PivotMode.CUSTOM
+        self.orchestra.pivot_x = 3.5
+        self.orchestra.pivot_y = -1.25
+        self.orchestra.save(update_fields=["pivot_mode", "pivot_x", "pivot_y"])
+
+        data = export_chart_data(self.chart)
+        orchestra_data = next(s for s in data["sections"] if s["name"] == "Orchestra")
+        self.assertEqual(orchestra_data["layout"]["pivot_mode"], "custom")
+        self.assertEqual(orchestra_data["layout"]["pivot_x"], 3.5)
+        self.assertEqual(orchestra_data["layout"]["pivot_y"], -1.25)
+
+        imported = import_chart_data(self.venue, data, name="Reimported pivot house")
+        imported_orchestra = imported.sections.get(name="Orchestra")
+        self.assertEqual(imported_orchestra.pivot_mode, Section.PivotMode.CUSTOM)
+        self.assertEqual(imported_orchestra.pivot_x, 3.5)
+        self.assertEqual(imported_orchestra.pivot_y, -1.25)
+
+        # And a section that never touched pivot_mode still imports the
+        # CENTER default rather than blowing up on a missing key.
+        imported_balcony = imported.sections.get(name="Balcony")
+        self.assertEqual(imported_balcony.pivot_mode, Section.PivotMode.CENTER)
+
     def test_import_scopes_everything_to_the_target_venues_org(self):
         other_org = make_org("globe")
         other_venue = Venue.objects.create(organization=other_org, name="Globe Stage")

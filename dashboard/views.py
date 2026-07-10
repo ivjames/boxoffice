@@ -711,7 +711,13 @@ def chart_editor_save(request, pk):
                 elif field == "arc_radius":
                     setattr(section, field, None if raw[field] in (None, "", 0) else float(raw[field]))
                 elif field in ("alt_row_seat_delta",):
-                    setattr(section, field, int(raw[field]))
+                    # Round 3 (docs/EDITOR.md #9): alt-row add/drop is a
+                    # small brick-stagger nudge, not a general seat-count
+                    # control -- clamp server-side to -1/0/+1 regardless of
+                    # what the client sent (the editor's own stepper already
+                    # clamps the same way, see chart_editor.js's
+                    # stepAltDelta -- this is the authoritative backstop).
+                    setattr(section, field, max(-1, min(1, int(raw[field]))))
                 elif field in ("rows", "seats_per_row"):
                     setattr(section, field, max(1, int(raw[field])))
                 else:

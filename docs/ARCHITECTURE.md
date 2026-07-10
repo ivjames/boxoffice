@@ -109,10 +109,14 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 ### Ticket & scanning
 
 - `Ticket`: `order`, `performance`, `seat` (nullable for GA), `holder_name`,
-  `token` (UUID), `status` (`valid`|`used`|`void`), `used_at`, `scanned_by`.
-- QR encodes a URL `/scan/redeem/<ticket_uuid>/?sig=<hmac>` where `sig` = HMAC of
-  the uuid with the tenant/app secret. Scan view (role `scanner`+) verifies sig,
-  checks status, atomically flips `valid`→`used`, returns pass/fail UI.
+  `token` (short base64url string, ~72 bits — see `orders.models.new_token`),
+  `status` (`valid`|`used`|`void`), `used_at`, `scanned_by`.
+- QR encodes a URL `/scan/redeem/<token>/?sig=<hmac>` where `sig` = the first
+  128 bits of an HMAC of the token with the tenant/app secret, base64url-encoded
+  (`orders/tokens.py`). The short token + truncated sig keep the QR small enough
+  to carry the highest error-correction level (`error="h"`, ~30%). Scan view
+  (role `scanner`+) verifies sig, checks status, atomically flips `valid`→`used`,
+  returns pass/fail UI.
 
 ## URL structure (per tenant subdomain)
 
@@ -122,7 +126,7 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 - `/cart/`, `/checkout/`, `/checkout/success/`, `/checkout/cancel/`
 - `/tickets/<order-token>/` order confirmation + tickets
 - `/dashboard/` staff area (events CRUD, orders, reports)
-- `/scan/` scanner UI, `/scan/redeem/<uuid>/`
+- `/scan/` scanner UI, `/scan/redeem/<token>/`
 - `/webhooks/stripe/` tenant Stripe webhook
 - Platform/landing (reserved host): `/`, `/signup/`, Django `/admin/`
 

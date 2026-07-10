@@ -57,10 +57,15 @@ persisted -- geometry never feeds back into which seat is which. Unlike the
 old Phase B hand-drag editor, x/y is no longer independently hand-editable
 after generation: docs/EDITOR.md removes per-seat dragging entirely, so a
 seat's x/y is *always* whatever these formulas produce for the section's
-current params (Save always regenerates). Per-seat overrides are limited to
-existence (removed_seats) and accessibility (accessible_seats), tracked by
-(row_label, number) identity on the Section (see its docstring) since those
-must survive a regenerate that a raw Seat pk would not.
+current params. Save recomputes those coordinates every time: when the edit
+leaves the seat roster identical (a move/rotate/re-pitch/arc/accessible
+toggle) it updates the existing rows in place (reposition_seats, which keeps
+their pks so attached tickets survive); only a roster change (add/remove
+seats) falls back to a destructive regenerate (generate_seats). Per-seat
+overrides are limited to existence (removed_seats) and accessibility
+(accessible_seats), tracked by (row_label, number) identity on the Section
+(see its docstring) since those must survive a regenerate that a raw Seat pk
+would not.
 """
 
 import math
@@ -75,6 +80,17 @@ _BASE_LETTERS_ALL = list(string.ascii_uppercase)
 class SeatGenerationError(Exception):
     """Raised when generate_seats() can't safely (re)generate a section's
     seats. Message is safe to show directly to dashboard staff."""
+
+
+class SeatRosterChanged(SeatGenerationError):
+    """Raised by reposition_seats() when the section's would-be seat roster
+    (the set of (row_label, number) identities) differs from what's already
+    persisted -- i.e. this edit adds or removes seats, so it can't be applied
+    as an in-place move and has to go through the destructive generate_seats
+    path (which enforces the live-ticket guardrail). A subclass of
+    SeatGenerationError so a caller that only cares "the layout couldn't be
+    applied cleanly" can catch the base; chart_editor_save catches THIS
+    specifically to fall back to a full regenerate."""
 
 
 def generate_row_labels(count, scheme):
@@ -386,9 +402,6 @@ def generate_seats(
     """
     from orders.models import Ticket  # local import: orders imports venues, not vice versa
 
-    accessible = accessible or {}
-    removed_ids = removed_ids or set()
-    accessible_ids = accessible_ids or set()
     existing = list(section.seats.all())
     if existing:
         live_ticket_seats = (
@@ -407,8 +420,24 @@ def generate_seats(
             )
         Seat.objects.filter(pk__in=[s.pk for s in existing]).delete()
 
+    new_seats = _build_seats(section, row_counts, accessible, removed_ids, accessible_ids)
+    Seat.objects.bulk_create(new_seats)
+    return list(section.seats.order_by("row_label", "number"))
+
+
+def _build_seats(section, row_counts, accessible, removed_ids, accessible_ids):
+    """Build (but DON'T persist) the Seat instances `section`'s current params
+    imply for `row_counts` -- the shared inner loop of generate_seats (which
+    bulk_creates them) and reposition_seats (which matches them by identity
+    onto already-persisted rows). See generate_seats for the meaning of
+    `accessible`/`removed_ids`/`accessible_ids`. Returns Seats in
+    row-then-generated-number order; each carries its row_label/number
+    identity and freshly-computed x/y/is_accessible."""
+    accessible = accessible or {}
+    removed_ids = removed_ids or set()
+    accessible_ids = accessible_ids or set()
     labels = generate_row_labels(len(row_counts), section.row_label_scheme)
-    new_seats = []
+    seats = []
     for row_index, (row_label, seat_count) in enumerate(zip(labels, row_counts)):
         numbers = generate_seat_numbers(seat_count, section.numbering_scheme, row_index)
         row_accessible = accessible.get(row_index, set())
@@ -418,7 +447,7 @@ def generate_seats(
             if identity in removed_ids:
                 continue
             x, y = _seat_xy(section, row_index, seat_index, seat_count)
-            new_seats.append(
+            seats.append(
                 Seat(
                     organization=section.organization,
                     section=section,
@@ -429,5 +458,43 @@ def generate_seats(
                     is_accessible=(seat_index + 1) in row_accessible or identity in accessible_ids,
                 )
             )
-    Seat.objects.bulk_create(new_seats)
+    return seats
+
+
+def reposition_seats(section, row_counts, *, removed_ids=None, accessible_ids=None):
+    """Apply `section`'s current layout params to its EXISTING seats in place
+    -- recompute every seat's x/y (and is_accessible) from the new params and
+    bulk_update them, WITHOUT deleting/recreating any Seat row. Because the
+    Seat pks are preserved, every Ticket/Hold/etc. FK pointing at those seats
+    stays attached -- so a pure move/rotate/re-pitch/arc edit is safe even
+    when the section has live tickets, which is exactly the case
+    generate_seats has to refuse (a delete would SET_NULL those tickets'
+    seats, orphaning them).
+
+    This ONLY works when the edit leaves the seat roster identical. If the new
+    params would add or remove any (row_label, number) identity -- a
+    rows/seats_per_row/offset/numbering/label change, or a different
+    removed_seats set -- there's no faithful 1:1 mapping onto the existing
+    rows, so this raises SeatRosterChanged and the caller must fall back to
+    the destructive generate_seats path (which is where the live-ticket
+    guardrail lives). Returns the updated Seats in row_label/number order."""
+    removed_ids = removed_ids or set()
+    accessible_ids = accessible_ids or set()
+    prospective = _build_seats(section, row_counts, None, removed_ids, accessible_ids)
+    prospective_by_identity = {(s.row_label, s.number): s for s in prospective}
+
+    existing = list(section.seats.all())
+    existing_by_identity = {(s.row_label, s.number): s for s in existing}
+    if set(prospective_by_identity) != set(existing_by_identity):
+        raise SeatRosterChanged(
+            f"Section {section.name!r}'s seat roster changed -- cannot reposition in place."
+        )
+
+    for identity, target in prospective_by_identity.items():
+        seat = existing_by_identity[identity]
+        seat.x = target.x
+        seat.y = target.y
+        seat.is_accessible = target.is_accessible
+    if existing:
+        Seat.objects.bulk_update(existing, ["x", "y", "is_accessible"])
     return list(section.seats.order_by("row_label", "number"))

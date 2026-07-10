@@ -1,4 +1,4 @@
-import uuid
+import secrets
 from datetime import timedelta
 
 from django.conf import settings
@@ -14,6 +14,25 @@ def default_hold_expiry():
     """Named function (not a lambda) so migrations can serialize this default.
     Business logic for extending/refreshing holds lives in Phase 3."""
     return timezone.now() + timedelta(minutes=10)
+
+
+def new_token():
+    """Short, URL-safe, unguessable public token for Orders and Tickets.
+
+    12 base64url chars (~72 bits of entropy) instead of a UUID's 36 chars.
+    That shrink is the whole point: a Ticket's token rides inside its QR
+    code's URL, so a shorter token means a lower-density QR that can carry
+    more error correction (see orders/qr.py), and it keeps the public
+    confirmation link (/tickets/<token>/) short. Unguessability is only ever
+    ONE of three gates on redemption -- the per-ticket HMAC signature
+    (orders/tokens.py) and the scanner-role login are the others -- so 72
+    bits here is ample; the token alone was never enough to redeem a ticket.
+
+    Named (not a lambda) so migrations can serialize it as a field default,
+    matching default_hold_expiry above. base64url's alphabet (A-Za-z0-9_-)
+    is exactly Django's `slug` URL converter's, so the redeem/confirmation
+    routes match on <slug:token> without a custom converter."""
+    return secrets.token_urlsafe(9)
 
 
 class Hold(TenantScopedModel):
@@ -180,7 +199,9 @@ class Order(TenantScopedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
     # Public-facing lookup token for the confirmation page (/tickets/<token>/).
-    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    # Short base64url string (see new_token) -- max_length leaves headroom for
+    # the 12-char tokens plus any 36-char UUID-string rows predating the switch.
+    token = models.CharField(max_length=36, default=new_token, unique=True, editable=False)
 
     # Phase 4 (Stripe checkout + webhooks): fields only, no logic here.
     stripe_checkout_session_id = models.CharField(max_length=255, blank=True, null=True)
@@ -271,7 +292,9 @@ class Ticket(TenantScopedModel):
         Seat, on_delete=models.SET_NULL, null=True, blank=True, related_name="tickets"
     )
     holder_name = models.CharField(max_length=255, blank=True)
-    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    # Rides inside the QR code's URL -- kept short (see new_token) to shrink
+    # the QR and free up error-correction headroom.
+    token = models.CharField(max_length=36, default=new_token, unique=True, editable=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.VALID)
     used_at = models.DateTimeField(null=True, blank=True)
     scanned_by = models.ForeignKey(

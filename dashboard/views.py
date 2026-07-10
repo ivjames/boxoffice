@@ -1,5 +1,4 @@
 import json
-import uuid
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
@@ -382,11 +381,13 @@ class OrderListView(BoxOfficeRequiredMixin, ListView):
         )
         query = self.request.GET.get("q", "").strip()
         if query:
-            filters = Q(buyer_email__icontains=query) | Q(buyer_name__icontains=query)
-            try:
-                filters |= Q(token=uuid.UUID(query))
-            except ValueError:
-                pass
+            # token is a short opaque string now (orders.models.new_token), so
+            # match it directly instead of parsing the query as a UUID.
+            filters = (
+                Q(buyer_email__icontains=query)
+                | Q(buyer_name__icontains=query)
+                | Q(token=query)
+            )
             qs = qs.filter(filters)
         return qs
 
@@ -891,13 +892,31 @@ def chart_editor_save(request, pk):
 
         try:
             with transaction.atomic():
-                generation.generate_seats(
-                    section,
-                    row_counts,
-                    removed_ids=removed_ids,
-                    accessible_ids=accessible_ids,
-                    replace=True,
-                )
+                try:
+                    # Preferred path: the seat roster is unchanged (a pure
+                    # move/rotate/re-pitch/arc/accessible-toggle edit), so
+                    # update the existing seats' coordinates in place --
+                    # preserving their pks and therefore any tickets/holds
+                    # attached to them. This is why moving a section with
+                    # live tickets no longer trips the orphan guardrail.
+                    generation.reposition_seats(
+                        section,
+                        row_counts,
+                        removed_ids=removed_ids,
+                        accessible_ids=accessible_ids,
+                    )
+                except generation.SeatRosterChanged:
+                    # The edit actually adds/removes seats -- there's no 1:1
+                    # mapping onto the existing rows, so fall back to a full
+                    # regenerate, which enforces the live-ticket guardrail
+                    # (deleting a seat under an issued ticket is never safe).
+                    generation.generate_seats(
+                        section,
+                        row_counts,
+                        removed_ids=removed_ids,
+                        accessible_ids=accessible_ids,
+                        replace=True,
+                    )
                 section.removed_seats = sorted(removed_ids)
                 section.accessible_seats = sorted(accessible_ids)
                 section.save(update_fields=_SECTION_PARAM_FIELDS + ["removed_seats", "accessible_seats"])

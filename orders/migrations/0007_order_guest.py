@@ -8,7 +8,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("guests", "0001_initial"),
-        ("orders", "0005_holdseat_pricing_zone_holdseat_unit_amount_and_more"),
+        ("orders", "0006_alter_order_token_alter_ticket_token"),
     ]
 
     operations = [

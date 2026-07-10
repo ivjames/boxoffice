@@ -17,6 +17,7 @@ from events.models import Event, Performance
 from orders.models import Order, Ticket
 from venues.generation import (
     SeatGenerationError,
+    SeatRosterChanged,
     compute_row_counts,
     front_center_xy,
     generate_row_labels,
@@ -24,6 +25,7 @@ from venues.generation import (
     generate_seats,
     pivot_xy,
     rebalance_origin_for_arc_change,
+    reposition_seats,
 )
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
@@ -615,6 +617,93 @@ class SeatOverrideTests(TestCase):
         generate_seats(section, [3], removed_ids={("A", "2")}, replace=True)
         self.assertEqual(section.seats.count(), 2)
         self.assertFalse(section.seats.filter(number="2").exists())
+
+
+class RepositionSeatsTests(TestCase):
+    """reposition_seats(): applies a section's new layout params to its
+    EXISTING seats in place (recompute x/y + is_accessible, keep the pks) when
+    the seat roster is unchanged -- a move/rotate/re-pitch/arc/accessible-
+    toggle edit -- so attached tickets survive; raises SeatRosterChanged when
+    the edit would add or remove a seat (the caller must regenerate instead)."""
+
+    def setUp(self):
+        self.org = make_org("roxy")
+        venue = Venue.objects.create(organization=self.org, name="Main Stage")
+        self.chart = SeatingChart.objects.create(organization=self.org, venue=venue, name="Standard")
+
+    def make_section(self, **overrides):
+        defaults = {"organization": self.org, "chart": self.chart, "name": "Orchestra"}
+        defaults.update(overrides)
+        return Section.objects.create(**defaults)
+
+    def issue_ticket(self, seat):
+        event = Event.objects.create(organization=self.org, title="Show", slug="show")
+        performance = Performance.objects.create(
+            organization=self.org,
+            event=event,
+            venue=self.chart.venue,
+            starts_at="2030-01-01T19:00:00Z",
+            seating_mode=Performance.SeatingMode.RESERVED,
+        )
+        order = Order.objects.create(
+            organization=self.org, performance=performance, buyer_email="x@example.com", total="10.00"
+        )
+        return Ticket.objects.create(
+            organization=self.org, order=order, performance=performance, seat=seat
+        )
+
+    def test_moves_seats_in_place_preserving_pks(self):
+        section = self.make_section(origin_x=0.0, origin_y=0.0)
+        original = generate_seats(section, [3])
+        original_pks = {(s.row_label, s.number): s.pk for s in original}
+
+        section.origin_x = 100.0
+        moved = reposition_seats(section, [3])
+
+        self.assertEqual({(s.row_label, s.number): s.pk for s in moved}, original_pks)
+        self.assertTrue(all(s.x >= 100.0 for s in moved))
+
+    def test_keeps_live_ticket_attached_across_a_move(self):
+        section = self.make_section(origin_x=0.0)
+        seats = generate_seats(section, [3])
+        ticket = self.issue_ticket(seats[0])
+
+        section.origin_x = 250.0
+        reposition_seats(section, [3])
+
+        ticket.refresh_from_db()
+        # The seat the ticket points at still exists (same pk) and just moved.
+        self.assertEqual(ticket.seat_id, seats[0].pk)
+        ticket.seat.refresh_from_db()
+        self.assertGreaterEqual(ticket.seat.x, 250.0)
+
+    def test_updates_accessible_flag_in_place(self):
+        section = self.make_section()
+        generate_seats(section, [3])
+        reposition_seats(section, [3], accessible_ids={("A", "2")})
+        self.assertTrue(section.seats.get(number="2").is_accessible)
+        self.assertFalse(section.seats.get(number="1").is_accessible)
+
+    def test_raises_when_roster_grows(self):
+        section = self.make_section()
+        generate_seats(section, [3])
+        with self.assertRaises(SeatRosterChanged):
+            reposition_seats(section, [4])
+        # Nothing was touched.
+        self.assertEqual(section.seats.count(), 3)
+
+    def test_raises_when_a_seat_is_removed(self):
+        section = self.make_section()
+        generate_seats(section, [3])
+        with self.assertRaises(SeatRosterChanged):
+            reposition_seats(section, [3], removed_ids={("A", "2")})
+
+    def test_raises_on_empty_section(self):
+        # No existing rows to reposition -- roster (empty) differs from the
+        # prospective one, so the caller is told to regenerate.
+        section = self.make_section()
+        with self.assertRaises(SeatRosterChanged):
+            reposition_seats(section, [3])
 
 
 class SharedFormulaContractTests(TestCase):

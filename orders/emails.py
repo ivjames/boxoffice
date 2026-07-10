@@ -19,11 +19,12 @@ def send_ticket_email(order, request):
     """Email `order.buyer_email` their tickets. `request` is the in-flight
     request that triggered fulfillment (the Stripe webhook POST, which lands
     on the tenant subdomain just like a browser request would) -- it's used
-    to build absolute URLs for the QR codes and the tickets page so they're
-    correct for dev vs. prod without hardcoding a host here.
+    to build the absolute URL for the tickets page so it's correct for dev
+    vs. prod without hardcoding a host here. (The QR codes need no request --
+    they encode a bare ticket code, not a URL; see orders/qr.py.)
     """
     tickets = list(order.tickets.select_related("seat", "seat__section").order_by("id"))
-    ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket, request)} for ticket in tickets]
+    ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket)} for ticket in tickets]
     tickets_url = request.build_absolute_uri(reverse("ticket_detail", args=[order.token]))
 
     context = {

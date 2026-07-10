@@ -21,14 +21,13 @@ def new_token():
     """Short, unguessable public token for Orders and Tickets.
 
     15 uppercase base32 chars (~72 bits of entropy) instead of a UUID's 36.
-    That shrink is half the point: a Ticket's token rides inside its QR
-    code's URL, so a shorter token means a lower-density QR that can carry
-    more error correction (see orders/qr.py). The other half is the base32
-    *alphabet* (A-Z2-7): together with an uppercased host + a `?sig=`-free
-    path (orders/tokens.build_ticket_scan_url), it keeps the entire scan URL
-    inside QR "alphanumeric mode", which packs ~45% more per module than the
-    byte mode any lowercase char would force -- the single biggest lever on
-    how dense the code looks. Unguessability is only ever ONE of three gates
+    That shrink is half the point: a Ticket's token rides inside its QR code
+    (as "<token>.<sig>" -- orders/tokens.scan_code), so a shorter token means
+    a lower-density QR that can carry more error correction (see orders/qr.py).
+    The other half is the base32 *alphabet* (A-Z2-7): an all-uppercase code
+    stays inside QR "alphanumeric mode", which packs ~45% more per module than
+    the byte mode any lowercase char would force -- the single biggest lever
+    on how dense the code looks. Unguessability is only ever ONE of three gates
     on redemption -- the per-ticket HMAC signature (orders/tokens.py) and the
     scanner-role login are the others -- so 72 bits here is ample; the token
     alone was never enough to redeem a ticket.

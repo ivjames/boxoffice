@@ -8,8 +8,8 @@
  * frame to a <canvas> and decode it with vendored jsQR (static/js/jsQR.js,
  * pure JS, no deps) -- that path works everywhere getUserMedia does.
  *
- * On a decoded hit: parse the ticket URL the QR encodes
- * (HTTPS://<host>/S/<token>/<sig>/ -- see orders/tokens.py), fetch() it
+ * On a decoded hit: parse the bare ticket code the QR encodes
+ * (<token>.<sig> -- see orders/tokens.py), build /S/<token>/<sig>/ and fetch() it
  * with Accept: application/json (scanning/views.scan_redeem returns JSON
  * for that instead of a full HTML page) and render PASS/FAIL inline so
  * staff can immediately scan the next ticket. Debounced so a code sitting
@@ -180,31 +180,25 @@ function qrScanner() {
         async redeem(decodedText) {
             this.busy = true;
             try {
-                let url;
-                try {
-                    url = new URL(decodedText, window.location.origin);
-                } catch (e) {
+                // The QR encodes a bare "<token>.<sig>" code (see orders/tokens.py),
+                // not a URL. Validate the shape, split on ".", and build the redeem
+                // path ourselves. A random non-ticket QR won't match and is rejected.
+                const m = /^([A-Z2-7]+)\.([A-Z2-7]+)$/.exec(decodedText.trim().toUpperCase());
+                if (!m) {
                     this.recordResult({
                         ok: false,
                         reason: "invalid_code",
-                        message: "Scanned code isn't a ticket link.",
+                        message: "Scanned code isn't a ticket code.",
                         ticket: null,
                     });
                     return;
                 }
-                if (!/^\/S\//.test(url.pathname)) {
-                    this.recordResult({
-                        ok: false,
-                        reason: "invalid_code",
-                        message: "Scanned code isn't a ticket link.",
-                        ticket: null,
-                    });
-                    return;
-                }
+                const [, token, sig] = m;
+                const path = `/S/${token}/${sig}/`;
 
                 let resp;
                 try {
-                    resp = await fetch(url.pathname + url.search, {
+                    resp = await fetch(path, {
                         headers: { Accept: "application/json" },
                         credentials: "same-origin",
                     });

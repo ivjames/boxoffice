@@ -100,12 +100,16 @@ function gridOrRakedLocal(section, rowIndex, seatIndex) {
     return [localX, localY];
 }
 
+// Round-4 correction (docs/EDITOR.md): offset now COMPOSES with arc -- see
+// generation.py's _fanned_local docstring for why adding rowXOffset() here
+// can't disturb the curve-in-place/front-center invariants (it's always 0
+// at rowIndex=0 in both offset modes).
 function fannedLocal(section, rowIndex, seatIndex, rowSeatCount) {
     const radius = section.arc_radius + rowIndex * section.row_pitch;
     const angleStep = radius ? section.seat_pitch / radius : 0.0;
     const centerOffset = (rowSeatCount - 1) / 2;
     const theta = (seatIndex - centerOffset) * angleStep;
-    const localX = radius * Math.sin(theta);
+    const localX = radius * Math.sin(theta) + rowXOffset(section, rowIndex);
     const localY = radius * Math.cos(theta) - section.arc_radius;
     return [localX, localY];
 }

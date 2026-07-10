@@ -657,6 +657,43 @@ class SharedFormulaContractTests(TestCase):
         self.assertAlmostEqual(seat.x, 0.0, places=9)
         self.assertAlmostEqual(seat.y, 0.0, places=9)
 
+    # Round-4 correction (docs/EDITOR.md): offset (repeated/alternating) now
+    # COMPOSES with arc instead of being a no-op/disabled control -- see
+    # _fanned_local's docstring. Both tests use a single seat per row
+    # (row_seat_count=1, same trick test_arc uses) so theta is always 0,
+    # isolating the row_x_offset contribution from arc's sin/cos terms:
+    # local_y is then exactly `row_index * row_pitch` (curve-in-place,
+    # unaffected by offset) and local_x is exactly the same REPEATED/
+    # ALTERNATING formula _row_x_offset already produces for grid/raked.
+    def test_repeated_offset_composes_with_arc(self):
+        section = self.make_section(
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0, arc_radius=10.0,
+            row_x_offset=0.5, offset_mode=Section.OffsetMode.REPEATED,
+        )
+        by = self.by_identity(generate_seats(section, [1, 1, 1]))
+        # Front row (row_index=0): REPEATED's row_index * row_x_offset is
+        # 0 * 0.5 = 0 regardless of row_x_offset -- the front-center/
+        # curve-in-place invariant test_arc pins is untouched.
+        self.assertAlmostEqual(by[("A", "1")][0], 0.0, places=9)
+        self.assertAlmostEqual(by[("A", "1")][1], 0.0, places=9)
+        self.assertAlmostEqual(by[("B", "1")][0], 0.5, places=9)
+        self.assertAlmostEqual(by[("B", "1")][1], 5.0, places=9)
+        self.assertAlmostEqual(by[("C", "1")][0], 1.0, places=9)
+        self.assertAlmostEqual(by[("C", "1")][1], 10.0, places=9)
+
+    def test_alternating_offset_composes_with_arc(self):
+        section = self.make_section(
+            origin_x=0, origin_y=0, seat_pitch=1.0, row_pitch=5.0, arc_radius=10.0,
+            row_x_offset=0.5, offset_mode=Section.OffsetMode.ALTERNATING,
+        )
+        by = self.by_identity(generate_seats(section, [1, 1, 1]))
+        self.assertAlmostEqual(by[("A", "1")][0], 0.0, places=9)  # row 0: even -> no offset
+        self.assertAlmostEqual(by[("A", "1")][1], 0.0, places=9)
+        self.assertAlmostEqual(by[("B", "1")][0], 0.5, places=9)  # row 1: odd -> +0.5
+        self.assertAlmostEqual(by[("B", "1")][1], 5.0, places=9)
+        self.assertAlmostEqual(by[("C", "1")][0], 0.0, places=9)  # row 2: even -> no offset
+        self.assertAlmostEqual(by[("C", "1")][1], 10.0, places=9)
+
     def test_tilt(self):
         # ORIGIN pivot_mode pinned explicitly -- see generation.py's module
         # docstring's Round-2 section: the CENTER default is a SEPARATE

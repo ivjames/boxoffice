@@ -1102,6 +1102,59 @@ class ChartEditorTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.section.refresh_from_db()
         self.assertEqual(self.section.alt_row_seat_delta, -1)
 
+    def test_save_clamps_row_x_offset_to_plus_minus_two(self):
+        # Round-4 correction (docs/EDITOR.md): the offset amount is capped
+        # at +/-2 (round 3 had raised it much higher -- a misread of the
+        # user's feedback) -- the editor's slider already clamps to that
+        # range client-side, but the save endpoint is the authoritative
+        # backstop against a stale/tampered client payload, same pattern as
+        # alt_row_seat_delta's clamp test above.
+        self._login_as("manager")
+        resp = self._post_json(
+            self._save_url(),
+            {"sections": {str(self.section.pk): self._params_payload(row_x_offset=50.0)}},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.section.refresh_from_db()
+        self.assertEqual(self.section.row_x_offset, 2.0)
+
+        resp = self._post_json(
+            self._save_url(),
+            {"sections": {str(self.section.pk): self._params_payload(row_x_offset=-50.0)}},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.section.refresh_from_db()
+        self.assertEqual(self.section.row_x_offset, -2.0)
+
+    def test_save_applies_offset_composed_with_arc(self):
+        # Round-4 correction (docs/EDITOR.md): offset must work TOGETHER
+        # with arc (round 3 had disabled it) -- a single-seat-per-row
+        # section isolates the offset contribution from arc's trig terms,
+        # same trick venues/test_generation.py's contract tests use.
+        self._login_as("manager")
+        resp = self._post_json(
+            self._save_url(),
+            {
+                "sections": {
+                    str(self.section.pk): self._params_payload(
+                        rows=2, seats_per_row=1, arc_radius=10.0, row_pitch=5.0,
+                        row_x_offset=0.5, offset_mode="repeated",
+                    )
+                }
+            },
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        by = {(s.row_label, s.number): (s.x, s.y) for s in self.section.seats.all()}
+        self.assertAlmostEqual(by[("A", "1")][0], 0.0, places=6)
+        self.assertAlmostEqual(by[("B", "1")][0], 0.5, places=6)
+        self.assertAlmostEqual(by[("B", "1")][1], 5.0, places=6)
+
     def test_save_persists_removed_and_accessible_overrides(self):
         self._login_as("manager")
         seat_a1 = self.section.seats.get(row_label="A", number="1")

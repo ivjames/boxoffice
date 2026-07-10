@@ -1331,6 +1331,65 @@ table.dash-table th {
     fill: #0891b2;
 }
 
+/* Round 4 (docs/EDITOR.md #3): small inline-SVG glyphs painted ON TOP of
+   each handle's existing colored dot, conveying its function (rotate =
+   circular arrow, corners = diagonal resize arrows, offset = a horizontal
+   shift arrow, move-section = a 4-way arrow cross, pivot = a crosshair/
+   target) -- see chart_editor.html for the actual paths. Purely decorative
+   (pointer-events: none, same as the dot underneath it): the invisible
+   `.chart-editor__handle-hit` circle from round 3 is completely unchanged
+   and still does all the actual pointerdown/hover/tooltip work, so touch
+   grabbing isn't affected by this new layer at all.
+
+   Each icon is TWO nested <g>s in the template: an outer one carrying the
+   dynamic per-instance `transform` ATTRIBUTE (translate to the handle's
+   position, rotate to match a corner's outward direction or the block's
+   tilt), and this inner one carrying the responsive-scale CSS `transform`.
+   That split is required, not just tidy -- an SVG element's CSS `transform`
+   property REPLACES its presentation `transform` attribute outright when
+   both are present on the SAME element (rather than composing), so putting
+   the scale here on a plain child element lets the outer element's
+   attribute-based translate/rotate keep working. `transform-box: fill-box`
+   + `transform-origin: center` makes the CSS scale grow from the glyph's
+   own middle (its paths are already centered on local (0, 0), so plain
+   `center` reads the same either way) instead of the SVG viewport's
+   origin. */
+.chart-editor__handle-icon {
+    pointer-events: none;
+    fill: none;
+    stroke-width: 0.045;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scale(var(--chart-editor-handle-scale));
+}
+
+/* Resize handles sit on a WHITE dot (.chart-editor__handle--resize inherits
+   the shared #fff/#111827 fill/stroke above) -- a dark icon stroke reads
+   clearly against it. Every other icon below sits on a COLORED dot, so its
+   icon is white instead for the same contrast reason. */
+.chart-editor__handle-icon--resize {
+    stroke: #111827;
+}
+
+.chart-editor__handle-icon--offset {
+    stroke: #fff;
+}
+
+.chart-editor__handle-icon--rotate {
+    stroke: #fff;
+    fill: #fff;
+}
+
+.chart-editor__handle-icon--move {
+    stroke: #fff;
+}
+
+.chart-editor__handle-icon--pivot {
+    stroke: #fff;
+}
+
 .chart-editor__handle-line {
     stroke: #111827;
     stroke-width: 0.04;

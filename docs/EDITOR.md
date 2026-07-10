@@ -183,3 +183,19 @@ The on-canvas TRANSFORM SYSTEM is the crux — it's currently broken. Priority o
 4. **Control points must NEVER overlap seats**: offset the corner (and all) handles
    OUTWARD beyond the seat block via frame padding, so no handle ever sits on a
    seat — combine with #2's bbox-derived frame + generous padding.
+
+## Round 4 corrections (mid-round user testing)
+Two follow-up corrections to round 3's own offset decisions, from the same round
+of testing that produced items 1-4 above:
+5. **Offset amount capped at 2**: round 3 #8 raised the offset-amount range to a
+   seat_pitch-scaled ~20+ — a misread of the user's actual feedback. The user
+   wants it LIMITED to a max of 2 (the slider stays centered/bidirectional:
+   -2..+2). Enforce server-side too, not just the slider/number input.
+6. **Offset composes with arc**: round 3 #10 disabled the offset controls
+   outright for arc-enabled sections (offset was a no-op for fanned rows). The
+   user wants offset and arc to work TOGETHER — an arc'd section can also carry
+   a per-row offset (repeated or alternating), applied relative to the curve.
+   Implement in both `seat_geometry.js` and `venues/generation.py` (keep them in
+   lockstep, `SharedFormulaContractTests` covering both), and remove the
+   "disabled with a note" UI treatment — the offset controls are always
+   available now, arc or no arc.

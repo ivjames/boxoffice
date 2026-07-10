@@ -192,12 +192,24 @@ def _fanned_local(section, row_index, seat_index, row_seat_count):
     center seat -- and, because cos(theta) <= 1, seats away from center sit
     at a smaller local_y than the center seat, bowing the row's ends toward
     the origin/stage (a real theater's concave curvature).
+
+    Round-4 correction (docs/EDITOR.md): offset now COMPOSES with arc --
+    `_row_x_offset(section, row_index)` (the same per-row local-x stagger
+    `_grid_or_raked_local` applies) is added on top of the curved
+    `radius * sin(theta)` term, so a fanned section can also carry a
+    repeated/alternating row stagger. This can't disturb the "curve in
+    place"/front-center invariants above: `_row_x_offset` is 0 at
+    `row_index=0` in BOTH offset modes (REPEATED is `row_index *
+    row_x_offset`; ALTERNATING only touches odd row_index), so the front
+    row's local (0, 0) is untouched regardless of row_x_offset -- see
+    `front_center_local`'s "arc_radius truthy -> (0, 0)" branch, still
+    correct with offset applied.
     """
     radius = section.arc_radius + row_index * section.row_pitch
     angle_step = section.seat_pitch / radius if radius else 0.0
     center_offset = (row_seat_count - 1) / 2
     theta = (seat_index - center_offset) * angle_step
-    local_x = radius * math.sin(theta)
+    local_x = radius * math.sin(theta) + _row_x_offset(section, row_index)
     local_y = radius * math.cos(theta) - section.arc_radius
     return local_x, local_y
 

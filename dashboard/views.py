@@ -718,6 +718,15 @@ def chart_editor_save(request, pk):
                     # clamps the same way, see chart_editor.js's
                     # stepAltDelta -- this is the authoritative backstop).
                     setattr(section, field, max(-1, min(1, int(raw[field]))))
+                elif field == "row_x_offset":
+                    # Round-4 correction (docs/EDITOR.md): round 3 raised
+                    # the offset range too far -- the user actually wants
+                    # it capped at +/-2, same as the editor's now-fixed
+                    # slider (chart_editor.js's offsetRange()). Clamp here
+                    # too, the authoritative backstop against a stale/
+                    # tampered client value (same pattern as
+                    # alt_row_seat_delta above).
+                    setattr(section, field, max(-2.0, min(2.0, float(raw[field]))))
                 elif field in ("rows", "seats_per_row"):
                     setattr(section, field, max(1, int(raw[field])))
                 else:

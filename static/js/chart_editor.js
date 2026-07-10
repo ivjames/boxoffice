@@ -24,6 +24,60 @@
  * static/js/editor_viewport.js module, included by both this file and
  * zone_editor.js -- see that file for the vertical-0.5x-drag bug fix.
  *
+ * Round 4 (docs/EDITOR.md "Round 4 refinements", continued iPad/desktop
+ * testing) is two fixes to the transform system plus two corrections to
+ * round 3's own offset decisions:
+ *   - The arc slider used to vanish (hidden behind an "Arc / curve"
+ *     checkbox, and again whenever the amount hit 0) -- the user hated it.
+ *     There is no more checkbox: `arc_enabled` is gone entirely, and
+ *     `arc_amount`/`arc_radius` alone drive the geometry (0 = straight, the
+ *     same as every other slider at its zero value) via onArcAmountInput(),
+ *     the sole entry point now. The slider template markup is always
+ *     rendered, unconditionally.
+ *   - THE BIG ONE: the transform box's corner handles, the rotate/offset
+ *     handles, and the origin/pivot MARKERS used to be derived from a
+ *     naive rectangle (localWH() -- `(seats_per_row-1)*seat_pitch` x
+ *     `(rows-1)*row_pitch`) or fixed pitch-scaled deltas, neither of which
+ *     account for arc's curved local geometry -- so enabling/tightening arc
+ *     visibly left the box and markers behind while the (already-pinned,
+ *     since round 3 #6) seats themselves curved out from under them.
+ *     Fixed by reading the REAL local bounding box off the section's own
+ *     live seat list (paddedLocalBBox()/localSeatBBox() below, computed by
+ *     inverse-transforming (toLocal()) the exact seats renderSection() just
+ *     drew, so it can't drift from what's on screen for ANY geometry --
+ *     grid, raked, fanned/arc, rotated, offset, all alike) instead of a
+ *     rectangle formula. handleTL/TR/BL/BR, rotateHandleLocal,
+ *     handleOffsetLocal, cornerCursor, and the origin/pivot marker
+ *     placement all read off this one box now, padded well clear of the
+ *     seats (handlePadding()) -- which doubles as the docs/EDITOR.md #4
+ *     "handles must never overlap seats" fix, since every handle's
+ *     position is now provably outside (or, for the rotate/pivot/origin
+ *     markers, pushed further still beyond) that padded box rather than a
+ *     heuristic pitch-scaled guess that could land short for an unusual
+ *     section.
+ *   - Handles are function ICONS now (docs/EDITOR.md #3): each handle's
+ *     existing colored dot gets a small inline-SVG glyph on top (rotate =
+ *     circular arrow, corners = a diagonal double-arrow, one of two mirrored
+ *     base paths per corner pair (see chart_editor.html), rotated by
+ *     resizeIconAngle() (== section.rotation) so it turns with the block --
+ *     offset = a horizontal shift arrow rotated with the block, move-section
+ *     = a 4-way arrow cross, pivot = a crosshair/
+ *     target), template-only (see chart_editor.html) plus a couple of small
+ *     JS helpers to compute icon transforms. The round-3 invisible hit-zone
+ *     circle underneath (and its <title> tooltip) is completely unchanged
+ *     -- the icon is purely the decorative layer painted on top.
+ *   - Two CORRECTIONS to round 3's own offset decisions, from the same
+ *     round of testing: round 3 #8 raised the offset-amount range to a
+ *     seat_pitch-scaled ~20+, which turned out to be a misread of the
+ *     user's feedback -- offsetRange() is back down to a flat +/-2 (server-
+ *     enforced too, dashboard/views.py's chart_editor_save). And round 3
+ *     #10 disabled the offset controls outright for arc sections (offset
+ *     was a no-op for fanned rows) -- the user wants offset and arc to
+ *     compose, so seat_geometry.js's fannedLocal (mirrored in
+ *     venues/generation.py's _fanned_local) now adds the same rowXOffset()
+ *     term gridOrRakedLocal already applies, and every arc-gated
+ *     show/hide/disable on the offset controls (template) is gone.
+ *
  * Round 3 (docs/EDITOR.md "Round 3 refinements", real iPad + desktop
  * testing) rebuilds the on-canvas TRANSFORM SYSTEM, which was the actual
  * crux of that feedback:
@@ -147,7 +201,10 @@ function makeSection(raw) {
         pivot_mode: raw.pivot_mode || "center",
         pivot_x: raw.pivot_x || 0,
         pivot_y: raw.pivot_y || 0,
-        arc_enabled: !!arcRadius,
+        // Round 4 (docs/EDITOR.md #1): no more separate "enabled" flag --
+        // arc_amount/arc_radius alone drive the geometry, 0 meaning
+        // straight, same as every other slider at its zero value. See this
+        // file's header comment.
         arc_radius: arcRadius,
         arc_amount: arcRadiusToAmount(arcRadius),
         offset_mode: raw.offset_mode,
@@ -261,7 +318,11 @@ function chartEditor(config) {
                 seat_pitch: section.seat_pitch,
                 row_pitch: section.row_pitch,
                 row_x_offset: section.row_x_offset,
-                arc_radius: section.arc_enabled ? section.arc_radius : 0,
+                // Round 4: section.arc_radius is ALWAYS the section's
+                // current, live radius (0 for straight) -- no more
+                // "remembered but disabled" indirection through a checkbox
+                // flag, so this is just a passthrough now.
+                arc_radius: section.arc_radius,
                 offset_mode: section.offset_mode,
                 alt_row_seat_delta: section.alt_row_seat_delta,
                 rows: section.rows,
@@ -394,15 +455,17 @@ function chartEditor(config) {
         },
 
         // Round 3 #6 ("arc STILL offsets the section" -- the fix, applied):
-        // every arc_radius change -- enabling, disabling, or dragging the
-        // amount slider -- goes through applyArcRadiusChange() below, which
-        // rebalances origin_x/origin_y FIRST so the section's front-center
-        // reference point doesn't move (see seat_geometry.js's
+        // every arc_radius change -- including going to/from 0 -- goes
+        // through applyArcRadiusChange() below, which rebalances
+        // origin_x/origin_y FIRST so the section's front-center reference
+        // point doesn't move (see seat_geometry.js's
         // rebalanceOriginForArcChange / generation.py's matching function
-        // for why the ENABLE/DISABLE transition -- not a fixed-mode radius
+        // for why the 0 <-> nonzero transition -- not a fixed-mode radius
         // change, which was already jump-free after round 1 -- was the
         // actual surviving bug: grid's local (0,0) is the front-LEFT seat,
-        // fanned's is front-CENTER).
+        // fanned's is front-CENTER). Round 4: onArcAmountInput() is the
+        // ONLY caller now -- there's no more separate enable/disable
+        // toggle, see this file's header comment and makeSection().
 
         applyArcRadiusChange(id, newRadius) {
             const s = this.sections[id];
@@ -411,37 +474,16 @@ function chartEditor(config) {
             // (see compute_row_counts / computeRowCounts), so row 0's count
             // is never ragged regardless of offset_mode.
             const [ox, oy] = window.SeatGeometry.rebalanceOriginForArcChange(
-                this.geomParamsRaw(s), newRadius, s.seats_per_row
+                this.geomParams(s), newRadius, s.seats_per_row
             );
             s.origin_x = ox;
             s.origin_y = oy;
             s.arc_radius = newRadius;
         },
 
-        // Like geomParams(), but with the section's ACTUAL current
-        // arc_radius (not gated by arc_enabled) -- rebalanceOriginForArcChange
-        // needs the true "from" radius to compute a correct correction,
-        // whereas the live seat renderer (geomParams()) intentionally
-        // treats a disabled-but-remembered arc_amount as "off".
-        geomParamsRaw(section) {
-            return { ...this.geomParams(section), arc_radius: section.arc_radius };
-        },
-
-        onArcToggle(id) {
-            const s = this.sections[id];
-            const enabling = !s.arc_enabled;
-            if (enabling && !s.arc_amount) s.arc_amount = 20;
-            const newRadius = enabling ? arcAmountToRadius(s.arc_amount) : 0;
-            this.applyArcRadiusChange(id, newRadius);
-            s.arc_enabled = enabling;
-            this.onParamInput(id);
-        },
-
         onArcAmountInput(id) {
             const s = this.sections[id];
-            const newRadius = arcAmountToRadius(s.arc_amount);
-            this.applyArcRadiusChange(id, newRadius);
-            s.arc_enabled = newRadius > 0;
+            this.applyArcRadiusChange(id, arcAmountToRadius(s.arc_amount));
             this.onParamInput(id);
         },
 
@@ -491,13 +533,15 @@ function chartEditor(config) {
             this.onParamInput(id);
         },
 
-        // Round 3 #8: the offset-amount slider/number's range was reported
-        // too small to be useful -- raised to a generous absolute floor
-        // (2x the old +/-10) AND scaled with the CURRENT seat_pitch (up to
-        // ~4x it), so a section with an unusually wide seat_pitch gets an
-        // even bigger range instead of being capped at the floor.
+        // Round 4 correction (docs/EDITOR.md): round 3 #8 raised this to a
+        // seat_pitch-scaled ~20+, which turned out to be a misread of the
+        // user's actual feedback -- capped back down to a flat +/-2 (the
+        // slider stays centered/bidirectional, same sign convention as
+        // before). `section` is unused now but kept in the signature since
+        // the template calls this per-section; server-side enforcement is
+        // dashboard/views.py's chart_editor_save.
         offsetRange(section) {
-            return Math.max(20, (section.seat_pitch || 1) * 4);
+            return 2;
         },
 
         // -- selection --------------------------------------------------------
@@ -547,10 +591,83 @@ function chartEditor(config) {
 
         // -- transform box: local <-> world, handle positions -----------------
 
+        // Naive rectangle from the section's SHAPE params -- correct for a
+        // plain grid/raked block, but does NOT account for arc's curved
+        // local geometry (see localSeatBBox() below, which superseded this
+        // for every handle-placement purpose in Round 4). Kept only as
+        // localSeatBBox()'s degenerate-section fallback (every seat
+        // removed) and by pivotLocal-style callers that genuinely want the
+        // shape-only box (none remain in this file, but seat_geometry.js's
+        // pivotLocal computes the same thing server-side-mirrored, so this
+        // stays as a readable reference for that formula).
         localWH(section) {
             const w = Math.max(0, section.seats_per_row - 1) * section.seat_pitch;
             const h = Math.max(0, section.rows - 1) * section.row_pitch;
             return [w, h];
+        },
+
+        // Round 4 (docs/EDITOR.md #2, "THE BIG ONE"): the REAL local
+        // (pre-rotation) bounding box of `section`'s actual current seats
+        // -- not the naive `localWH()` rectangle, which silently assumes a
+        // grid/raked layout and drifts from the true seat positions the
+        // moment arc bends a row's seats off that assumed rectangle.
+        // Computed by inverse-transforming (toLocal()) the EXACT world
+        // coordinates renderSection() just drew (via computeSeats()), so
+        // it's provably the same seats that are on screen -- correct for
+        // grid, raked, fanned/arc, rotated, and offset alike, with no
+        // separate geometry-specific formula to keep in sync. Every
+        // transform-box handle and the origin/pivot markers are placed off
+        // this one box (paddedLocalBBox() below) instead of ad hoc
+        // pitch-scaled heuristics.
+        localSeatBBox(section) {
+            const seats = this.computeSeats(section).filter((s) => !s.removed);
+            if (!seats.length) {
+                // Degenerate case (every seat removed, or 0 rows/seats) --
+                // fall back to the shape-only rectangle so the transform
+                // box still has something sane to draw.
+                const [w, h] = this.localWH(section);
+                return { minX: 0, minY: 0, maxX: w, maxY: h };
+            }
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const seat of seats) {
+                const [lx, ly] = this.toLocal(section, seat.x, seat.y);
+                minX = Math.min(minX, lx);
+                maxX = Math.max(maxX, lx);
+                minY = Math.min(minY, ly);
+                maxY = Math.max(maxY, ly);
+            }
+            return { minX, minY, maxX, maxY };
+        },
+
+        // Round 4 (docs/EDITOR.md #4, "handles must never overlap seats"):
+        // how far outward (in LOCAL units, same scale as seat_pitch/
+        // row_pitch) every handle clears the seat block. Every corner
+        // handle sits EXACTLY `handlePadding()` away (in at least one axis)
+        // from the nearest seat by construction (see paddedLocalBBox()),
+        // and comfortably exceeds the largest hit-zone radius a handle can
+        // have (app.css's --chart-editor-hit-scale, up to 0.55 * 1.8 =
+        // 0.99) plus the seat's own drawn radius (SEAT_RADIUS, 0.35) --
+        // 2.2 alone clears both with room to spare; the seat_pitch/
+        // row_pitch terms grow the margin further for widely-spaced
+        // sections so it still reads as "clearly outside the block" rather
+        // than just barely.
+        handlePadding(section) {
+            return Math.max(2.2, (section.seat_pitch || 0) * 0.9, (section.row_pitch || 0) * 0.9);
+        },
+
+        // localSeatBBox() padded by handlePadding() on all 4 sides -- the
+        // single source of truth every corner/rotate/offset handle and the
+        // origin/pivot markers are positioned from (worldFromLocal() of one
+        // of this box's corners/edges), so all of them are provably clear
+        // of every seat for ANY geometry, and none of them can drift from
+        // the seats arc/rotation/offset actually draw.
+        paddedLocalBBox(section) {
+            const box = this.localSeatBBox(section);
+            const pad = this.handlePadding(section);
+            return {
+                minX: box.minX - pad, maxX: box.maxX + pad,
+                minY: box.minY - pad, maxY: box.maxY + pad,
+            };
         },
 
         // World position of a LOCAL (pre-rotation) point in `section`'s
@@ -597,92 +714,88 @@ function chartEditor(config) {
             return window.SeatGeometry.pivotXY(this.geomParams(s));
         },
 
-        // The origin ("move section") MARKER is drawn/clickable slightly
-        // up-and-left of the TRUE origin (handleOrigin()), not exactly on
-        // top of it. The true origin usually coincides with the section's
-        // own front-left seat, and since the marker paints after (on top
-        // of) the seat circles, a marker drawn exactly at the origin would
-        // sit on top of that seat and swallow every click meant for it --
-        // confirmed by driving the editor: clicking that seat opened a drag
-        // instead of its popover. A thin connector line ties the marker
-        // back to the real origin point so it's unambiguous. This offset is
-        // a plain constant delta (NOT routed through worldFromLocal/
-        // rotation) since the origin itself doesn't rotate.
+        // The origin ("move section") MARKER is drawn/clickable near the
+        // padded box's TOP-LEFT corner -- not exactly on the TRUE origin
+        // (handleOrigin()), and not exactly on TL either (a further
+        // handlePadding()-sized step beyond it). A thin connector line ties
+        // the marker back to the real origin point (handleOrigin(), a
+        // small non-interactive dot) so it stays unambiguous even when the
+        // two are far apart.
+        //
+        // Round 4 (docs/EDITOR.md #2/#4): previously this was a plain
+        // pitch-scaled constant delta off the RAW origin, deliberately NOT
+        // routed through worldFromLocal/rotation -- fine for a plain grid,
+        // but for arc/rotated sections a fixed delta can't reliably clear
+        // the actual (curved/turned) seat block, which is exactly the
+        // "marker drifts off the curved seats" bug. Routing it through
+        // worldFromLocal() off the padded box's own TL corner instead
+        // guarantees clearance for ANY geometry (same box every other
+        // handle uses) while still rotating naturally with the block.
         originMarkerXY() {
             const s = this.selected;
             if (!s) return [0, 0];
-            // Round 3 #3 fallout: the floor here used to be 0.5 -- fine
-            // when every handle's HIT zone was tiny (r ~0.28-0.32), but the
-            // move-section marker sits exactly ON TOP of handleTL() at
-            // rotation=0 (both are the section's origin point -- see
-            // handleTL()'s doc comment), and the origin marker's hit circle
-            // is painted AFTER (on top of) the transform box's, so a big
-            // enough hit zone on BOTH silently made TL's resize handle
-          // ungrabbable (confirmed by driving the editor under an emulated
-            // touch/coarse-pointer context: dragging what looked like TL
-            // moved the whole section instead of resizing it). The floor is
-            // now comfortably bigger than the largest hit-zone radius the
-            // two handles can have between them (see app.css's
-            // --chart-editor-hit-scale) so they never overlap.
-            const dx = -Math.max(1.75, s.seat_pitch * 0.6);
-            const dy = -Math.max(1.75, s.row_pitch * 0.6);
-            return [s.origin_x + dx, s.origin_y + dy];
+            const b = this.paddedLocalBBox(s);
+            const extra = this.handlePadding(s) * 0.6;
+            return this.worldFromLocal(s, b.minX - extra, b.minY - extra);
         },
 
-        // The ROTATION PIVOT marker (Round 2, docs/EDITOR.md #2): offset
-        // from the true pivot (pivotWorldXY()) in the OPPOSITE direction of
-        // the origin marker above, so the two draggable markers/connectors
-        // never sit on top of each other -- including the common case where
-        // pivot_mode is ORIGIN (pivot === origin exactly) or a small block's
-        // CENTER pivot lands close to it. Dragging this marker always sets
-        // pivot_mode to CUSTOM (see onHandleDrag's 'move_pivot' case) --
-        // it's the one control that works regardless of which mode is
-        // currently selected in the Center/Origin/Custom toggle.
+        // The ROTATION PIVOT marker (Round 2, docs/EDITOR.md #2): same
+        // treatment as the origin marker above, but anchored beyond the
+        // padded box's OPPOSITE (bottom-right) corner instead of top-left,
+        // so the two draggable markers/connectors never sit on top of each
+        // other -- including when pivot_mode is ORIGIN (pivot === origin
+        // exactly) or a CENTER pivot lands deep inside the seat block
+        // (which the OLD fixed-delta-off-the-true-pivot offset did NOT
+        // reliably clear -- a small delta off a pivot that's already inside
+        // the block can still land on a seat; anchoring off the padded
+        // box's own corner instead guarantees it's outside the block
+        // regardless of where the true pivot sits). Dragging this marker
+        // always sets pivot_mode to CUSTOM (see onHandleDrag's 'move_pivot'
+        // case) -- it's the one control that works regardless of which
+        // mode is currently selected in the Center/Origin/Custom toggle.
         rotationPivotMarkerXY() {
             const s = this.selected;
             if (!s) return [0, 0];
-            const [px, py] = this.pivotWorldXY();
-            // Round 3 #3 fallout -- same reasoning as originMarkerXY()'s
-            // floor above (clearance from the nearest resize-handle hit
-            // zone, not just from the origin marker itself).
-            const dx = Math.max(1.75, s.seat_pitch * 0.6);
-            const dy = Math.max(1.75, s.row_pitch * 0.6);
-            return [px + dx, py + dy];
+            const b = this.paddedLocalBBox(s);
+            const extra = this.handlePadding(s) * 0.6;
+            return this.worldFromLocal(s, b.maxX + extra, b.maxY + extra);
         },
 
-        // Round 3 #1/#2: the 4th corner. Previously the transform box's
-        // "top-left" outline point was drawn from handleOrigin() (raw,
-        // UNROTATED origin_x/origin_y) while TR/BL/BR went through
-        // worldFromLocal() (rotation-aware) -- that mismatch is why the box
-        // didn't rotate as a rigid shape with the section (see this file's
-        // header comment). handleTL() now goes through the exact same
-        // worldFromLocal() pipeline as the other three, so all 4 corners
-        // -- and the lines connecting them -- rotate together.
+        // Round 3 #1/#2, Round 4 #2: the transform box's 4 corners, ALL
+        // read off paddedLocalBBox() (the REAL bounding box of the
+        // section's live seats, padded clear of them) and run through the
+        // same worldFromLocal() pipeline -- so the box both rotates as a
+        // rigid shape with the section (round 3's fix) AND tightly wraps
+        // the actual seats for grid/raked/fanned/arc alike, padded well
+        // clear of them (round 4's fix), instead of a naive
+        // seats_per_row/rows rectangle that only happened to match a plain
+        // grid.
         handleTL() {
             const s = this.selected;
             if (!s) return [0, 0];
-            return this.worldFromLocal(s, 0, 0);
+            const b = this.paddedLocalBBox(s);
+            return this.worldFromLocal(s, b.minX, b.minY);
         },
 
         handleTR() {
             const s = this.selected;
             if (!s) return [0, 0];
-            const [w] = this.localWH(s);
-            return this.worldFromLocal(s, w, 0);
+            const b = this.paddedLocalBBox(s);
+            return this.worldFromLocal(s, b.maxX, b.minY);
         },
 
         handleBL() {
             const s = this.selected;
             if (!s) return [0, 0];
-            const [, h] = this.localWH(s);
-            return this.worldFromLocal(s, 0, h);
+            const b = this.paddedLocalBBox(s);
+            return this.worldFromLocal(s, b.minX, b.maxY);
         },
 
         handleBR() {
             const s = this.selected;
             if (!s) return [0, 0];
-            const [w, h] = this.localWH(s);
-            return this.worldFromLocal(s, w, h);
+            const b = this.paddedLocalBBox(s);
+            return this.worldFromLocal(s, b.maxX, b.maxY);
         },
 
         // Round 3 #4: which resize cursor a corner shows on hover, ROTATED
@@ -691,17 +804,19 @@ function chartEditor(config) {
         // nwse-resize at rotation=0 may read as ns-resize once the block is
         // turned 45deg) -- bucketed into the 4 discrete cursors CSS offers
         // (native CSS can't animate a resize cursor to an arbitrary angle).
-        // `cornerLocalX/Y` is the corner's LOCAL point (e.g. (0,0) for TL,
-        // (w,h) for BR); direction is measured from the block's own local
-        // center so it's meaningful even for a very wide/short or narrow/
-        // tall block, not just a perfect square.
+        // `cornerLocalX/Y` is the corner's LOCAL point -- Round 4: now one
+        // of paddedLocalBBox()'s 4 corners (passed in from the template,
+        // see chart_editor.html) rather than a (0,0)/(w,h) rectangle
+        // corner; direction is measured from the PADDED BOX's own local
+        // center, which works the same way for an arc's non-rectangular
+        // extent as it did for a plain grid's rectangle.
         cornerCursor(cornerLocalX, cornerLocalY) {
             const s = this.selected;
             if (!s) return "nwse-resize";
-            const [w, h] = this.localWH(s);
-            const [dx, dy] = window.SeatGeometry.rotate(
-                cornerLocalX - w / 2, cornerLocalY - h / 2, s.rotation
-            );
+            const b = this.paddedLocalBBox(s);
+            const cx = (b.minX + b.maxX) / 2;
+            const cy = (b.minY + b.maxY) / 2;
+            const [dx, dy] = window.SeatGeometry.rotate(cornerLocalX - cx, cornerLocalY - cy, s.rotation);
             let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
             angle = ((angle % 180) + 180) % 180; // 0..180 -- opposite corners share a cursor
             if (angle < 22.5 || angle >= 157.5) return "ew-resize";
@@ -710,10 +825,48 @@ function chartEditor(config) {
             return "nesw-resize";
         },
 
+        // Thin per-corner wrappers around cornerCursor() -- guard against
+        // `selected` being null themselves (paddedLocalBBox() would throw
+        // on a null section) so the template can call them directly without
+        // a `selected ? ... : 'fallback'` ternary at every call site.
+        cornerCursorTL() {
+            const s = this.selected;
+            if (!s) return "nwse-resize";
+            const b = this.paddedLocalBBox(s);
+            return this.cornerCursor(b.minX, b.minY);
+        },
+
+        cornerCursorTR() {
+            const s = this.selected;
+            if (!s) return "nesw-resize";
+            const b = this.paddedLocalBBox(s);
+            return this.cornerCursor(b.maxX, b.minY);
+        },
+
+        cornerCursorBL() {
+            const s = this.selected;
+            if (!s) return "nesw-resize";
+            const b = this.paddedLocalBBox(s);
+            return this.cornerCursor(b.minX, b.maxY);
+        },
+
+        cornerCursorBR() {
+            const s = this.selected;
+            if (!s) return "nwse-resize";
+            const b = this.paddedLocalBBox(s);
+            return this.cornerCursor(b.maxX, b.maxY);
+        },
+
+        // Round 4: centered over the padded box's TOP edge (was the naive
+        // rectangle's local x = w/2) and pushed further clear above it
+        // (was a w-scaled distance that didn't account for arc's actual
+        // local extent) -- correct above the section's true front-center
+        // for a grid OR a curved arc block alike.
         rotateHandleLocal(s) {
-            const [w] = this.localWH(s);
-            const dist = Math.max(1.5, w * 0.15 + 1.5);
-            return [w / 2, -dist];
+            const b = this.paddedLocalBBox(s);
+            const cx = (b.minX + b.maxX) / 2;
+            const extra = this.handlePadding(s) * 0.6;
+            return [cx, b.minY - extra];
         },
 
         handleRotate() {
@@ -723,34 +876,65 @@ function chartEditor(config) {
             return this.worldFromLocal(s, lx, ly);
         },
 
-        // Round 3 #4: the offset/skew handle's LOCAL position, pushed
-        // clear of the seat block (below the last row, by a margin scaled
-        // off row_pitch) instead of sitting AT local (row_x_offset, <a row's
-        // y>), which routinely landed right on top of a real seat and made
-        // the handle impossible to grab without hitting a seat's own
-        // pointerdown first. Local X still tracks the current offset
-        // amount 1:1 (so the handle visibly slides as row_x_offset
-        // changes, same affordance as before) -- only Y moved.
+        // Round 3 #4, Round 4 #2/#4: the offset/skew handle's LOCAL
+        // position, pushed clear of the seat block below the padded box's
+        // BOTTOM edge (was a naive rectangle + row_pitch-scaled margin,
+        // which for an arc section didn't track the block's real curved
+        // extent) instead of sitting AT local (row_x_offset, <a row's y>),
+        // which routinely landed right on top of a real seat. Local X still
+        // tracks the current offset amount 1:1 (so the handle visibly
+        // slides as row_x_offset changes, same affordance as before),
+        // clamped to the padded box's own x range (plus a little extra) so
+        // it can't wander arbitrarily far from the block -- only Y moved.
+        // Round 4 correction: offset now composes with arc (see this
+        // file's header comment), so this handle is no longer arc-gated.
         handleOffsetLocal(s) {
-            const [w, h] = this.localWH(s);
-            // Round 3 #3 fallout: the floor here used to be 1 -- comfortably
-            // clear of a SEAT, but not of the BL corner's now-larger hit
-            // zone (same overlap problem as originMarkerXY()'s comment
-            // above -- confirmed the same way, under an emulated touch
-            // context). Bigger floor keeps clearance from BL's hit circle
-            // too, not just from the row of seats.
-            const margin = Math.max(2.5, s.row_pitch * 1.5);
+            const b = this.paddedLocalBBox(s);
+            const extra = this.handlePadding(s) * 0.6;
             const lx =
                 s.offset_mode === "alternating"
                     ? s.row_x_offset
                     : Math.max(0, s.rows - 1) * s.row_x_offset;
-            return [clamp(lx, -w - margin, w + margin), h + margin];
+            return [clamp(lx, b.minX - extra, b.maxX + extra), b.maxY + extra];
         },
 
         handleOffset() {
             const s = this.selected;
             if (!s) return [0, 0];
             return this.worldFromLocal(s, ...this.handleOffsetLocal(s));
+        },
+
+        // Round 4 (docs/EDITOR.md #3): rotation (degrees) for a corner's
+        // diagonal resize-arrow ICON -- just `section.rotation`, NOT an
+        // absolute angle computed from the corner's position relative to
+        // the box center. The two base icon PATHS in chart_editor.html
+        // already encode each corner-pair's own diagonal at rotation=0 (TL/
+        // BR share a NW-SE path, TR/BL share a NE-SW path, mirrored) -- an
+        // EARLIER version of this computed the corner's true
+        // atan2(dy, dx) outward angle instead, which double-counted the
+        // diagonal: that angle is close to +/-45/135 deg already (a corner
+        // IS roughly diagonal from the box center by definition), so
+        // rotating an already-diagonal path by another ~45deg swung it
+        // toward vertical/horizontal instead -- confirmed by driving the
+        // editor and screenshotting a near-vertical glyph where a diagonal
+        // was expected. Plain `section.rotation` is exactly the delta the
+        // glyph needs: at rotation=0 the base path is already correct, and
+        // as the block turns, every corner's TRUE diagonal direction turns
+        // by exactly `rotation` too (a rigid rectangle's corners keep the
+        // same relative angles to each other under rotation), so applying
+        // that same delta to the icon keeps it aligned with zero extra
+        // math.
+        resizeIconAngle() {
+            const s = this.selected;
+            return s ? s.rotation : 0;
+        },
+
+        // Round 4 (docs/EDITOR.md #3): translate+rotate transform string
+        // for a handle icon <g> -- rotation is optional (defaults to 0 for
+        // the icons that don't need to track corner direction/block tilt,
+        // e.g. the rotate/move/pivot glyphs).
+        handleIconTransform(worldXY, angleDeg) {
+            return "translate(" + worldXY[0] + "," + worldXY[1] + ") rotate(" + (angleDeg || 0) + ")";
         },
 
         // Round 3 #11: snap-to-grid, OFF by default (this.snapEnabled).
@@ -840,11 +1024,12 @@ function chartEditor(config) {
                 s.rotation = clamp(deg, -45, 45);
             }
             if (this.dragMode === "offset") {
-                // Round 3 #8/#11: clamp matches the sidebar slider's
-                // dynamic range (offsetRange(), scaled off seat_pitch) so
-                // dragging the on-canvas handle can't exceed what the
-                // number input allows, and snaps to the grid same as the
-                // other position-like handles when snap-to-grid is on.
+                // Round 3 #11 / Round 4 correction: clamp matches the
+                // sidebar slider's range (offsetRange(), a flat +/-2 as of
+                // round 4) so dragging the on-canvas handle can't exceed
+                // what the number input allows, and snaps to the grid same
+                // as the other position-like handles when snap-to-grid is
+                // on. Works the same with arc on now too (round 4).
                 const bound = this.offsetRange(s);
                 const [lx] = this.toLocal(s, px, py);
                 if (s.offset_mode === "alternating") {
@@ -910,18 +1095,15 @@ function chartEditor(config) {
             // coordinates for the clipped-out element, but clicking there
             // hit whatever page content sat behind/above the canvas).
             if (this.selected) {
-                // Round 3 #7: the transform box's corner (resize) handles
-                // are no longer hidden for arc sections (only the offset
-                // handle is, since offset is a no-op with arc on -- round-3
-                // #10), so they need room in Fit too, unconditionally.
+                // Round 3 #7 / Round 4: none of the transform-box handles
+                // are hidden for arc sections any more -- offset now
+                // composes with arc too (round-4 correction) -- so every
+                // handle unconditionally needs room in Fit.
                 const points = [
                     this.handleOrigin(), this.handleRotate(), this.originMarkerXY(),
-                    this.pivotWorldXY(), this.rotationPivotMarkerXY(),
+                    this.pivotWorldXY(), this.rotationPivotMarkerXY(), this.handleOffset(),
                     this.handleTL(), this.handleTR(), this.handleBL(), this.handleBR(),
                 ];
-                if (!this.selected.arc_enabled) {
-                    points.push(this.handleOffset());
-                }
                 for (const [x, y] of points) {
                     minX = Math.min(minX, x);
                     maxX = Math.max(maxX, x);
@@ -1066,7 +1248,11 @@ function chartEditor(config) {
                 const s = this.sections[id];
                 const params = {};
                 for (const field of PARAM_FIELDS) params[field] = s[field];
-                params.arc_radius = s.arc_enabled ? s.arc_radius : null;
+                // Round 4: s.arc_radius is always current now (0 for
+                // straight, no more enabled-flag indirection) -- 0 maps to
+                // null the same way the server's "off" sentinel does (see
+                // dashboard/views.py's chart_editor_save arc_radius branch).
+                params.arc_radius = s.arc_radius || null;
                 params.removed = [...s.removedIds].map((k) => k.split("|"));
                 params.accessible = [...s.accessibleIds].map((k) => k.split("|"));
                 sections[id] = params;

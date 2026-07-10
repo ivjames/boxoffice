@@ -38,10 +38,27 @@ function qrScanner() {
         useBarcodeDetector: typeof window.BarcodeDetector !== "undefined",
         detector: null,
         rafId: null,
+        // Feedback state (see feedback()): `flash` drives the full-screen
+        // color wash; `soundOn` gates the audio cue (persisted so a staffer
+        // working a quiet room stays muted across reloads).
+        soundOn: true,
+        flash: null, // null | "pass" | "used" | "fail"
+        flashTimer: null,
+        audioCtx: null,
 
         async start() {
             this.status = "starting";
             this.errorMessage = "";
+
+            try {
+                this.soundOn = localStorage.getItem("scannerSound") !== "off";
+            } catch (e) {
+                // Private-mode / disabled storage -- default to sound on.
+            }
+            // Browsers won't let an AudioContext make noise until a user
+            // gesture. start() runs from x-init (no gesture), so arm a
+            // one-shot unlock on the first tap/keypress anywhere on the page.
+            this.installAudioUnlock();
 
             if (!window.isSecureContext) {
                 this.status = "error";
@@ -231,11 +248,127 @@ function qrScanner() {
         },
 
         recordResult(data) {
+            // Three visible outcomes, not two: a valid admit (green), a QR
+            // that scanned fine but was already redeemed (amber -- a distinct
+            // "already scanned" so staff don't confuse it with a fake), and
+            // everything else (red -- bad signature, unknown code, void,
+            // non-ticket QR, network/session error).
+            const category = data.ok ? "pass" : data.reason === "already_used" ? "used" : "fail";
+            data.category = category;
             this.lastResult = data;
             if (data.ok) {
                 this.tally.pass += 1;
             } else {
                 this.tally.fail += 1;
+            }
+            this.feedback(category);
+        },
+
+        headlineFor(data) {
+            if (!data) return "";
+            if (data.category === "pass") return "PASS";
+            if (data.category === "used") return "ALREADY SCANNED";
+            return "FAIL";
+        },
+
+        feedback(category) {
+            // Full-screen color wash: on a phone held at arm's length the tiny
+            // inline banner is easy to miss, so the whole viewport flashes.
+            this.flash = null; // reset so a repeat of the same category re-triggers the CSS animation
+            this.$nextTick(() => {
+                this.flash = category;
+                if (this.flashTimer) clearTimeout(this.flashTimer);
+                this.flashTimer = setTimeout(() => {
+                    this.flash = null;
+                }, 600);
+            });
+
+            if (category === "pass") {
+                // Bright rising two-note "accept" chirp.
+                this.playTones([
+                    { freq: 880, dur: 0.09 },
+                    { freq: 1319, dur: 0.15 },
+                ]);
+                this.vibrate(50);
+            } else if (category === "used") {
+                // Neutral double blip -- a warning, not an alarm.
+                this.playTones([
+                    { freq: 620, dur: 0.11, type: "triangle" },
+                    { freq: 620, dur: 0.11, type: "triangle", gap: 0.05 },
+                ]);
+                this.vibrate([40, 60, 40]);
+            } else {
+                // Low buzz for a reject.
+                this.playTones([
+                    { freq: 200, dur: 0.18, type: "sawtooth", vol: 0.28 },
+                    { freq: 150, dur: 0.24, type: "sawtooth", vol: 0.28 },
+                ]);
+                this.vibrate([90, 60, 90]);
+            }
+        },
+
+        toggleSound() {
+            this.soundOn = !this.soundOn;
+            try {
+                localStorage.setItem("scannerSound", this.soundOn ? "on" : "off");
+            } catch (e) {
+                // Storage unavailable -- toggle still works for this session.
+            }
+            if (this.soundOn) this.ensureAudio();
+        },
+
+        installAudioUnlock() {
+            const unlock = () => this.ensureAudio();
+            document.addEventListener("pointerdown", unlock, { once: true });
+            document.addEventListener("keydown", unlock, { once: true });
+        },
+
+        ensureAudio() {
+            try {
+                if (!this.audioCtx) {
+                    const Ctx = window.AudioContext || window.webkitAudioContext;
+                    if (!Ctx) return null;
+                    this.audioCtx = new Ctx();
+                }
+                if (this.audioCtx.state === "suspended") this.audioCtx.resume();
+                return this.audioCtx;
+            } catch (e) {
+                return null;
+            }
+        },
+
+        playTones(tones) {
+            if (!this.soundOn) return;
+            const ctx = this.ensureAudio();
+            if (!ctx) return;
+            try {
+                let t = ctx.currentTime;
+                for (const tone of tones) {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = tone.type || "sine";
+                    osc.frequency.value = tone.freq;
+                    // Quick attack + exponential release; ramp to a tiny
+                    // non-zero floor because exponentialRampToValueAtTime(0) is
+                    // illegal.
+                    gain.gain.setValueAtTime(0.0001, t);
+                    gain.gain.exponentialRampToValueAtTime(tone.vol || 0.2, t + 0.012);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, t + tone.dur);
+                    osc.connect(gain).connect(ctx.destination);
+                    osc.start(t);
+                    osc.stop(t + tone.dur);
+                    t += tone.dur + (tone.gap || 0);
+                }
+            } catch (e) {
+                // Never let an audio hiccup interrupt scanning.
+            }
+        },
+
+        vibrate(pattern) {
+            try {
+                if (navigator.vibrate) navigator.vibrate(pattern);
+            } catch (e) {
+                // Vibration is best-effort (unsupported on desktop / iOS).
             }
         },
     };

@@ -1173,8 +1173,11 @@ table.dash-table th {
     pointer-events: none;
     fill: #fff;
     font-family: inherit;
+    /* Centering is done on the element itself: text-anchor="middle" +
+       dy="0.35em" attributes (see chart_editor.js renderSection). No
+       dominant-baseline here -- it's unreliable on iOS Safari and would
+       fight the dy offset on engines that DO honor it. */
     text-anchor: middle;
-    dominant-baseline: central;
     user-select: none;
 }
 

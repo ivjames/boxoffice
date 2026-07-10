@@ -237,6 +237,8 @@ function chartEditor(config) {
         _captureTarget: null,
         _capturePointerId: null,
         _bgStart: null,
+        _activePointers: new Map(), // pointerId -> {x, y} for background touches
+        _pinch: null,               // two-finger pinch-zoom/pan gesture state
         popover: null, // {sectionId, row, number, accessible, screenX, screenY}
         dirty: false,
         saving: false,
@@ -299,6 +301,40 @@ function chartEditor(config) {
                     evt.returnValue = "";
                 }
             });
+
+            this.applyHandleRadiusFallback();
+        },
+
+        // The transform-box handles size their circles ONLY via the CSS `r`
+        // geometry property (app.css: `r: calc(0.3 * var(--chart-editor-
+        // handle-scale))`). Older iOS Safari (pre-16) doesn't support `r` as a
+        // CSS property at all, so those circles fall back to r=0 -- invisible
+        // AND untappable. The dark-iconed resize handles still show their glyph
+        // so they looked "there", but the move/rotate/offset handles have WHITE
+        // icons meant to sit on a colored dot, so with the dot gone they
+        // vanished entirely -- and every handle's invisible hit circle collapsed
+        // too, which is the real reason handles "can't be dragged" on the iPad.
+        // Setting an explicit `r` ATTRIBUTE is the fix: Safari always honors the
+        // presentation attribute, and browsers that DO support the CSS property
+        // still override it (CSS geometry props beat presentation attrs), so
+        // responsive sizing is unchanged where it works. Attribute values are
+        // touch-sized so the fallback is comfortably tappable on the iPad.
+        applyHandleRadiusFallback() {
+            const svg = this.$refs.svg;
+            if (!svg) return;
+            const radii = [
+                [".chart-editor__handle-hit", 0.9],
+                [".chart-editor__handle--resize", 0.34],
+                [".chart-editor__handle--offset", 0.3],
+                [".chart-editor__handle--rotate", 0.32],
+                [".chart-editor__pivot", 0.28],
+                [".chart-editor__rotation-pivot", 0.28],
+            ];
+            for (const [selector, r] of radii) {
+                svg.querySelectorAll(selector).forEach((el) => {
+                    if (!el.hasAttribute("r")) el.setAttribute("r", r);
+                });
+            }
         },
 
         get selected() {
@@ -429,15 +465,19 @@ function chartEditor(config) {
                 label.setAttribute("y", seat.y);
                 label.setAttribute("font-size", SEAT_RADIUS * 0.9);
                 label.setAttribute("class", "editor-seat-label");
-                // Center the number on the seat via SVG presentation ATTRIBUTES,
-                // not just the CSS rule in app.css: iOS/desktop Safari (WebKit)
-                // ignores `text-anchor`/`dominant-baseline` when they're set as
-                // CSS properties on SVG <text>, so on the real iPad the CSS-only
-                // version rendered numbers anchored at the top-left of (x, y) --
-                // the "numbers off center" report. Attributes are honored
-                // everywhere; the CSS stays as a harmless belt-and-suspenders.
+                // Center the number in the seat robustly across browsers:
+                // - text-anchor="middle" (an ATTRIBUTE, well supported) handles
+                //   horizontal centering.
+                // - For vertical centering, do NOT rely on dominant-baseline:
+                //   older iOS Safari ignores it (as a CSS property AND, on some
+                //   versions, wobbles on the attribute too), which left numbers
+                //   sitting high -- the "numbers not centered" report from the
+                //   real iPad. Instead anchor at the seat center y and nudge the
+                //   text DOWN by ~0.35em with `dy`, which lands a digit's optical
+                //   middle on the center on every engine (a numeral's ink sits
+                //   ~0.35em above the alphabetic baseline).
                 label.setAttribute("text-anchor", "middle");
-                label.setAttribute("dominant-baseline", "central");
+                label.setAttribute("dy", "0.35em");
                 label.textContent = seat.number;
                 g.appendChild(label);
             }
@@ -1034,6 +1074,13 @@ function chartEditor(config) {
         onCanvasPointerMove(evt) {
             if (this.dragMode) {
                 this.onHandleDrag(evt);
+                return;
+            }
+            if (this._activePointers.has(evt.pointerId)) {
+                this._activePointers.set(evt.pointerId, { x: evt.clientX, y: evt.clientY });
+            }
+            if (this._pinch && this._activePointers.size >= 2) {
+                this.onPinchMove();
             } else if (this.isPanning()) {
                 this.onPanMove(evt);
             }
@@ -1132,8 +1179,21 @@ function chartEditor(config) {
 
         onCanvasPointerDown(evt) {
             this.popover = null;
-            this._bgStart = { x: evt.clientX, y: evt.clientY };
-            this.startPan(evt);
+            this._activePointers.set(evt.pointerId, { x: evt.clientX, y: evt.clientY });
+            if (this._activePointers.size >= 2) {
+                // Second finger down -> switch from single-finger pan to a
+                // two-finger pinch-zoom/pan. Native pinch is disabled by the
+                // locked viewport meta (templates/base.html), so the canvas
+                // has to implement its own -- otherwise there's no way to zoom
+                // on the iPad at all (wheel-zoom is desktop-only). Cancel any
+                // in-progress single-finger pan/tap first.
+                this.endPan();
+                this._bgStart = null;
+                this.beginPinch();
+            } else {
+                this._bgStart = { x: evt.clientX, y: evt.clientY };
+                this.startPan(evt);
+            }
         },
 
         onCanvasPointerUp(evt) {
@@ -1141,12 +1201,61 @@ function chartEditor(config) {
                 this.endHandleDrag();
                 return;
             }
-            if (this._bgStart) {
+            const wasPinching = !!this._pinch;
+            this._activePointers.delete(evt.pointerId);
+            if (this._activePointers.size < 2) this._pinch = null;
+            if (this._activePointers.size > 0) return; // fingers still down
+            // All fingers up. A pinch is never a tap-to-deselect; only a clean
+            // single-finger tap that didn't move deselects.
+            if (!wasPinching && this._bgStart) {
                 const moved = Math.hypot(evt.clientX - this._bgStart.x, evt.clientY - this._bgStart.y);
                 if (moved < 3) this.selectedId = null;
             }
             this._bgStart = null;
             this.endPan();
+        },
+
+        // -- two-finger pinch-zoom + pan (touch) ------------------------------
+
+        beginPinch() {
+            const pts = [...this._activePointers.values()];
+            if (pts.length < 2) return;
+            const box = this.contentBox(); // client<->world geometry, fixed for the gesture
+            const midX = (pts[0].x + pts[1].x) / 2;
+            const midY = (pts[0].y + pts[1].y) / 2;
+            this._pinch = {
+                startDist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1,
+                startW: this.viewBox.w,
+                startH: this.viewBox.h,
+                box: { left: box.left, top: box.top, width: box.width || 1, height: box.height || 1 },
+                // World point under the finger midpoint at gesture start -- kept
+                // pinned under the (possibly moving) midpoint for the whole
+                // gesture, so pinch zooms toward the fingers and pans with them.
+                anchorX: this.viewBox.x + (midX - box.left) * box.scaleX,
+                anchorY: this.viewBox.y + (midY - box.top) * box.scaleY,
+            };
+        },
+
+        onPinchMove() {
+            const p = this._pinch;
+            const pts = [...this._activePointers.values()];
+            if (!p || pts.length < 2) return;
+            const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+            const midX = (pts[0].x + pts[1].x) / 2;
+            const midY = (pts[0].y + pts[1].y) / 2;
+            const minW = this._fitW * 0.05;
+            const maxW = this._fitW * 20;
+            // Spread fingers (dist grows) -> narrower viewBox -> zoom in.
+            const w = clamp((p.startW * p.startDist) / dist, minW, maxW);
+            const h = w * (p.startH / p.startW);
+            const scaleX = w / p.box.width;
+            const scaleY = h / p.box.height;
+            this.viewBox = {
+                x: p.anchorX - (midX - p.box.left) * scaleX,
+                y: p.anchorY - (midY - p.box.top) * scaleY,
+                w,
+                h,
+            };
         },
 
         onWheelZoom(evt) {

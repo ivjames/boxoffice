@@ -161,3 +161,25 @@ The on-canvas TRANSFORM SYSTEM is the crux — it's currently broken. Priority o
 11. **Snap-to-grid**: optional, OFF by default; snaps dragging/positioning to grid
     increments (pairs with the background grid).
 12. **JSON import/export**: round-trip the new pivot fields in chart_io.
+
+## Round 4 refinements (continued testing)
+1. **Arc slider must NEVER vanish**: sliding arc to 0 currently hides the slider.
+   Keep the arc slider ALWAYS visible; 0 = straight (no curve). Decouple the
+   slider's presence from the value / any checkbox.
+2. **Arc STILL offsets the origin + transform box**: the seats may now stay put,
+   but the transform BOUNDING BOX and the origin/pivot MARKERS are still offset
+   from the curved seats when arc is applied. FIX by deriving the transform frame
+   AND the origin/pivot markers from the ACTUAL rendered seat positions (real
+   bounding box of the current seat coordinates + padding) rather than from raw
+   origin/rectangular assumptions — so the box and markers correctly wrap the
+   seats for ANY geometry (grid / raked / fanned / rotated). Verify in-browser:
+   enable arc, confirm the box wraps the curved seats, the origin/pivot markers
+   sit correctly, and the seats do not move.
+3. **Control points = function ICONS**: replace the plain handle dots with small
+   inline-SVG icons of their function — rotate handle = circular-arrow; corner
+   resize = diagonal resize arrows; offset/skew = a shift/slide icon; move-section
+   = 4-way move icon; pivot = crosshair/target. Keep the large invisible touch
+   hit-zones behind each icon.
+4. **Control points must NEVER overlap seats**: offset the corner (and all) handles
+   OUTWARD beyond the seat block via frame padding, so no handle ever sits on a
+   seat — combine with #2's bbox-derived frame + generous padding.

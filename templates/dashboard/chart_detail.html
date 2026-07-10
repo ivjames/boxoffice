@@ -29,8 +29,8 @@
             <td>{{ section.get_row_label_scheme_display }}</td>
             <td>{{ section.seat_count }}</td>
             <td>
-                <a href="{% url 'dashboard_section_detail' chart.pk section.pk %}">Seats</a>
-                · <a href="{% url 'dashboard_section_update' chart.pk section.pk %}">Edit layout</a>
+                <a href="{% url 'dashboard_chart_editor' chart.pk %}?section={{ section.pk }}">Open in editor</a>
+                · <a href="{% url 'dashboard_section_update' chart.pk section.pk %}">Rename / details</a>
             </td>
         </tr>
     {% empty %}

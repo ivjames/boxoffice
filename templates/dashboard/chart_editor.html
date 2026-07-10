@@ -8,87 +8,478 @@
 <a class="back-link" href="{% url 'dashboard_chart_detail' chart.pk %}">&larr; {{ chart.name }}</a>
 <h1>{{ chart.name }} — visual editor</h1>
 <p class="muted">
-    Drag a seat to reposition it. Dragged positions win over the generated layout.
-    Generate seats from a section's page first if a section below has none yet.
+    Live editor -- every control updates the seat map immediately, no regenerate step. Select a
+    section (click a seat, or pick it in the list), shape it with the sliders/steppers or drag its
+    on-canvas handles, click a seat for accessible/delete, then Save.
 </p>
 
-{{ seats_json|json_script:"editor-seats-data" }}
+{{ sections_json|json_script:"editor-sections-data" }}
 
-<div class="chart-editor" x-data="chartEditor('{{ save_url|escapejs }}')">
+<div class="chart-editor"
+     x-data="chartEditor({
+         chartId: {{ chart.pk }},
+         saveUrl: '{{ save_url|escapejs }}',
+         newSectionUrl: '{{ new_section_url|escapejs }}',
+         initialSelectedId: {{ initial_selected_id|default:"null" }},
+     })">
     <div class="chart-editor__stage">
         <div class="chart-editor__toolbar">
-            <button type="button" class="button" :disabled="dirtyCount === 0 || saving" @click="save()">
+            <button type="button" class="button" :disabled="!dirty || saving" @click="save()">
                 <span x-show="!saving">Save changes</span>
                 <span x-show="saving" x-cloak>Saving…</span>
             </button>
-            <span class="chart-editor__dirty" x-show="dirtyCount > 0" x-cloak>
-                <span x-text="dirtyCount"></span> unsaved seat<span x-show="dirtyCount !== 1">s</span>
-            </span>
-            <span class="chart-editor__saved" x-show="dirtyCount === 0 && savedAt" x-cloak>Saved.</span>
+            <button type="button" class="button button--secondary" @click="fitAll()">Fit</button>
+            <label class="chart-editor__snap-toggle">
+                <input type="checkbox" x-model="snapEnabled">
+                Snap to grid
+            </label>
+            <span class="chart-editor__dirty" x-show="dirty" x-cloak>Unsaved changes</span>
+            <span class="chart-editor__saved" x-show="!dirty &amp;&amp; savedAt" x-cloak>Saved.</span>
             <span class="chart-editor__error" x-show="error" x-text="error" x-cloak></span>
+            <span class="muted chart-editor__hint">Scroll to zoom · drag background to pan</span>
         </div>
 
         <div class="chart-editor__svg-wrap">
-            <svg class="chart-editor__svg" x-ref="svg" viewBox="{{ view_box }}"
+            <svg class="chart-editor__svg" x-ref="svg" viewBox="0 0 10 10"
                  preserveAspectRatio="xMidYMid meet" role="img" aria-label="Seating chart layout"
-                 @pointermove.window="onDrag($event)"
-                 @pointerup.window="endDrag()"
-                 @pointercancel.window="endDrag()">
-                {% for seat in seats %}
-                    <circle class="editor-seat{% if seat.is_accessible %} editor-seat--accessible{% endif %}"
-                            data-seat-id="{{ seat.pk }}" data-section-id="{{ seat.section_id }}"
-                            :class="seatClass({{ seat.pk }})"
-                            :cx="seatsById[{{ seat.pk }}].x" :cy="seatsById[{{ seat.pk }}].y"
-                            r="{{ seat_radius }}" fill="{{ seat.editor_color }}"
-                            @pointerdown="startDrag({{ seat.pk }}, $event)">
-                        <title>{{ seat.section.name }} {{ seat.row_label }}{{ seat.number }}{% if seat.is_accessible %} (accessible){% endif %}</title>
-                    </circle>
-                    <text class="editor-seat-label" :x="seatsById[{{ seat.pk }}].x" :y="seatsById[{{ seat.pk }}].y"
-                          font-size="{{ seat_radius }}">{{ seat.row_label }}{{ seat.number }}</text>
-                {% endfor %}
+                 @wheel.prevent="onWheelZoom($event)"
+                 @pointerdown="onCanvasPointerDown($event)"
+                 @pointermove.window="onCanvasPointerMove($event)"
+                 @pointerup.window="onCanvasPointerUp($event)"
+                 @pointercancel.window="onCanvasPointerUp($event)">
+                <!-- background scale grid (round-2 refinement #4): patternUnits="userSpaceOnUse"
+                     ties the pattern's tiles to the SVG's own coordinate space (the same units
+                     seat_pitch/row_pitch are in), so panning/zooming the viewBox naturally pans/
+                     zooms the grid along with the seats -- no JS needed to keep it in sync, just
+                     a <rect> big enough to always cover the current viewBox (see :x/:y/:width/
+                     :height below, padded 3x so a mid-drag pan never outruns it for a frame).
+                     Two nested patterns give a minor (1 unit) + major (5 unit) grid, a rough
+                     "sense of scale" against seat_pitch's typical ~1-2 unit range. First child of
+                     <svg> so it paints behind every section group and the transform-box/pivot
+                     handles (SVG paints in DOM order). -->
+                <defs>
+                    <pattern id="editor-grid-minor" patternUnits="userSpaceOnUse" width="1" height="1">
+                        <path d="M 1 0 L 0 0 0 1" class="chart-editor__grid-line chart-editor__grid-line--minor" fill="none"></path>
+                    </pattern>
+                    <pattern id="editor-grid-major" patternUnits="userSpaceOnUse" width="5" height="5">
+                        <rect width="5" height="5" fill="url(#editor-grid-minor)"></rect>
+                        <path d="M 5 0 L 0 0 0 5" class="chart-editor__grid-line chart-editor__grid-line--major" fill="none"></path>
+                    </pattern>
+                </defs>
+                <rect class="chart-editor__grid-bg"
+                      :x="viewBox.x - viewBox.w" :y="viewBox.y - viewBox.h"
+                      :width="viewBox.w * 3" :height="viewBox.h * 3"
+                      fill="url(#editor-grid-major)"></rect>
+
+                <!-- Per-section seat groups: owned imperatively by chart_editor.js
+                     (ensureSectionGroup()/renderSection()), NOT a Django/Alpine loop -- a section
+                     added inline via the "New section" modal (round-2 refinement #7) has no
+                     server-rendered group to bind to, so group creation has to happen client-side
+                     for EVERY section (initial page load included) rather than only for ones added
+                     later. Inserted just before the transform box below so seats always paint
+                     under the handles regardless of insertion order. -->
+
+                <!-- transform box: 4 corner resize handles + the offset/skew handle (round 3 #1/
+                     #2/#3/#4/#7: rebuilt so it reliably shows/rotates-with-the-block/has chunky
+                     touch hit zones -- see chart_editor.js's header comment for the full story).
+                     Round 4 (docs/EDITOR.md #2/#4): every corner/handle position below reads off
+                     paddedLocalBBox() -- the REAL bounding box of the section's live seats, padded
+                     clear of them -- instead of a naive seats_per_row/rows rectangle, so the box
+                     tightly wraps (and never overlaps) the actual seats for grid/raked/fanned/arc
+                     alike. Round-4 correction: no longer hidden for arc sections at all -- offset
+                     now composes with arc instead of being disabled (see chart_editor.js's header
+                     comment). NOTE: deliberately a plain <g x-show=...>, NOT <template x-if> -- a
+                     <template> parsed inside <svg> gets SVG-namespaced by the browser and loses its
+                     `.content` (HTMLTemplateElement-only), so Alpine's x-if (which clones
+                     template.content) throws "Cannot read properties of undefined (reading
+                     'cloneNode')" and never renders anything. Same root cause documented in
+                     templates/orders/_seat_map.html for x-for; applies to x-if too. x-show just
+                     toggles style.display on a real, always-present element, so it's safe here.
+
+                     Every handle below is now THREE layers: a small visible dot (pointer-events:
+                     none, decorative backdrop), a function ICON on top of it (round 4 #3 --
+                     pointer-events: none, small inline-SVG glyph conveying what the handle does --
+                     see app.css's .chart-editor__handle-icon), and a larger INVISIBLE "-hit" circle
+                     that actually receives pointerdown/hover/the <title> tooltip (round 3 #3 -- see
+                     app.css's .chart-editor__handle-hit for why an invisible fill still works, and
+                     --chart-editor-hit-scale for how much bigger it gets under (pointer: coarse)) --
+                     unchanged from round 3, so touch/grab and the tooltips keep working exactly as
+                     before; the icon is purely a new decorative layer. Corner resize cursors are set
+                     INLINE (cornerCursorTL/TR/BL/BR()) since which of nwse/nesw/ns/ew reads
+                     correctly rotates with the section (round 3 #4); the diagonal-arrow icons below
+                     use two mirrored base paths (one per corner pair) rotated by resizeIconAngle()
+                     (== section.rotation) for the same "turns with the block" effect. -->
+                <g class="chart-editor__transform-box" x-ref="transformBox" x-show="selected" x-cloak>
+                        <line class="chart-editor__handle-line" :x1="handleTL()[0]" :y1="handleTL()[1]" :x2="handleTR()[0]" :y2="handleTR()[1]"></line>
+                        <line class="chart-editor__handle-line" :x1="handleTL()[0]" :y1="handleTL()[1]" :x2="handleBL()[0]" :y2="handleBL()[1]"></line>
+                        <line class="chart-editor__handle-line" :x1="handleTR()[0]" :y1="handleTR()[1]" :x2="handleBR()[0]" :y2="handleBR()[1]"></line>
+                        <line class="chart-editor__handle-line" :x1="handleBL()[0]" :y1="handleBL()[1]" :x2="handleBR()[0]" :y2="handleBR()[1]"></line>
+                        <line class="chart-editor__handle-line chart-editor__handle-line--offset"
+                              :x1="offsetStemStart()[0]" :y1="offsetStemStart()[1]" :x2="handleOffset()[0]" :y2="handleOffset()[1]"></line>
+
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleTL()[0]" :cy="handleTL()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleTL()[0]" :cy="handleTL()[1]"
+                                :style="'cursor:' + cornerCursorTL()"
+                                @pointerdown="startHandleDrag('both', $event)"><title>Resize -- seat + row spacing</title></circle>
+                        <!-- TL/BR share the NW-SE diagonal base path (already correct at rotation=0);
+                             TR/BL below use the mirrored NE-SW path -- see resizeIconAngle()'s doc
+                             comment for why an earlier version that computed an absolute per-corner
+                             angle double-counted the diagonal and rendered near-vertical instead. -->
+                        <g :transform="handleIconTransform(handleTL(), resizeIconAngle())">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--resize">
+                                <path d="M -0.15,-0.15 L 0.15,0.15 M -0.15,-0.15 L -0.15,-0.04 M -0.15,-0.15 L -0.04,-0.15 M 0.15,0.15 L 0.15,0.04 M 0.15,0.15 L 0.04,0.15"></path>
+                            </g>
+                        </g>
+
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleTR()[0]" :cy="handleTR()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleTR()[0]" :cy="handleTR()[1]"
+                                :style="'cursor:' + cornerCursorTR()"
+                                @pointerdown="startHandleDrag('seat_pitch', $event)"><title>Resize -- seat spacing</title></circle>
+                        <g :transform="handleIconTransform(handleTR(), resizeIconAngle())">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--resize">
+                                <path d="M -0.15,0.15 L 0.15,-0.15 M -0.15,0.15 L -0.15,0.04 M -0.15,0.15 L -0.04,0.15 M 0.15,-0.15 L 0.15,-0.04 M 0.15,-0.15 L 0.04,-0.15"></path>
+                            </g>
+                        </g>
+
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleBL()[0]" :cy="handleBL()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleBL()[0]" :cy="handleBL()[1]"
+                                :style="'cursor:' + cornerCursorBL()"
+                                @pointerdown="startHandleDrag('row_pitch', $event)"><title>Resize -- row spacing</title></circle>
+                        <g :transform="handleIconTransform(handleBL(), resizeIconAngle())">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--resize">
+                                <path d="M -0.15,0.15 L 0.15,-0.15 M -0.15,0.15 L -0.15,0.04 M -0.15,0.15 L -0.04,0.15 M 0.15,-0.15 L 0.15,-0.04 M 0.15,-0.15 L 0.04,-0.15"></path>
+                            </g>
+                        </g>
+
+                        <circle class="chart-editor__handle chart-editor__handle--resize" :cx="handleBR()[0]" :cy="handleBR()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--resize" :cx="handleBR()[0]" :cy="handleBR()[1]"
+                                :style="'cursor:' + cornerCursorBR()"
+                                @pointerdown="startHandleDrag('both', $event)"><title>Resize -- seat + row spacing</title></circle>
+                        <g :transform="handleIconTransform(handleBR(), resizeIconAngle())">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--resize">
+                                <path d="M -0.15,-0.15 L 0.15,0.15 M -0.15,-0.15 L -0.15,-0.04 M -0.15,-0.15 L -0.04,-0.15 M 0.15,0.15 L 0.15,0.04 M 0.15,0.15 L 0.04,0.15"></path>
+                            </g>
+                        </g>
+
+                        <circle class="chart-editor__handle chart-editor__handle--offset" :cx="handleOffset()[0]" :cy="handleOffset()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--offset" :cx="handleOffset()[0]" :cy="handleOffset()[1]"
+                                @pointerdown="startHandleDrag('offset', $event)"><title>Offset -- row stagger</title></circle>
+                        <g :transform="handleIconTransform(handleOffset(), selected ? selected.rotation : 0)">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--offset">
+                                <path d="M -0.16,0 L 0.16,0 M -0.16,0 L -0.08,-0.08 M -0.16,0 L -0.08,0.08 M 0.16,0 L 0.08,-0.08 M 0.16,0 L 0.08,0.08"></path>
+                            </g>
+                        </g>
+                </g>
+
+                <!-- Section origin ("move section") marker + rotate handle: shown for any
+                     selection, arc included. Round 5: the move marker hugs the frame's LEFT edge at
+                     mid-height (see chart_editor.js's originMarkerXY()) -- clear of the corner
+                     resize handles and the seats -- so it no longer needs the old cross-canvas
+                     leader line back to the raw origin (that line was the "stray line" the user
+                     flagged). The rotate handle sits just above the frame's top edge, joined to it
+                     by a short stem (rotateStemStart()). -->
+                <g class="chart-editor__pivot-group" x-show="selected" x-cloak>
+                        <!-- Round 5 (declutter): short rotate stem from the box's top edge (not
+                             the pivot deep inside the block), and the move marker now hugs the
+                             frame's left edge so it needs no leader line -- see chart_editor.js's
+                             rotateStemStart()/originMarkerXY(). The old cross-canvas connector
+                             lines + the raw-origin dot were the "stray lines on controls." -->
+                        <line class="chart-editor__handle-line chart-editor__handle-line--rotate" :x1="rotateStemStart()[0]" :y1="rotateStemStart()[1]" :x2="handleRotate()[0]" :y2="handleRotate()[1]"></line>
+                        <circle class="chart-editor__pivot" :cx="originMarkerXY()[0]" :cy="originMarkerXY()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--pivot" :cx="originMarkerXY()[0]" :cy="originMarkerXY()[1]"
+                                @pointerdown="startHandleDrag('origin', $event)"><title>Move section</title></circle>
+                        <!-- Round 4 #3: 4-way move icon (was a plain crosshair dot). -->
+                        <g :transform="handleIconTransform(originMarkerXY())">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--move">
+                                <path d="M 0,-0.2 L 0,0.2 M -0.2,0 L 0.2,0 M 0,-0.2 L -0.07,-0.11 M 0,-0.2 L 0.07,-0.11 M 0,0.2 L -0.07,0.11 M 0,0.2 L 0.07,0.11 M -0.2,0 L -0.11,-0.07 M -0.2,0 L -0.11,0.07 M 0.2,0 L 0.11,-0.07 M 0.2,0 L 0.11,0.07"></path>
+                            </g>
+                        </g>
+                        <circle class="chart-editor__handle chart-editor__handle--rotate" :cx="handleRotate()[0]" :cy="handleRotate()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--rotate" :cx="handleRotate()[0]" :cy="handleRotate()[1]"
+                                @pointerdown="startHandleDrag('rotate', $event)"><title>Rotate around the pivot</title></circle>
+                        <!-- Round 4 #3: circular-arrow (rotate) icon. -->
+                        <g :transform="handleIconTransform(handleRotate())">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--rotate">
+                                <path d="M 0.15,-0.05 A0.16,0.16 0 1,0 0.02,0.16" fill="none"></path>
+                                <path d="M 0.02,0.16 L -0.06,0.06 L 0.1,0.03 Z" stroke="none"></path>
+                            </g>
+                        </g>
+
+                        <!-- Rotation pivot marker (round-2 refinement #2): defaults to the
+                             section's CENTER (see selected.pivot_mode/pivotWorldXY()); always
+                             draggable -- dragging it switches pivot_mode to "custom" and records
+                             the drop point (chart_editor.js's onHandleDrag 'move_pivot' case).
+                             Round 4: anchored off the padded seat bbox's OPPOSITE corner from the
+                             origin marker (rotationPivotMarkerXY()) so the two never overlap and the
+                             pivot marker reliably clears the seats even when the true pivot (a
+                             CENTER pivot, say) sits deep inside the block. -->
+                        <!-- Round 5 (declutter): the teal cross-canvas connector line is gone;
+                             the small dot still marks the TRUE rotation center (pivotWorldXY,
+                             which a CENTER pivot puts mid-block) while the draggable marker below
+                             lives out on the frame's right edge (rotationPivotMarkerXY()). -->
+                        <circle class="chart-editor__rotation-pivot-point" :cx="pivotWorldXY()[0]" :cy="pivotWorldXY()[1]" r="0.08"></circle>
+                        <circle class="chart-editor__rotation-pivot" :cx="rotationPivotMarkerXY()[0]" :cy="rotationPivotMarkerXY()[1]"></circle>
+                        <circle class="chart-editor__handle-hit chart-editor__handle-hit--rotation-pivot" :cx="rotationPivotMarkerXY()[0]" :cy="rotationPivotMarkerXY()[1]"
+                                @pointerdown="startHandleDrag('move_pivot', $event)"><title>Move pivot -- the point rotation turns around</title></circle>
+                        <!-- Round 4 #3: crosshair/target icon. -->
+                        <g :transform="handleIconTransform(rotationPivotMarkerXY())">
+                            <g class="chart-editor__handle-icon chart-editor__handle-icon--pivot">
+                                <circle r="0.09" fill="none"></circle>
+                                <path d="M -0.2,0 L -0.12,0 M 0.12,0 L 0.2,0 M 0,-0.2 L 0,-0.12 M 0,0.12 L 0,0.2"></path>
+                            </g>
+                        </g>
+                </g>
             </svg>
+
+            <!-- per-seat popover: plain HTML overlay (outside <svg>, so <template x-if> is
+                 safe here), positioned at the click point. The show/hide toggle lives INSIDE
+                 this same :style string rather than a separate x-show -- Alpine's string-form
+                 :style does a full `style.cssText =` replace on every reactive tick, which
+                 fought x-show's own `style.display` write (whichever ran last in the same
+                 flush won) and left the popover permanently display:none. Confirmed by driving
+                 the editor: popover's JS state (`popover`) was correctly set on click, but the
+                 element's own inline `style` attribute never carried a `display` at all. -->
+            <div class="chart-editor__popover"
+                 :style="popover ? ('display:block; left:' + popover.screenX + 'px; top:' + popover.screenY + 'px;') : 'display:none;'"
+                 @click.outside="closePopover()">
+                <template x-if="popover">
+                    <div>
+                        <div class="chart-editor__popover-title">
+                            <span x-text="popover.row + popover.number"></span>
+                            <button type="button" class="chart-editor__popover-close" @click="closePopover()" aria-label="Close">&times;</button>
+                        </div>
+                        <label class="chart-editor__popover-toggle">
+                            <input type="checkbox" :checked="popover.accessible" @change="popoverToggleAda()">
+                            Accessible / ADA
+                        </label>
+                        <button type="button" class="button button--secondary chart-editor__popover-delete" @click="popoverDeleteSeat()">
+                            Delete seat
+                        </button>
+                    </div>
+                </template>
+            </div>
         </div>
-        {% if not seats %}
-            <p class="muted">This chart has no seats yet — generate seats on a section below, then come back here to fine-tune positions.</p>
-        {% endif %}
+        <p class="muted" x-show="sectionOrder.length === 0" x-cloak>No sections yet — add one below.</p>
     </div>
 
     <div class="chart-editor__sidebar">
         <h2>Sections</h2>
         <ul class="chart-editor__legend">
-            {% for section in sections %}
-                <li><i class="chart-editor__swatch" style="background:{{ section.editor_color }}"></i>{{ section.name }}</li>
-            {% endfor %}
+            <!-- Fully client-driven (round-2 refinement #7): a section added
+                 inline via the "New section" modal only exists in Alpine
+                 state (sectionOrder/sections), so this list can't rely on a
+                 server-side loop over the initial page-load sections anymore
+                 -- x-for is safe here (unlike inside <svg>, see the
+                 transform-box comment above, this <ul> is plain HTML). -->
+            <template x-for="(id, index) in sectionOrder" :key="id">
+                <li class="chart-editor__legend-row">
+                    <button type="button" class="chart-editor__legend-btn"
+                            :class="selectedId === id ? 'is-selected' : ''"
+                            @click="selectSection(id)">
+                        <i class="chart-editor__swatch" :style="'background:' + sections[id].color"></i>
+                        <span x-text="sections[id].name"></span><span x-text="' (' + sections[id].seatCount + ' seats)'"></span>
+                    </button>
+                    <!-- Reordering (Round 2 feedback on #7): up/down arrows,
+                         not a manual "ordering" number -- see SectionForm's
+                         docstring. Swaps this section with its neighbor via
+                         dashboard_section_reorder. -->
+                    <span class="chart-editor__legend-reorder">
+                        <button type="button" class="chart-editor__legend-reorder-btn" :disabled="index === 0"
+                                @click="moveSectionUp(id)" aria-label="Move up" title="Move up">&uarr;</button>
+                        <button type="button" class="chart-editor__legend-reorder-btn" :disabled="index === sectionOrder.length - 1"
+                                @click="moveSectionDown(id)" aria-label="Move down" title="Move down">&darr;</button>
+                    </span>
+                </li>
+            </template>
+            <li class="muted" x-show="sectionOrder.length === 0" x-cloak>No sections yet.</li>
         </ul>
 
-        {% for section in sections %}
-            <div class="chart-editor__section-panel">
-                <h3>{{ section.name }}{% if section.tier %} <span class="muted">— {{ section.tier }}</span>{% endif %}</h3>
-                <dl>
-                    <dt>Seats</dt><dd>{{ section.seats.count }}</dd>
-                    <dt>Rotation</dt><dd>{{ section.rotation }}&deg;</dd>
-                    <dt>Seat pitch</dt><dd>{{ section.seat_pitch }}</dd>
-                    <dt>Row pitch</dt><dd>{{ section.row_pitch }}</dd>
-                    <dt>Row x-offset</dt><dd>{{ section.row_x_offset }}</dd>
-                    <dt>Arc radius</dt><dd>{{ section.arc_radius|default:"—" }}</dd>
-                </dl>
+        <!-- Inline "New section" (round-2 refinement #7): a button that opens
+             a small in-page form instead of a link to a separate page --
+             submits via AJAX to the SAME dashboard_section_create endpoint a
+             direct link would (see SectionCreateView's docstring), and
+             splices the JSON response straight into `sections`/
+             `sectionOrder` so the new section renders live without leaving
+             the editor or reloading anything. -->
+        <button type="button" class="button button--secondary" @click="openNewSection()">New section</button>
+        <div class="chart-editor__new-section" x-show="newSectionOpen" x-cloak @keydown.escape.window="closeNewSection()">
+            <form @submit.prevent="submitNewSection()">
+                <div class="field">
+                    <label for="new-section-name">Name</label>
+                    <input id="new-section-name" type="text" x-model="newSectionForm.name" required maxlength="255">
+                </div>
+                <div class="field">
+                    <label for="new-section-tier">Tier (optional)</label>
+                    <input id="new-section-tier" type="text" x-model="newSectionForm.tier" maxlength="100"
+                           placeholder="Orchestra, Balcony…">
+                </div>
+                <p class="muted">
+                    It'll appear on the canvas with a starter shape (rows/seats/spacing) you can
+                    adjust with the controls below -- drag it into place, and reorder it in the
+                    list with the up/down arrows.
+                </p>
+                <p class="chart-editor__error" x-show="newSectionError" x-text="newSectionError" x-cloak></p>
                 <div class="chart-editor__section-actions">
-                    <a href="{% url 'dashboard_section_update' chart.pk section.pk %}?next=editor">Edit layout</a>
-                    <form method="post" action="{% url 'dashboard_section_regenerate' chart.pk section.pk %}"
-                          onsubmit="return confirm('Regenerate {{ section.name }}&#39;s seats with the current layout params? Positions you dragged for this section will be reset to the generated layout, and accessible flags are cleared. Refused if any seat has a live ticket.');">
-                        {% csrf_token %}
-                        <button type="submit" class="button button--secondary">Regenerate seats</button>
-                    </form>
-                    <a href="{% url 'dashboard_section_detail' chart.pk section.pk %}">Seats list</a>
+                    <button type="submit" class="button" :disabled="newSectionSaving">
+                        <span x-show="!newSectionSaving">Add section</span>
+                        <span x-show="newSectionSaving" x-cloak>Adding…</span>
+                    </button>
+                    <button type="button" class="button button--secondary" @click="closeNewSection()">Cancel</button>
+                </div>
+            </form>
+        </div>
+
+        <template x-if="selected">
+            <div class="chart-editor__section-panel">
+                <h3 x-text="selected.name"></h3>
+                <p class="muted">
+                    <span x-text="selectedSeatCount"></span> seat(s) ·
+                    <a :href="selected.editUrl">Rename / details</a>
+                </p>
+
+                <div class="field chart-editor__control">
+                    <label for="editor-rotation">Tilt / rotation</label>
+                    <div class="chart-editor__slider-row">
+                        <input id="editor-rotation" type="range" class="chart-editor__slider chart-editor__slider--centered" min="-45" max="45" step="1"
+                               x-model.number="selected.rotation" @input="onParamInput(selectedId)">
+                        <input type="number" class="chart-editor__number" min="-45" max="45" step="1"
+                               x-model.number="selected.rotation" @input="onParamInput(selectedId)">
+                        <span class="chart-editor__unit">&deg;</span>
+                    </div>
+                </div>
+
+                <div class="field chart-editor__control">
+                    <label>Rotation pivot</label>
+                    <div class="chart-editor__toggle chart-editor__toggle--three">
+                        <button type="button" :class="selected.pivot_mode === 'center' ? 'is-active' : ''"
+                                @click="onPivotModeInput(selectedId, 'center')">Center</button>
+                        <button type="button" :class="selected.pivot_mode === 'origin' ? 'is-active' : ''"
+                                @click="onPivotModeInput(selectedId, 'origin')">Origin</button>
+                        <button type="button" :class="selected.pivot_mode === 'custom' ? 'is-active' : ''"
+                                @click="onPivotModeInput(selectedId, 'custom')">Custom</button>
+                    </div>
+                    <p class="muted" x-show="selected.pivot_mode === 'custom'" x-cloak>
+                        Drag the small pivot marker on the canvas to reposition it.
+                    </p>
+                </div>
+
+                <!-- Round-4 correction (docs/EDITOR.md): round 3 #10 disabled offset for arc
+                     sections since _fanned_local never read row_x_offset -- it now does (offset
+                     COMPOSES with arc, see venues/generation.py's _fanned_local / seat_geometry.js's
+                     fannedLocal), so none of the offset controls below are arc-gated any more. -->
+                <div class="field chart-editor__control">
+                    <label>Offset mode</label>
+                    <div class="chart-editor__toggle">
+                        <button type="button" :class="selected.offset_mode === 'repeated' ? 'is-active' : ''"
+                                @click="onOffsetModeInput(selectedId, 'repeated')">Repeated</button>
+                        <button type="button" :class="selected.offset_mode === 'alternating' ? 'is-active' : ''"
+                                @click="onOffsetModeInput(selectedId, 'alternating')">Alternating</button>
+                    </div>
+                </div>
+
+                <div class="field chart-editor__control">
+                    <label for="editor-offset-amount">Offset amount</label>
+                    <div class="chart-editor__slider-row">
+                        <input id="editor-offset-amount" type="range" class="chart-editor__slider chart-editor__slider--centered"
+                               :min="-offsetRange(selected)" :max="offsetRange(selected)" step="0.1"
+                               x-model.number="selected.row_x_offset" @input="onParamInput(selectedId)">
+                        <input type="number" class="chart-editor__number"
+                               :min="-offsetRange(selected)" :max="offsetRange(selected)" step="0.1"
+                               x-model.number="selected.row_x_offset" @input="onParamInput(selectedId)">
+                    </div>
+                </div>
+
+                <div class="field chart-editor__control" x-show="selected.offset_mode === 'alternating'" x-cloak>
+                    <label>Alt-row seats +/&minus; <span class="chart-editor__control-value" x-text="(selected.alt_row_seat_delta > 0 ? '+' : '') + selected.alt_row_seat_delta"></span></label>
+                    <!-- Round 3 #9: constrained to -1/0/+1 (a brick-stagger nudge, not a general
+                         seat-count control) -- see chart_editor.js's stepAltDelta and
+                         dashboard/views.py's chart_editor_save for the client + server clamps. -->
+                    <div class="chart-editor__stepper">
+                        <button type="button" :disabled="selected.alt_row_seat_delta <= -1" @click="stepAltDelta(selectedId, -1)">&minus;</button>
+                        <span x-text="selected.alt_row_seat_delta"></span>
+                        <button type="button" :disabled="selected.alt_row_seat_delta >= 1" @click="stepAltDelta(selectedId, 1)">+</button>
+                    </div>
+                </div>
+
+                <!-- Round 4 (docs/EDITOR.md #1): the arc slider ALWAYS renders now -- no more
+                     "Arc / curve" checkbox gating its visibility, and no x-show tied to the value
+                     either. 0 (the slider's own minimum) means straight, same as every other
+                     slider's zero value -- see chart_editor.js's onArcAmountInput()/makeSection(). -->
+                <div class="field chart-editor__control">
+                    <label for="editor-arc-amount">Arc / curve</label>
+                    <div class="chart-editor__slider-row">
+                        <input id="editor-arc-amount" type="range" class="chart-editor__slider" min="0" max="40" step="1"
+                               x-model.number="selected.arc_amount" @input="onArcAmountInput(selectedId)">
+                        <input type="number" class="chart-editor__number" min="0" max="40" step="1"
+                               x-model.number="selected.arc_amount" @input="onArcAmountInput(selectedId)">
+                    </div>
+                    <p class="muted">Straight (0) &rarr; tighter curve. Curves in place -- the section doesn't move.</p>
+                </div>
+
+                <div class="field chart-editor__control">
+                    <label>Rows</label>
+                    <div class="chart-editor__stepper">
+                        <button type="button" @click="stepRows(selectedId, -1)">&minus;</button>
+                        <span x-text="selected.rows"></span>
+                        <button type="button" @click="stepRows(selectedId, 1)">+</button>
+                    </div>
+                </div>
+
+                <div class="field chart-editor__control">
+                    <label>Seats per row</label>
+                    <div class="chart-editor__stepper">
+                        <button type="button" @click="stepSeatsPerRow(selectedId, -1)">&minus;</button>
+                        <span x-text="selected.seats_per_row"></span>
+                        <button type="button" @click="stepSeatsPerRow(selectedId, 1)">+</button>
+                    </div>
+                </div>
+
+                <div class="field chart-editor__control">
+                    <label for="editor-pitch-seat">Seat pitch</label>
+                    <div class="chart-editor__slider-row">
+                        <input id="editor-pitch-seat" type="range" class="chart-editor__slider" min="0.2" max="5" step="0.05"
+                               x-model.number="selected.seat_pitch" @input="onParamInput(selectedId)">
+                        <input type="number" class="chart-editor__number" min="0.2" max="5" step="0.05"
+                               x-model.number="selected.seat_pitch" @input="onParamInput(selectedId)">
+                    </div>
+                </div>
+
+                <div class="field chart-editor__control">
+                    <label for="editor-row-pitch">Row pitch</label>
+                    <div class="chart-editor__slider-row">
+                        <input id="editor-row-pitch" type="range" class="chart-editor__slider" min="0.2" max="5" step="0.05"
+                               x-model.number="selected.row_pitch" @input="onParamInput(selectedId)">
+                        <input type="number" class="chart-editor__number" min="0.2" max="5" step="0.05"
+                               x-model.number="selected.row_pitch" @input="onParamInput(selectedId)">
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label for="editor-numbering-scheme">Numbering</label>
+                    <select id="editor-numbering-scheme" x-model="selected.numbering_scheme" @change="onParamInput(selectedId)">
+                        <option value="sequential">Sequential (1, 2, 3…)</option>
+                        <option value="odd_desc_left">Odd, descending toward the aisle</option>
+                        <option value="even_asc_right">Even, ascending away from the aisle</option>
+                        <option value="hundreds">Hundreds by row</option>
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="editor-row-label-scheme">Row labels</label>
+                    <select id="editor-row-label-scheme" x-model="selected.row_label_scheme" @change="onParamInput(selectedId)">
+                        <option value="skip_io">A–Z skipping I/O, then AA, BB…</option>
+                        <option value="all_letters">A–Z including I/O, then AA, BB…</option>
+                    </select>
                 </div>
             </div>
-        {% empty %}
-            <p class="muted">No sections yet.</p>
-        {% endfor %}
+        </template>
+        <p class="muted" x-show="!selected" x-cloak>Select a section to edit its shape.</p>
     </div>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
+<script src="{% static 'js/editor_viewport.js' %}"></script>
+<script src="{% static 'js/seat_geometry.js' %}"></script>
 <script src="{% static 'js/chart_editor.js' %}"></script>
 {% endblock %}

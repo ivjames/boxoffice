@@ -23,6 +23,12 @@ body {
     color: var(--text-color);
     background: var(--bg-color);
     line-height: 1.5;
+    /* Pairs with the locked viewport meta (templates/base.html): drops the
+       double-tap-zoom gesture (and its ~300ms click delay) so taps register
+       immediately -- important for the seating editor's on-canvas handles on
+       touch. `pan-x pan-y` still allows normal page scrolling. */
+    touch-action: pan-x pan-y;
+    -webkit-text-size-adjust: 100%;
 }
 
 a {
@@ -726,9 +732,11 @@ textarea:focus-visible,
     background: #d1d5db;
 }
 
+/* Scroll wrapper for the seat canvas. Seats are laid out by their real
+   (continuous) world coordinates inside .seat-map__canvas -- see
+   templates/orders/_seat_map.html -- so a wide chart simply scrolls
+   horizontally instead of being crammed into an integer CSS grid. */
 .seat-map__grid {
-    display: grid;
-    gap: 0.4rem;
     max-width: 100%;
     overflow-x: auto;
     padding: 0.5rem;
@@ -737,9 +745,14 @@ textarea:focus-visible,
     margin-bottom: 1rem;
 }
 
+.seat-map__canvas {
+    position: relative;
+    margin: 0 auto;
+}
+
 .seat-btn {
-    width: 2.25rem;
-    height: 2.25rem;
+    width: 2.1rem;
+    height: 2.1rem;
     border-radius: 50%;
     border: 2px solid var(--accent-color);
     background: #fff;
@@ -1107,6 +1120,16 @@ table.dash-table th {
     background: #fafafa;
     max-width: 100%;
     overflow: auto;
+    /* iOS Safari historically honors `touch-action` reliably only on HTML
+       elements, NOT on the inner <svg> -- so the `touch-action: none` on
+       .chart-editor__svg alone let single-finger handle drags on the real
+       iPad get swallowed by page pan/zoom ("touch patchy, can't drag").
+       Setting it on this HTML wrapper is the version Safari actually
+       respects; the editor supplies its own pan (drag background) + wheel/
+       pinch zoom, so giving up the wrapper's native touch-scroll costs
+       nothing. */
+    touch-action: none;
+    overscroll-behavior: contain;
 }
 
 .chart-editor__svg {
@@ -1118,7 +1141,7 @@ table.dash-table th {
 }
 
 .editor-seat {
-    cursor: grab;
+    cursor: pointer;
     stroke-width: 0.06;
 }
 
@@ -1126,13 +1149,13 @@ table.dash-table th {
     filter: brightness(1.15);
 }
 
-.editor-seat--dragging {
-    cursor: grabbing;
-    filter: brightness(1.3);
-}
-
 .editor-seat--accessible {
     stroke: #2563eb;
+}
+
+.chart-editor__group--selected circle {
+    stroke: #111827;
+    stroke-width: 0.08;
 }
 
 .editor-seat-label {
@@ -1142,6 +1165,13 @@ table.dash-table th {
     text-anchor: middle;
     dominant-baseline: central;
     user-select: none;
+}
+
+/* Round 3 #5: hide seat labels once zoomed out far enough to be illegible
+   (toggled by chart_editor.js's updateLabelVisibility()) instead of drawing
+   unreadable sub-pixel text. */
+.chart-editor__svg--labels-hidden .editor-seat-label {
+    display: none;
 }
 
 .chart-editor__sidebar {
@@ -1205,6 +1235,488 @@ table.dash-table th {
 
 .chart-editor__section-actions form {
     margin: 0;
+}
+
+.chart-editor__hint {
+    margin-left: auto;
+    font-size: 0.8rem;
+}
+
+/* -- live editor: transform box handles + pivot marker (docs/EDITOR.md) -- */
+
+/* Round-2 refinement #3 (responsive handle size): the on-canvas control
+   dots are too big for a mouse but need to stay comfortably tappable on
+   touch/coarse pointers. `r` is a real CSS geometry property on SVG
+   <circle>s (overrides any `r=""` presentation attribute, of which the
+   handles below deliberately have none), so a single scale variable here
+   covers every handle without touching chart_editor.js. `(hover: none)`
+   catches touchscreens that report as neither strictly coarse nor fine on
+   some browsers; `pointer: coarse` covers the common case directly. */
+:root {
+    --chart-editor-handle-scale: 1;
+    /* Round 3 #3: the INVISIBLE hit-zone multiplier -- always noticeably
+       bigger than the visible-dot scale above so every handle's grabbable
+       area extends well beyond what you can see, on every pointer type. */
+    --chart-editor-hit-scale: 1;
+}
+
+@media (pointer: coarse), (hover: none) {
+    :root {
+        --chart-editor-handle-scale: 1.7;
+        /* Chunky, reliable touch targets (round 3 #3, the top touch
+           priority): iPad touch is flaky against small hit areas, so
+           coarse/touch pointers get a much larger invisible hit zone on
+           top of the already-bigger visible dot. */
+        --chart-editor-hit-scale: 1.8;
+    }
+}
+
+.chart-editor__transform-box,
+.chart-editor__pivot-group {
+    pointer-events: none;
+}
+
+.chart-editor__handle,
+.chart-editor__pivot,
+.chart-editor__rotation-pivot {
+    pointer-events: none;
+    fill: #fff;
+    stroke: #111827;
+    stroke-width: 0.08;
+    cursor: pointer;
+    r: calc(0.28 * var(--chart-editor-handle-scale));
+}
+
+/* Round 3 #1/#3: every handle is now TWO circles -- the visible dot above
+   (decorative, pointer-events: none so it never competes with its own hit
+   zone for the topmost-element-wins SVG hit test) and this larger,
+   invisible one, which is the actual pointerdown/hover/title target.
+   `fill: transparent` + `pointer-events: all` still receives events (SVG's
+   default pointer-events value, visiblePainted, would NOT -- transparent
+   fill doesn't count as "painted" -- see chart_editor.js's header comment).
+   Always noticeably bigger than its sibling dot ("well beyond the visible
+   dot" per docs/EDITOR.md), bigger still under (pointer: coarse). */
+.chart-editor__handle-hit {
+    pointer-events: all;
+    fill: transparent;
+    r: calc(0.55 * var(--chart-editor-hit-scale));
+}
+
+/* Round 3 #4: hover cursors live on the HIT circle (it's the element that
+   actually receives pointer/hover events -- see the comment above). Corner
+   resize cursors are set INLINE instead (chart_editor.js's cornerCursor()),
+   since which of nwse/nesw/ns/ew is "correct" depends on the section's
+   current rotation; `.chart-editor__handle-hit--resize` here is just the
+   pre-hydration/no-JS fallback. */
+.chart-editor__handle-hit--resize {
+    cursor: nwse-resize;
+}
+
+.chart-editor__handle-hit--offset {
+    cursor: ew-resize;
+}
+
+.chart-editor__handle-hit--rotate {
+    cursor: grab;
+}
+
+.chart-editor__handle-hit--pivot {
+    cursor: move;
+}
+
+.chart-editor__handle-hit--rotation-pivot {
+    cursor: crosshair;
+}
+
+.chart-editor__handle--resize {
+    r: calc(0.32 * var(--chart-editor-handle-scale));
+}
+
+.chart-editor__handle--offset {
+    r: calc(0.28 * var(--chart-editor-handle-scale));
+    fill: #d97706;
+}
+
+.chart-editor__handle--rotate {
+    r: calc(0.3 * var(--chart-editor-handle-scale));
+    fill: #7c3aed;
+}
+
+.chart-editor__pivot {
+    pointer-events: none;
+    r: calc(0.26 * var(--chart-editor-handle-scale));
+    fill: #e11d48;
+}
+
+.chart-editor__rotation-pivot {
+    pointer-events: none;
+    r: calc(0.26 * var(--chart-editor-handle-scale));
+    fill: #0891b2;
+}
+
+/* Round 4 (docs/EDITOR.md #3): small inline-SVG glyphs painted ON TOP of
+   each handle's existing colored dot, conveying its function (rotate =
+   circular arrow, corners = diagonal resize arrows, offset = a horizontal
+   shift arrow, move-section = a 4-way arrow cross, pivot = a crosshair/
+   target) -- see chart_editor.html for the actual paths. Purely decorative
+   (pointer-events: none, same as the dot underneath it): the invisible
+   `.chart-editor__handle-hit` circle from round 3 is completely unchanged
+   and still does all the actual pointerdown/hover/tooltip work, so touch
+   grabbing isn't affected by this new layer at all.
+
+   Each icon is TWO nested <g>s in the template: an outer one carrying the
+   dynamic per-instance `transform` ATTRIBUTE (translate to the handle's
+   position, rotate to match a corner's outward direction or the block's
+   tilt), and this inner one carrying the responsive-scale CSS `transform`.
+   That split is required, not just tidy -- an SVG element's CSS `transform`
+   property REPLACES its presentation `transform` attribute outright when
+   both are present on the SAME element (rather than composing), so putting
+   the scale here on a plain child element lets the outer element's
+   attribute-based translate/rotate keep working. `transform-box: fill-box`
+   + `transform-origin: center` makes the CSS scale grow from the glyph's
+   own middle (its paths are already centered on local (0, 0), so plain
+   `center` reads the same either way) instead of the SVG viewport's
+   origin. */
+.chart-editor__handle-icon {
+    pointer-events: none;
+    fill: none;
+    stroke-width: 0.045;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scale(var(--chart-editor-handle-scale));
+}
+
+/* Resize handles sit on a WHITE dot (.chart-editor__handle--resize inherits
+   the shared #fff/#111827 fill/stroke above) -- a dark icon stroke reads
+   clearly against it. Every other icon below sits on a COLORED dot, so its
+   icon is white instead for the same contrast reason. */
+.chart-editor__handle-icon--resize {
+    stroke: #111827;
+}
+
+.chart-editor__handle-icon--offset {
+    stroke: #fff;
+}
+
+.chart-editor__handle-icon--rotate {
+    stroke: #fff;
+    fill: #fff;
+}
+
+.chart-editor__handle-icon--move {
+    stroke: #fff;
+}
+
+.chart-editor__handle-icon--pivot {
+    stroke: #fff;
+}
+
+.chart-editor__handle-line {
+    stroke: #111827;
+    stroke-width: 0.04;
+    stroke-dasharray: 0.15 0.1;
+    opacity: 0.6;
+}
+
+.chart-editor__handle-line--offset {
+    stroke: #d97706;
+}
+
+.chart-editor__handle-line--rotate {
+    stroke: #7c3aed;
+}
+
+.chart-editor__pivot-cross {
+    stroke: #e11d48;
+    stroke-width: 0.05;
+}
+
+.chart-editor__pivot-connector {
+    stroke: #e11d48;
+    stroke-width: 0.03;
+    stroke-dasharray: 0.06 0.06;
+    opacity: 0.7;
+}
+
+.chart-editor__pivot-point {
+    fill: #e11d48;
+    pointer-events: none;
+}
+
+/* Rotation-pivot marker (Round 2 #2) -- same connector/dot treatment as the
+   origin marker above, teal instead of red so the two are visually
+   distinct even when they sit close together (e.g. pivot_mode "origin"). */
+.chart-editor__rotation-pivot-connector {
+    stroke: #0891b2;
+    stroke-width: 0.03;
+    stroke-dasharray: 0.06 0.06;
+    opacity: 0.7;
+}
+
+.chart-editor__rotation-pivot-point {
+    fill: #0891b2;
+    pointer-events: none;
+}
+
+/* -- live editor: background scale grid (docs/EDITOR.md Round 2 #4) ------- */
+
+.chart-editor__grid-bg {
+    pointer-events: none;
+}
+
+.chart-editor__grid-line--minor {
+    stroke: var(--border-color);
+    stroke-width: 0.015;
+    opacity: 0.35;
+}
+
+.chart-editor__grid-line--major {
+    stroke: var(--border-color);
+    stroke-width: 0.025;
+    opacity: 0.6;
+}
+
+/* -- live editor: per-seat popover ----------------------------------------- */
+
+.chart-editor__popover {
+    display: none;
+    position: fixed;
+    z-index: 20;
+    transform: translate(0.75rem, -0.5rem);
+    background: #fff;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+    padding: 0.6rem 0.75rem;
+    min-width: 10rem;
+    font-size: 0.85rem;
+}
+
+.chart-editor__popover-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+
+.chart-editor__popover-close {
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    color: var(--muted-color);
+}
+
+.chart-editor__popover-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+    cursor: pointer;
+}
+
+.chart-editor__popover-delete {
+    width: 100%;
+}
+
+/* -- live editor: semantic sidebar controls -------------------------------- */
+
+.chart-editor__control {
+    margin-bottom: 0.85rem;
+}
+
+.chart-editor__control label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.chart-editor__control-value {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted-color);
+    font-weight: 400;
+}
+
+.chart-editor__slider {
+    width: 100%;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__slider--centered {
+    /* A visual center-zero marker under the track. */
+    background: linear-gradient(to right, transparent 49.5%, var(--muted-color) 49.5%, var(--muted-color) 50.5%, transparent 50.5%);
+}
+
+/* Round-2 refinement #1: every slider gets a paired number input showing/
+   accepting the exact value. Both inputs x-model the SAME underlying
+   property (see chart_editor.html), so Alpine keeps them in sync with no
+   extra JS -- this is purely a layout row for the pair. */
+.chart-editor__slider-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__slider-row .chart-editor__slider {
+    margin-top: 0;
+    flex: 1 1 auto;
+}
+
+.chart-editor__number {
+    width: 4.25rem;
+    flex: 0 0 auto;
+    padding: 0.2rem 0.35rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.chart-editor__unit {
+    color: var(--muted-color);
+    font-size: 0.85rem;
+}
+
+.chart-editor__toggle {
+    display: flex;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    overflow: hidden;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__toggle button {
+    flex: 1;
+    padding: 0.35rem 0.5rem;
+    border: none;
+    background: #fff;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.chart-editor__toggle button.is-active {
+    background: var(--accent-color);
+    color: #fff;
+}
+
+.chart-editor__toggle button:disabled,
+.chart-editor__stepper button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Round 3 #11: snap-to-grid toolbar toggle, OFF by default (chart_editor.js's
+   snapEnabled). */
+.chart-editor__snap-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--muted-color);
+    cursor: pointer;
+}
+
+.chart-editor__stepper {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.chart-editor__stepper button {
+    width: 1.75rem;
+    height: 1.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    background: #fff;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.chart-editor__stepper span {
+    min-width: 1.75rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.chart-editor__legend-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid transparent;
+    border-radius: 0.375rem;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    font-size: 0.875rem;
+}
+
+/* Reorder up/down arrows (Round 2 feedback on #7) share the row with the
+   select button -- override its width:100% so the arrows have room. */
+.chart-editor__legend-row .chart-editor__legend-btn {
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.chart-editor__legend-reorder {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 0.15rem;
+}
+
+.chart-editor__legend-reorder-btn {
+    width: 1.4rem;
+    height: 1.4rem;
+    line-height: 1;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 0.25rem;
+    background: #fff;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--muted-color);
+}
+
+.chart-editor__legend-reorder-btn:hover:not(:disabled) {
+    background: #f3f4f6;
+    color: inherit;
+}
+
+.chart-editor__legend-reorder-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.chart-editor__legend-btn:hover {
+    background: #f3f4f6;
+}
+
+.chart-editor__legend-btn.is-selected {
+    border-color: var(--accent-color);
+    background: #f3f4f6;
+}
+
+/* -- live editor: inline "New section" (docs/EDITOR.md Round 2 #7) -------- */
+
+.chart-editor__new-section {
+    margin-top: 0.6rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: #f9fafb;
+}
+
+.chart-editor__new-section .field {
+    margin-bottom: 0.6rem;
 }
 
 @media (max-width: 900px) {

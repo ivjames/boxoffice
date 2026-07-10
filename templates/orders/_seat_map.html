@@ -28,17 +28,19 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
         </template>
     </ul>
 
-    <div class="seat-map__grid" :style="gridStyle" role="group" aria-label="Seat map">
-        <template x-for="seat in seats" :key="seat.id">
-            <button type="button" class="seat-btn" :class="seatClass(seat)"
-                    :style="seatStyle(seat)"
-                    :disabled="!isSelectable(seat)"
-                    :aria-pressed="selected.includes(seat.id).toString()"
-                    :title="seat.section + ' — ' + seat.row + seat.number + (seat.zone_name ? (' — ' + seat.zone_name) : '') + (seat.price ? (' — $' + seat.price) : '') + (seat.state === 'blocked' ? ' (not available for this performance)' : (seat.state === 'unavailable' ? ' (unavailable)' : ''))"
-                    @click="toggle(seat)">
-                <span x-text="seat.row + seat.number"></span>
-            </button>
-        </template>
+    <div class="seat-map__grid">
+        <div class="seat-map__canvas" :style="canvasStyle" role="group" aria-label="Seat map">
+            <template x-for="seat in seats" :key="seat.id">
+                <button type="button" class="seat-btn" :class="seatClass(seat)"
+                        :style="seatStyle(seat)"
+                        :disabled="!isSelectable(seat)"
+                        :aria-pressed="selected.includes(seat.id).toString()"
+                        :title="seat.section + ' — ' + seat.row + seat.number + (seat.zone_name ? (' — ' + seat.zone_name) : '') + (seat.price ? (' — $' + seat.price) : '') + (seat.state === 'blocked' ? ' (not available for this performance)' : (seat.state === 'unavailable' ? ' (unavailable)' : ''))"
+                        @click="toggle(seat)">
+                    <span x-text="seat.row + seat.number"></span>
+                </button>
+            </template>
+        </div>
     </div>
 
     <form method="post" action="{% url 'hold_create' performance.pk %}" class="seat-map__form">
@@ -60,15 +62,33 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
     function seatMap() {
         const seats = JSON.parse(document.getElementById('seats-data').textContent);
         const heldByYou = JSON.parse(document.getElementById('held-by-you-data').textContent);
+
+        // Seat x/y are CONTINUOUS world coordinates (venues.models.Seat.x/y are
+        // FloatFields) -- the param-driven editor (docs/EDITOR.md) produces
+        // fractional, possibly-negative, rotated/curved positions for raked/
+        // fanned/rotated/arc sections. The old renderer fed x/y straight into
+        // `grid-column: x + 1` / `grid-row: y + 1`, which silently assumed
+        // small non-negative INTEGER grid indices and broke the moment the new
+        // geometry landed (fractional grid lines are invalid, negatives count
+        // from the far edge). Instead we lay the seats out by their real
+        // coordinates inside an absolutely-positioned canvas, scaled px-per-
+        // world-unit -- the same coordinate space the editor draws, so what the
+        // manager arranges is what the customer sees.
+        const SCALE = 44; // px per world unit (~seat_pitch of 1 => 44px centers)
+        const PAD = 0.6; // world units of breathing room around the block
         const xs = seats.map((s) => s.x);
         const ys = seats.map((s) => s.y);
+        const minX = xs.length ? Math.min(...xs) : 0;
+        const minY = ys.length ? Math.min(...ys) : 0;
         const maxX = xs.length ? Math.max(...xs) : 0;
         const maxY = ys.length ? Math.max(...ys) : 0;
 
         return {
             seats: seats,
             selected: [...heldByYou],
-            gridStyle: `grid-template-columns: repeat(${maxX + 1}, 2.5rem); grid-template-rows: repeat(${maxY + 1}, 2.5rem);`,
+            canvasStyle:
+                'width:' + ((maxX - minX + 2 * PAD) * SCALE) + 'px;' +
+                'height:' + ((maxY - minY + 2 * PAD) * SCALE) + 'px;',
             // Phase C (docs/SEATING.md): dedup the zones actually present on
             // this performance's seats (server already resolved zone-then-
             // tier per seat -- see orders.services.resolve_reserved_prices)
@@ -107,7 +127,14 @@ free instead of needing manual tabindex/role/keydown wiring on SVG <g>s.
                 return (this.selected.includes(seat.id) ? 'seat-btn--selected' : 'seat-btn--available') + zoned;
             },
             seatStyle(seat) {
-                let style = 'grid-column:' + (seat.x + 1) + '; grid-row:' + (seat.y + 1) + ';';
+                // Absolute placement by real coordinates (see the SCALE/PAD
+                // note above); translate(-50%,-50%) centers the button on its
+                // point so a seat's on-screen center is exactly its x/y.
+                const left = (seat.x - minX + PAD) * SCALE;
+                const top = (seat.y - minY + PAD) * SCALE;
+                let style =
+                    'position:absolute; left:' + left + 'px; top:' + top + 'px;' +
+                    ' transform:translate(-50%, -50%);';
                 if (seat.zone_color && this.isSelectable(seat)) {
                     style += ' --zone-color:' + seat.zone_color + ';';
                 }

@@ -1,28 +1,66 @@
-"""Seat generator (Phase A + B of docs/SEATING.md's seating-chart epic).
+"""Seat generator (Phase A/B of docs/SEATING.md's seating-chart epic; live
+rework per docs/EDITOR.md).
 
-Turns a Section's layout params (origin/pitch/rotation/row_x_offset/
-arc_radius) plus a per-row seat-count spec into concrete Seat rows: row
-labels from `Section.row_label_scheme`, seat numbers from
-`Section.numbering_scheme`, and x/y from one of three geometries (see
+Turns a Section's layout params (origin/pitch/rotation/offset_mode/
+row_x_offset/arc_radius) plus a per-row seat-count spec into concrete Seat
+rows: row labels from `Section.row_label_scheme`, seat numbers from
+`Section.numbering_scheme`, and x/y from one of two geometries (see
 `_seat_xy` below) picked purely by which params are set:
 
-- **Grid** (rotation=0, row_x_offset=0, arc_radius=None): Phase A's straight
-  grid, unchanged.
-- **Raked/diagonal** (rotation and/or row_x_offset set, arc_radius=None): a
-  side section that staggers into a trapezoid/angled block -- see
-  `_grid_or_raked_xy`.
-- **Fanned** (arc_radius set): rows curve along a circular arc -- see
-  `_fanned_xy`. Takes priority over rotation/row_x_offset (a fanned section
-  doesn't also get a linear stagger; `rotation` instead rotates the whole
-  fan, useful for stage-left/right wings of a center orchestra block).
+- **Grid/raked** (arc_radius=None): a straight block, optionally staggered
+  per-row (`offset_mode`/`row_x_offset`) and/or rotated -- see
+  `_grid_or_raked_local`.
+- **Fanned** (arc_radius set): rows curve along a circular arc IN PLACE --
+  see `_fanned_local`.
+
+*** THE CLIENT/SERVER GEOMETRY CONTRACT ***
+static/js/seat_geometry.js re-implements this module's math EXACTLY (same
+function names/shapes, docstring-linked) so the dashboard chart editor can
+render a section's seats live, with zero server round-trips, and have Save
+persist coordinates that are bit-for-bit what staff were just looking at.
+This is the ONE place the formulas are specified -- if you change the math
+here, change seat_geometry.js's matching function too (and vice versa).
+`venues/test_generation.py`'s GeometryTests / SharedFormulaContractTests
+assert exact coordinates for representative grid/raked/alternating/arc/
+tilt params precisely so a drift between the two implementations shows up
+as a Python test failure even though the JS side can't be exercised by
+pytest.
+
+Both geometries share the SAME two-step composition: compute a "local"
+position with local (0, 0) defined as the section's front-row/row-center
+reference point (see each `_..._local` function), then rotate that local
+point by `section.rotation` degrees around a PIVOT point (`_rotate`, applied
+relative to the pivot -- see `_rotation_pivot_local` below), then translate
+by `(section.origin_x, section.origin_y)`.
+
+Round 2 (docs/EDITOR.md "Round 2 refinements") makes the pivot itself
+configurable via `Section.pivot_mode`/`pivot_x`/`pivot_y`:
+- **CENTER** (default): the midpoint of the `seats_per_row` x `rows` block
+  (the same bounding box `static/js/chart_editor.js`'s `localWH()` already
+  draws the transform-box handles from) -- rotating swings the whole block
+  around its own middle, which reads as far more intuitive than the old
+  corner-pivot default.
+- **ORIGIN**: local (0, 0) -- the section's front-left corner, i.e. Phase
+  A/B's original behavior (local (0, 0) maps to `(origin_x, origin_y)`
+  post-rotation, unchanged).
+- **CUSTOM**: `(pivot_x, pivot_y)`, set by dragging the pivot marker on
+  canvas.
+
+Whatever the pivot, its WORLD position never moves as `rotation` changes --
+that's what "pivot" means -- so `pivot_xy()` below (mirrored by
+`seat_geometry.js`'s `pivotXY`) is simply `origin + pivot_local`, with no
+rotation applied, and the editor draws its pivot marker there.
 
 Per the spec's "separate LOGICAL identity from VISUAL geometry" decision,
 row labels/seat numbers and x/y are computed independently and BOTH
-persisted -- geometry never feeds back into which seat is which, and the
-generated x/y is just a starting point (Phase B's drag editor is where a
-bespoke house gets its final hand-placed positions; once a seat has been
-dragged, its x/y is authoritative and only changes again if the section is
-explicitly regenerated).
+persisted -- geometry never feeds back into which seat is which. Unlike the
+old Phase B hand-drag editor, x/y is no longer independently hand-editable
+after generation: docs/EDITOR.md removes per-seat dragging entirely, so a
+seat's x/y is *always* whatever these formulas produce for the section's
+current params (Save always regenerates). Per-seat overrides are limited to
+existence (removed_seats) and accessibility (accessible_seats), tracked by
+(row_label, number) identity on the Section (see its docstring) since those
+must survive a regenerate that a raw Seat pk would not.
 """
 
 import math
@@ -79,83 +117,262 @@ def generate_seat_numbers(seat_count, scheme, row_index):
     return [i + 1 for i in range(seat_count)]
 
 
-def _grid_or_raked_xy(section, row_index, seat_index):
-    """Grid/raked position for the seat at (row_index, seat_index) -- 0-based,
-    left-to-right/front-to-back.
+def compute_row_counts(rows, seats_per_row, offset_mode, alt_row_seat_delta):
+    """The seat-count shape for a section, front-to-back: `rows` counts of
+    `seats_per_row`, except in ALTERNATING `offset_mode` every OTHER row
+    (0-based row_index 1, 3, 5…) gets `seats_per_row + alt_row_seat_delta`
+    instead -- `alt_row_seat_delta` can be negative to drop seats on those
+    rows (a brick/stadium stagger). Every row is floored at 1 seat.
+    Mirrored exactly by seat_geometry.js's `computeRowCounts` -- see this
+    module's docstring for the client/server contract."""
+    counts = []
+    for row_index in range(rows):
+        n = seats_per_row
+        if offset_mode == Section.OffsetMode.ALTERNATING and row_index % 2 == 1:
+            n += alt_row_seat_delta
+        counts.append(max(1, n))
+    return counts
 
-    Local (pre-rotation) frame: seats run along local x spaced by
-    `seat_pitch`; rows step back along local y spaced by `row_pitch`, PLUS
-    `row_x_offset` per row -- a growing horizontal stagger applied before
-    rotation. This is the "raked side section" mechanism from
-    docs/SEATING.md: with ragged per-row seat counts, a nonzero
-    `row_x_offset` alone turns the rectangle into a trapezoid (each row
-    starts further along the wall than the one in front of it); `rotation`
-    then optionally tilts the *whole already-staggered block* around the
-    section's origin, e.g. to angle it toward the stage. `row_x_offset=0`
-    and `rotation=0` reproduce Phase A's plain grid exactly.
+
+def _rotate(x, y, degrees):
+    """Rotate local point (x, y) around local (0, 0) by `degrees` clockwise
+    (standard screen-space rotation: y grows downward). Shared by both
+    geometries so `rotation` pivots identically -- see module docstring."""
+    if not degrees:
+        return x, y
+    theta = math.radians(degrees)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    return x * cos_t - y * sin_t, x * sin_t + y * cos_t
+
+
+def _row_x_offset(section, row_index):
+    """The per-row local-x stagger before rotation, per `offset_mode` -- see
+    Section.row_x_offset's help text. REPEATED grows with row_index (Phase
+    B's original raked mechanism); ALTERNATING applies the same constant
+    amount to every other row only (row_index 1, 3, 5…), for a brick/
+    stadium stagger. Mirrored by seat_geometry.js's `rowXOffset`."""
+    if section.offset_mode == Section.OffsetMode.ALTERNATING:
+        return section.row_x_offset if row_index % 2 == 1 else 0.0
+    return row_index * section.row_x_offset
+
+
+def _grid_or_raked_local(section, row_index, seat_index):
+    """Local (pre-rotation, pre-origin) grid/raked position for the seat at
+    (row_index, seat_index) -- 0-based, left-to-right/front-to-back.
+
+    Seats run along local x spaced by `seat_pitch`, plus `_row_x_offset`
+    (see its docstring for REPEATED vs ALTERNATING); rows step back along
+    local y spaced by `row_pitch`. Local (0, 0) is seat (0, 0) -- the
+    section's front-left seat before any offset -- which is also the
+    rotation pivot (see module docstring): `row_x_offset=0` (either mode)
+    reproduces a plain grid exactly.
     """
-    local_x = seat_index * section.seat_pitch + row_index * section.row_x_offset
+    local_x = seat_index * section.seat_pitch + _row_x_offset(section, row_index)
     local_y = row_index * section.row_pitch
-    if section.rotation:
-        theta = math.radians(section.rotation)
-        cos_t, sin_t = math.cos(theta), math.sin(theta)
-        local_x, local_y = (
-            local_x * cos_t - local_y * sin_t,
-            local_x * sin_t + local_y * cos_t,
-        )
-    return section.origin_x + local_x, section.origin_y + local_y
+    return local_x, local_y
 
 
-def _fanned_xy(section, row_index, seat_index, row_seat_count):
-    """Fanned/curved position for the seat at (row_index, seat_index) in a
-    row of `row_seat_count` seats -- e.g. a center orchestra block that
-    curves around a focal point (typically near the stage).
+def _fanned_local(section, row_index, seat_index, row_seat_count):
+    """Local (pre-rotation, pre-origin) fanned/curved position for the seat
+    at (row_index, seat_index) in a row of `row_seat_count` seats -- e.g. a
+    center orchestra block that curves around a focal point near the stage.
 
     Row `row_index` sits on a circular arc of `radius = arc_radius +
-    row_index * row_pitch` centered on the section's origin -- rows step
-    OUTWARD (larger radius) as they go back, same front-to-back sense as the
-    grid/raked case. Seats within a row are spaced by arc length
-    `seat_pitch` (angle_step = seat_pitch / radius radians) and centered on
-    the row's midpoint, so the row is symmetric around its center seat(s).
-    `rotation` (degrees) adds a constant angular offset, rotating the whole
-    fan around the origin -- e.g. to build a stage-left/right wing of a
-    center block reusing the same arc_radius/row_pitch.
+    row_index * row_pitch`, centered on local point (0, -arc_radius) -- i.e.
+    a focal point `arc_radius` BEHIND local (0, 0), so the front row
+    (row_index=0) always passes through local (0, 0) *regardless of
+    arc_radius's magnitude*: `local_y = radius * cos(theta) - arc_radius`,
+    and at row_index=0/theta=0 that's `arc_radius - arc_radius = 0`. This is
+    the "curve in place" fix -- arc_radius controls curvature only, never
+    where the section sits (the old formula used local_y = radius*cos(theta)
+    with no `- arc_radius` correction, which translated the whole section
+    away from its origin by `arc_radius`). Seats within a row are spaced by
+    arc length `seat_pitch` (angle_step = seat_pitch / radius radians) and
+    centered on the row's midpoint, so the row is symmetric around its
+    center seat -- and, because cos(theta) <= 1, seats away from center sit
+    at a smaller local_y than the center seat, bowing the row's ends toward
+    the origin/stage (a real theater's concave curvature).
 
-    At row_index=0, theta=0: seat sits at (origin_x, origin_y + arc_radius)
-    -- i.e. `arc_radius` is literally the origin-to-front-row distance, and
-    the fan opens outward from there.
+    Round-4 correction (docs/EDITOR.md): offset now COMPOSES with arc --
+    `_row_x_offset(section, row_index)` (the same per-row local-x stagger
+    `_grid_or_raked_local` applies) is added on top of the curved
+    `radius * sin(theta)` term, so a fanned section can also carry a
+    repeated/alternating row stagger. This can't disturb the "curve in
+    place"/front-center invariants above: `_row_x_offset` is 0 at
+    `row_index=0` in BOTH offset modes (REPEATED is `row_index *
+    row_x_offset`; ALTERNATING only touches odd row_index), so the front
+    row's local (0, 0) is untouched regardless of row_x_offset -- see
+    `front_center_local`'s "arc_radius truthy -> (0, 0)" branch, still
+    correct with offset applied.
     """
     radius = section.arc_radius + row_index * section.row_pitch
     angle_step = section.seat_pitch / radius if radius else 0.0
     center_offset = (row_seat_count - 1) / 2
-    theta = (seat_index - center_offset) * angle_step + math.radians(section.rotation)
-    x = section.origin_x + radius * math.sin(theta)
-    y = section.origin_y + radius * math.cos(theta)
-    return x, y
+    theta = (seat_index - center_offset) * angle_step
+    local_x = radius * math.sin(theta) + _row_x_offset(section, row_index)
+    local_y = radius * math.cos(theta) - section.arc_radius
+    return local_x, local_y
+
+
+def _rotation_pivot_local(section):
+    """The local (pre-rotation) point `rotation` pivots around, per
+    `section.pivot_mode` -- see the module docstring's Round 2 section.
+    Mirrored exactly by seat_geometry.js's `pivotLocal`."""
+    if section.pivot_mode == Section.PivotMode.ORIGIN:
+        return 0.0, 0.0
+    if section.pivot_mode == Section.PivotMode.CUSTOM:
+        return section.pivot_x, section.pivot_y
+    # CENTER (default): midpoint of the seats_per_row x rows block, using
+    # the section's SHAPE params -- not the actual (possibly ragged/
+    # alternating) row_counts passed to generate_seats, same simplification
+    # the editor's transform-box bounding box already makes.
+    width = max(0, section.seats_per_row - 1) * section.seat_pitch
+    height = max(0, section.rows - 1) * section.row_pitch
+    return width / 2.0, height / 2.0
+
+
+def pivot_xy(section):
+    """World (x, y) of `section`'s rotation pivot -- `origin + pivot_local`,
+    with NO rotation applied (a pivot's world position is, by definition,
+    invariant under the rotation it pivots -- see the module docstring).
+    Exposed so the editor can draw a pivot marker; mirrored by
+    seat_geometry.js's `pivotXY`."""
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    return section.origin_x + pivot_x, section.origin_y + pivot_y
+
+
+def front_center_local(section, row_seat_count, arc_radius):
+    """Local (pre-rotation) position of the section's FRONT-CENTER
+    reference point -- row_index=0, the row's midpoint -- evaluated for a
+    HYPOTHETICAL `arc_radius` rather than `section.arc_radius`, so callers
+    can compare a section's shape "as grid/raked" against "as fanned"
+    without mutating it (see `rebalance_origin_for_arc_change` below, the
+    Round-3 "arc still offsets the section" fix, docs/EDITOR.md #6).
+
+    Grid/raked (`arc_radius` falsy): `_grid_or_raked_local`'s local (0, 0)
+    is the front-LEFT seat, not front-center (that's Phase A's original,
+    still-pinned convention -- see GeometryTests.test_grid_is_a_plain_
+    rectangle), so front-center is `_grid_or_raked_local`'s row-0 point at
+    `seat_index = (row_seat_count - 1) / 2` (the row's midpoint, matching
+    `_fanned_local`'s `center_offset` -- interpolated, not rounded, so it's
+    exact even for an even seat count with no literal center seat).
+
+    Fanned (`arc_radius` truthy): `_fanned_local`'s local (0, 0) IS the
+    front-center point by construction (theta=0 at `seat_index =
+    center_offset` -- see its docstring), for ANY `arc_radius` -- that's
+    the existing, already-correct "curve in place" invariant
+    (GeometryTests.test_arc_radius_does_not_translate_the_section).
+    """
+    if arc_radius:
+        return 0.0, 0.0
+    center_offset = (row_seat_count - 1) / 2.0
+    return center_offset * section.seat_pitch, 0.0
+
+
+def front_center_xy(section, row_seat_count, arc_radius):
+    """World (x, y) of `front_center_local`, run through the same
+    pivot-rotate-translate pipeline `_seat_xy` uses -- mirrored by
+    seat_geometry.js's `frontCenterXY`."""
+    local_x, local_y = front_center_local(section, row_seat_count, arc_radius)
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    rel_x, rel_y = _rotate(local_x - pivot_x, local_y - pivot_y, section.rotation)
+    return section.origin_x + pivot_x + rel_x, section.origin_y + pivot_y + rel_y
+
+
+def _shape_center_local(section, arc_radius, row_seat_count):
+    """Local (pre-rotation) bounding-box center of the section's uniform
+    rows x row_seat_count seat block, evaluated for a HYPOTHETICAL arc_radius
+    (temporarily set + restored, so `section` is NOT mutated). Uses the uniform
+    shape params -- the same simplification the pivot / transform box make.
+    Mirrored by seat_geometry.js's `shapeCenterLocal`."""
+    saved = section.arc_radius
+    section.arc_radius = arc_radius
+    try:
+        xs, ys = [], []
+        for r in range(section.rows):
+            for c in range(row_seat_count):
+                if arc_radius:
+                    lx, ly = _fanned_local(section, r, c, row_seat_count)
+                else:
+                    lx, ly = _grid_or_raked_local(section, r, c)
+                xs.append(lx)
+                ys.append(ly)
+    finally:
+        section.arc_radius = saved
+    if not xs:
+        return 0.0, 0.0
+    return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+
+
+def shape_center_xy(section, arc_radius, row_seat_count):
+    """World (x, y) of `_shape_center_local`, through the same
+    pivot-rotate-translate pipeline `_seat_xy` uses. Mirrored by
+    seat_geometry.js's `shapeCenterXY`."""
+    cx, cy = _shape_center_local(section, arc_radius, row_seat_count)
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    rel_x, rel_y = _rotate(cx - pivot_x, cy - pivot_y, section.rotation)
+    return section.origin_x + pivot_x + rel_x, section.origin_y + pivot_y + rel_y
+
+
+def rebalance_origin_for_arc_change(section, new_arc_radius, row_seat_count):
+    """The (origin_x, origin_y) that keep `section`'s BOUNDING-BOX CENTER
+    exactly where it currently is when `section.arc_radius` is about to change
+    to `new_arc_radius`, so the section curves IN PLACE at ANY radius.
+
+    Pinning only the front-CENTER point (the earlier approach) kept the front
+    row fixed but let a tightening curve slide the block's center -- measured
+    up to ~40% of the block height at small radii -- which is the "arc still
+    offsets the section" report. Pinning the bbox center makes that shift zero
+    by construction for every radius, and still absorbs the grid-front-LEFT vs
+    fanned-front-CENTER local-(0,0) mismatch on enable/disable. Callers
+    (chart_editor.js's arc handlers, mirrored by seat_geometry.js's
+    `rebalanceOriginForArcChange`) apply this every time arc_radius changes.
+    Does not mutate `section`.
+    """
+    before_x, before_y = shape_center_xy(section, section.arc_radius, row_seat_count)
+    after_x, after_y = shape_center_xy(section, new_arc_radius, row_seat_count)
+    return section.origin_x + (before_x - after_x), section.origin_y + (before_y - after_y)
 
 
 def _seat_xy(section, row_index, seat_index, row_seat_count):
-    """Dispatch to the right geometry for `section` -- see module docstring.
-    `row_seat_count` (the row's total seat count) is only used by the fanned
-    case, to center the row's arc on its midpoint."""
+    """Dispatch to the right local geometry for `section` (see module
+    docstring), then rotate around the section's configured pivot
+    (`_rotation_pivot_local`) and translate by the section's origin -- the
+    shared final step both geometries go through. `row_seat_count` (the
+    row's total seat count) is only used by the fanned case, to center the
+    row's arc on its midpoint."""
     if section.arc_radius:
-        return _fanned_xy(section, row_index, seat_index, row_seat_count)
-    return _grid_or_raked_xy(section, row_index, seat_index)
+        local_x, local_y = _fanned_local(section, row_index, seat_index, row_seat_count)
+    else:
+        local_x, local_y = _grid_or_raked_local(section, row_index, seat_index)
+    pivot_x, pivot_y = _rotation_pivot_local(section)
+    rel_x, rel_y = _rotate(local_x - pivot_x, local_y - pivot_y, section.rotation)
+    return section.origin_x + pivot_x + rel_x, section.origin_y + pivot_y + rel_y
 
 
-def generate_seats(section, row_counts, *, accessible=None, replace=False):
+def generate_seats(
+    section, row_counts, *, accessible=None, removed_ids=None, accessible_ids=None, replace=False
+):
     """(Re)generate every Seat in `section` from `row_counts` -- a list of
     per-row seat counts, front-to-back (e.g. [10, 10, 8] for a 3-row section
-    with a ragged back row; a uniform NxM grid is just [M] * N). Row labels
-    come from `section.row_label_scheme`, seat numbers from
-    `section.numbering_scheme`; x/y come from the section's grid/raked/
-    fanned geometry (see `_seat_xy` and the module docstring).
+    with a ragged back row; a uniform NxM grid is just [M] * N, e.g. from
+    `compute_row_counts`). Row labels come from `section.row_label_scheme`,
+    seat numbers from `section.numbering_scheme`; x/y come from the
+    section's grid/raked/fanned geometry (see `_seat_xy` and the module
+    docstring).
 
     `accessible`, if given, is `{row_index: {seat_position, …}}` -- which
     seats to flag `is_accessible=True`, where `row_index` is 0-based and
     `seat_position` is the 1-based LEFT-TO-RIGHT seat position in that row
     (NOT the generated seat number -- numbering schemes like odd_desc_left
     don't run 1..n, so "seat 1" and "position 1" are different things).
+
+    `removed_ids`/`accessible_ids`, if given, are sets of `(row_label,
+    number)` string-tuples -- the editor's popover-tracked, regenerate-
+    survivable per-seat overrides (see Section.removed_seats/
+    accessible_seats). A seat whose (row_label, str(number)) is in
+    `removed_ids` is skipped entirely (never created -- e.g. an aisle gap);
+    `accessible_ids` is OR'd with the position-based `accessible` dict.
 
     Regeneration is destructive by design (this is a bulk generator, not an
     editor -- Phase B's drag/toggle editing is for one-off hand adjustment):
@@ -170,6 +387,8 @@ def generate_seats(section, row_counts, *, accessible=None, replace=False):
     from orders.models import Ticket  # local import: orders imports venues, not vice versa
 
     accessible = accessible or {}
+    removed_ids = removed_ids or set()
+    accessible_ids = accessible_ids or set()
     existing = list(section.seats.all())
     if existing:
         live_ticket_seats = (
@@ -194,16 +413,20 @@ def generate_seats(section, row_counts, *, accessible=None, replace=False):
         numbers = generate_seat_numbers(seat_count, section.numbering_scheme, row_index)
         row_accessible = accessible.get(row_index, set())
         for seat_index, number in enumerate(numbers):
+            number_str = str(number)
+            identity = (row_label, number_str)
+            if identity in removed_ids:
+                continue
             x, y = _seat_xy(section, row_index, seat_index, seat_count)
             new_seats.append(
                 Seat(
                     organization=section.organization,
                     section=section,
                     row_label=row_label,
-                    number=str(number),
+                    number=number_str,
                     x=x,
                     y=y,
-                    is_accessible=(seat_index + 1) in row_accessible,
+                    is_accessible=(seat_index + 1) in row_accessible or identity in accessible_ids,
                 )
             )
     Seat.objects.bulk_create(new_seats)

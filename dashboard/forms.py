@@ -159,31 +159,56 @@ class SeatingChartForm(forms.ModelForm):
 
 
 class SectionForm(forms.ModelForm):
-    """Layout params + numbering/row-label scheme for a Section -- these are
-    the inputs venues.generation.generate_seats reads (see its docstring);
-    changing them here does NOT retroactively move already-generated seats."""
+    """Section metadata: name/tier + numbering/row-label scheme.
+
+    Per docs/EDITOR.md's live rework, LAYOUT params (origin, rotation,
+    pitch, offset, arc, rows/seats-per-row shape) are no longer edited via
+    this form -- they're live-bound sliders/steppers/handles in the chart
+    editor canvas (dashboard_chart_editor / chart_editor_save), which is
+    also the only place seats actually get (re)generated. This form only
+    creates/renames the section shell and picks its numbering conventions.
+
+    `ordering` is deliberately NOT a form field (Round-2 feedback,
+    docs/EDITOR.md #7): a bare sort-index number input is exactly the kind
+    of "raw internal param" the inline "New section" modal shouldn't expose
+    -- staff shouldn't have to know or care what integer means "third".
+    SectionCreateView auto-assigns it (append to the end of the chart's
+    current section list, same append-at-the-end idea as origin_x's
+    staggered default); reordering afterward is the chart editor sidebar's
+    up/down arrows (dashboard_section_reorder), not this form.
+    """
 
     class Meta:
         model = Section
-        fields = [
-            "name",
-            "ordering",
-            "tier",
-            "numbering_scheme",
-            "row_label_scheme",
-            "origin_x",
-            "origin_y",
-            "rotation",
-            "seat_pitch",
-            "row_pitch",
-            "row_x_offset",
-            "arc_radius",
-        ]
+        fields = ["name", "tier", "numbering_scheme", "row_label_scheme"]
 
     def __init__(self, *args, organization, chart, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.chart = chart
+
+    def clean_name(self):
+        # `chart` isn't a form field (it's fixed by the URL/view, not user-
+        # editable here), so Django's own ModelForm.validate_unique()
+        # excludes it -- and with it, the WHOLE unique_section_name_per_chart
+        # (chart, name) constraint check (a model field absent from the form
+        # can't have its unique-together validated, by design: see
+        # BaseModelForm._get_validation_exclusions()). Left unchecked, a
+        # duplicate name under THIS chart would pass form validation and
+        # blow up as a raw IntegrityError at Section.save() instead of a
+        # clean field error -- surfaced by the Round 2 inline "New section"
+        # modal (docs/EDITOR.md #7), which needs a real form_invalid()/JSON
+        # error response to show a duplicate-name message, not a 500. Doing
+        # the check by hand here covers exactly what the DB constraint would
+        # have caught.
+        name = self.cleaned_data.get("name")
+        if name:
+            existing = Section.objects.filter(organization=self.organization, chart=self.chart, name=name)
+            if self.instance.pk:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise forms.ValidationError("A section with this name already exists on this chart.")
+        return name
 
     def save(self, commit=True):
         section = super().save(commit=False)
@@ -192,58 +217,3 @@ class SectionForm(forms.ModelForm):
         if commit:
             section.save()
         return section
-
-
-class GenerateSeatsForm(forms.Form):
-    """Feeds venues.generation.generate_seats: either a uniform rows x
-    seats-per-row grid, or a ragged per-row seat-count list which overrides
-    it. Accessible-seat flags aren't set here -- toggle individual seats
-    after generating (dashboard_seat_toggle_accessible)."""
-
-    rows = forms.IntegerField(
-        min_value=1, required=False, label="Rows", help_text="Uniform mode: number of rows."
-    )
-    seats_per_row = forms.IntegerField(
-        min_value=1,
-        required=False,
-        label="Seats per row",
-        help_text="Uniform mode: seats in every row.",
-    )
-    ragged_counts = forms.CharField(
-        required=False,
-        label="Ragged row counts",
-        help_text=(
-            'Optional -- comma-separated seat counts, one per row, front to back '
-            '(e.g. "10,10,8,12"). Overrides Rows/Seats per row and allows ragged rows.'
-        ),
-    )
-    replace_existing = forms.BooleanField(
-        required=False,
-        label="Replace existing seats",
-        help_text="Required if this section already has seats (refused if any have a live ticket).",
-    )
-
-    def clean(self):
-        cleaned = super().clean()
-        ragged = (cleaned.get("ragged_counts") or "").strip()
-        if ragged:
-            try:
-                counts = [int(part.strip()) for part in ragged.split(",") if part.strip()]
-            except ValueError:
-                self.add_error(
-                    "ragged_counts", "Use a comma-separated list of whole numbers, e.g. 10,10,8."
-                )
-                return cleaned
-            if not counts or any(count < 1 for count in counts):
-                self.add_error("ragged_counts", "Each row needs at least 1 seat.")
-                return cleaned
-            cleaned["row_counts"] = counts
-        else:
-            rows = cleaned.get("rows")
-            seats_per_row = cleaned.get("seats_per_row")
-            if not rows or not seats_per_row:
-                raise forms.ValidationError(
-                    "Enter Rows + Seats per row, or a ragged row-count list."
-                )
-            cleaned["row_counts"] = [seats_per_row] * rows
-        return cleaned

@@ -66,21 +66,11 @@ urlpatterns = [
         name="dashboard_section_update",
     ),
     path(
-        "dashboard/charts/<int:chart_pk>/sections/<int:pk>/",
-        views.section_detail,
-        name="dashboard_section_detail",
+        "dashboard/charts/<int:chart_pk>/sections/<int:pk>/reorder/",
+        views.section_reorder,
+        name="dashboard_section_reorder",
     ),
-    path(
-        "dashboard/charts/<int:chart_pk>/sections/<int:section_pk>/seats/<int:seat_pk>/toggle-accessible/",
-        views.seat_toggle_accessible,
-        name="dashboard_seat_toggle_accessible",
-    ),
-    path(
-        "dashboard/charts/<int:chart_pk>/sections/<int:section_pk>/seats/<int:seat_pk>/delete/",
-        views.seat_delete,
-        name="dashboard_seat_delete",
-    ),
-    # -- visual editor (Phase B, docs/SEATING.md) ----------------------------
+    # -- visual editor (live, param-driven -- docs/EDITOR.md) ---------------
     path(
         "dashboard/charts/<int:pk>/editor/",
         views.chart_editor,
@@ -90,11 +80,6 @@ urlpatterns = [
         "dashboard/charts/<int:pk>/editor/save/",
         views.chart_editor_save,
         name="dashboard_chart_editor_save",
-    ),
-    path(
-        "dashboard/charts/<int:chart_pk>/sections/<int:section_pk>/regenerate/",
-        views.section_regenerate,
-        name="dashboard_section_regenerate",
     ),
     # -- pricing zones (Phase C, docs/SEATING.md) ----------------------------
     path(

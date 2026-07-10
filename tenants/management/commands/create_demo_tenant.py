@@ -116,11 +116,24 @@ class Command(BaseCommand):
             organization=org, venue=venue, name="Standard house"
         )
 
+        # rows/seats_per_row/origin_* here are the docs/EDITOR.md live chart
+        # editor's shape/position params (venues.generation.
+        # compute_row_counts + _seat_xy) -- set to roughly match this
+        # method's own hand-placed Seat grid below (rows="ABCDE"x10 /
+        # "FG"x10) so opening the live editor shows a sensible starting
+        # layout instead of the model's bare defaults, and gives Balcony a
+        # distinct origin_y so it doesn't render on top of Orchestra.
         orchestra, _ = Section.objects.get_or_create(
-            organization=org, chart=chart, name="Orchestra", defaults={"ordering": 0}
+            organization=org,
+            chart=chart,
+            name="Orchestra",
+            defaults={"ordering": 0, "origin_x": 1.0, "origin_y": 0.0, "rows": 5, "seats_per_row": 10},
         )
         balcony, _ = Section.objects.get_or_create(
-            organization=org, chart=chart, name="Balcony", defaults={"ordering": 1}
+            organization=org,
+            chart=chart,
+            name="Balcony",
+            defaults={"ordering": 1, "origin_x": 1.0, "origin_y": 7.0, "rows": 2, "seats_per_row": 10},
         )
 
         self._create_seat_grid(org, orchestra, rows="ABCDE", seats_per_row=10, y_offset=0)

@@ -55,34 +55,11 @@
             <span class="scan-tally__sep">·</span>
             <span class="scan-tally__fail" x-text="tally.fail"></span> ✕
         </div>
-
-        <!-- Last verdict, anchored to the bottom of the stage so it reads at a
-             glance without pushing the manual entry off-screen. -->
-        <template x-if="lastResult">
-            <div class="scan-verdict" :class="'scan-verdict--' + lastResult.category"
-                 aria-live="assertive" role="button" tabindex="0" title="Tap to dismiss"
-                 @click="dismissResult()" @keydown.enter.prevent="dismissResult()" @keydown.space.prevent="dismissResult()">
-                <p class="scan-verdict__headline" x-text="headlineFor(lastResult)"></p>
-                <p class="scan-verdict__msg" x-text="lastResult.message"></p>
-                <template x-if="lastResult.ticket">
-                    <dl class="scan-verdict__meta">
-                        <template x-if="lastResult.ticket.holder_name">
-                            <div><dt>Holder</dt><dd x-text="lastResult.ticket.holder_name"></dd></div>
-                        </template>
-                        <template x-if="lastResult.ticket.seat">
-                            <div><dt>Seat</dt><dd x-text="lastResult.ticket.seat"></dd></div>
-                        </template>
-                        <div><dt>Show</dt><dd x-text="lastResult.ticket.performance"></dd></div>
-                    </dl>
-                </template>
-                <p class="scan-verdict__dismiss" aria-hidden="true">Tap to dismiss</p>
-            </div>
-        </template>
     </div>
 
     <!-- Manual entry, right below the scan area: no camera / permission denied /
          a code that won't scan. Type the ticket code (the /S/ segment). With JS
-         on, @submit.prevent redeems in-page and shows the verdict overlay above,
+         on, @submit.prevent redeems in-page and shows the verdict card below,
          same as the camera; with JS off it posts normally to the result page. -->
     <form class="scan-manual" method="post" @submit.prevent="submitManual($event)">
         {% csrf_token %}
@@ -92,6 +69,30 @@
         <button type="submit" class="button scan-manual__submit">Redeem</button>
     </form>
     {% if error %}<p class="scan-result scan-result--fail scan-manual__error">{{ error }}</p>{% endif %}
+
+    <!-- Last verdict as a card below the manual entry, so it never covers the
+         live camera. It stays put until the next scan replaces it or staff tap
+         it to dismiss -- no auto-hide. -->
+    <template x-if="lastResult">
+        <div class="scan-verdict" :class="'scan-verdict--' + lastResult.category"
+             aria-live="assertive" role="button" tabindex="0" title="Tap to dismiss"
+             @click="dismissResult()" @keydown.enter.prevent="dismissResult()" @keydown.space.prevent="dismissResult()">
+            <p class="scan-verdict__headline" x-text="headlineFor(lastResult)"></p>
+            <p class="scan-verdict__msg" x-text="lastResult.message"></p>
+            <template x-if="lastResult.ticket">
+                <dl class="scan-verdict__meta">
+                    <template x-if="lastResult.ticket.holder_name">
+                        <div><dt>Holder</dt><dd x-text="lastResult.ticket.holder_name"></dd></div>
+                    </template>
+                    <template x-if="lastResult.ticket.seat">
+                        <div><dt>Seat</dt><dd x-text="lastResult.ticket.seat"></dd></div>
+                    </template>
+                    <div><dt>Show</dt><dd x-text="lastResult.ticket.performance"></dd></div>
+                </dl>
+            </template>
+            <p class="scan-verdict__dismiss" aria-hidden="true">Tap to dismiss</p>
+        </div>
+    </template>
 
     <noscript>
         <p class="muted scan-note">Enable JavaScript to use the camera scanner. The manual entry form above still works.</p>

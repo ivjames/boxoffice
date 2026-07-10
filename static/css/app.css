@@ -2242,6 +2242,8 @@ table.dash-table th {
     text-align: center;
     color: #fff;
     background: rgba(17, 17, 17, 0.82);
+    /* Auto-hides after a few seconds; also tappable to clear early. */
+    cursor: pointer;
 }
 
 .scan-verdict--pass { background: rgba(22, 101, 52, 0.92); }
@@ -2282,6 +2284,14 @@ table.dash-table th {
 .scan-verdict__meta dd {
     margin: 0;
     font-weight: 600;
+}
+
+.scan-verdict__dismiss {
+    margin: 0.5rem 0 0;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.7;
 }
 
 /* Manual entry, pinned directly below the square. */

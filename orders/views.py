@@ -1,3 +1,4 @@
+import logging
 import uuid
 from decimal import Decimal
 
@@ -18,12 +19,36 @@ from .emails import send_ticket_email
 from .models import Hold, Order
 from .qr import ticket_qr_data_uri
 
+logger = logging.getLogger(__name__)
+
 
 def _parse_int(value, default=0):
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _send_tickets_best_effort(order, request):
+    """Email the tickets, but NEVER let a mail-transport failure 500 the
+    buyer. By the time this runs the Order is already paid and created and
+    the tickets are viewable at /tickets/<order.token>/ regardless of email,
+    so a broken/unconfigured SMTP host must not turn a successful purchase
+    into an error page.
+
+    The stub and test checkout paths call this from the buyer's own "Pay"
+    request (unlike the real Stripe path, which emails from the webhook, out
+    of band) -- so without this guard an SMTP failure surfaces as a 500 on
+    the buyer's click even though nothing about the order failed. We log it
+    and move on; the buyer still lands on their tickets."""
+    try:
+        send_ticket_email(order, request)
+    except Exception:
+        logger.exception(
+            "Ticket email for order %s could not be sent; the order is still "
+            "valid and viewable at its tickets page.",
+            order.pk,
+        )
 
 
 @require_tenant
@@ -285,7 +310,7 @@ def checkout_test(request):
         messages.error(request, str(exc))
         return redirect("cart")
 
-    send_ticket_email(order, request)
+    _send_tickets_best_effort(order, request)
     return redirect("ticket_detail", token=order.token)
 
 
@@ -339,7 +364,7 @@ def checkout_stub(request):
             messages.error(request, str(exc))
             return redirect("cart")
 
-        send_ticket_email(order, request)
+        _send_tickets_best_effort(order, request)
         return redirect("ticket_detail", token=order.token)
 
     total = services.hold_total(hold)

@@ -360,6 +360,39 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         self.assertEqual(Order.objects.count(), 0)
         self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
 
+    def test_stub_checkout_survives_a_ticket_email_failure(self):
+        """The order is fulfilled in the buyer's own "Pay" request, then the
+        ticket email is sent. A broken/unconfigured mail server (e.g. no SMTP
+        host set) must NOT 500 the buyer: the purchase already succeeded, so
+        the email failure is swallowed+logged and the buyer still lands on
+        their tickets. Regression test -- this used to bubble up as a 500."""
+        from unittest.mock import patch
+
+        from orders.models import Order
+
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        hold = Hold.objects.get(performance=self.performance)
+
+        with patch(
+            "orders.views.send_ticket_email", side_effect=Exception("smtp unavailable")
+        ):
+            resp = self.post_as(
+                "org-a",
+                "/checkout/stub/",
+                {"hold_id": hold.pk, "buyer_email": "buyer@example.com"},
+            )
+
+        order = Order.objects.get()
+        self.assertRedirects(
+            resp, f"/tickets/{order.token}/", fetch_redirect_response=False
+        )
+        self.assertEqual(order.tickets.count(), 2)
+        self.assertFalse(Hold.objects.filter(pk=hold.pk).exists())
+
 
 class GAInertSeatMapTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
     """A GA performance whose venue has a seating chart shows that chart as an

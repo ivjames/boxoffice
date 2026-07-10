@@ -296,10 +296,24 @@ class ScanHomeViewTests(ScanFixtureMixin, TestCase):
         self.assertEqual(self.ticket.status, Ticket.Status.USED)
 
     def test_manual_entry_rejects_garbage_token(self):
+        # Tokens are base64url now, so a "wrong" code is only rejected at input
+        # if it contains chars outside that alphabet (a space + punctuation
+        # here); a well-formed-but-unknown code is handled below instead.
         self.client.force_login(self.scanner_user)
-        resp = self.client.post("/scan/", {"token": "not-a-uuid"}, HTTP_HOST=host_for("roxy"))
+        resp = self.client.post("/scan/", {"token": "bad token!"}, HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "doesn&#x27;t look like a valid ticket code")
+
+    def test_manual_entry_of_well_formed_unknown_token_reaches_redeem(self):
+        # A syntactically valid but nonexistent token isn't rejected up front;
+        # it flows through to scan_redeem/redeem_ticket -- the single place that
+        # decides pass/fail -- which reports it as not found.
+        self.client.force_login(self.scanner_user)
+        resp = self.client.post("/scan/", {"token": "abcXYZ012_-9"}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/scan/redeem/abcXYZ012_-9/", resp.headers["Location"])
+        follow = self.client.get(resp.headers["Location"], HTTP_HOST=host_for("roxy"))
+        self.assertContains(follow, "FAIL")
 
     def test_platform_host_404s(self):
         self.client.force_login(self.scanner_user)

@@ -1,5 +1,4 @@
 import json
-import uuid
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
@@ -382,11 +381,13 @@ class OrderListView(BoxOfficeRequiredMixin, ListView):
         )
         query = self.request.GET.get("q", "").strip()
         if query:
-            filters = Q(buyer_email__icontains=query) | Q(buyer_name__icontains=query)
-            try:
-                filters |= Q(token=uuid.UUID(query))
-            except ValueError:
-                pass
+            # token is a short opaque string now (orders.models.new_token), so
+            # match it directly instead of parsing the query as a UUID.
+            filters = (
+                Q(buyer_email__icontains=query)
+                | Q(buyer_name__icontains=query)
+                | Q(token=query)
+            )
             qs = qs.filter(filters)
         return qs
 

@@ -17,5 +17,5 @@ urlpatterns = [
     path("checkout/test/", views.checkout_test, name="checkout_test"),
     path("checkout/success/", views.checkout_success, name="checkout_success"),
     path("checkout/cancel/", views.checkout_cancel, name="checkout_cancel"),
-    path("tickets/<uuid:token>/", views.ticket_detail, name="ticket_detail"),
+    path("tickets/<slug:token>/", views.ticket_detail, name="ticket_detail"),
 ]

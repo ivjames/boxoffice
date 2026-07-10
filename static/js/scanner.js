@@ -160,8 +160,7 @@ function qrScanner() {
                             // Transient decode error -- just try the next frame.
                         }
                     } else {
-                        const text = this.decodeWithJsQR(video);
-                        codes = text ? [text] : [];
+                        codes = this.decodeWithJsQR(video);
                     }
                     if (codes) this.considerCodes(codes);
                 }
@@ -171,11 +170,11 @@ function qrScanner() {
         },
 
         decodeWithJsQR(video) {
-            if (typeof window.jsQR !== "function") return null;
+            if (typeof window.jsQR !== "function") return [];
             const canvas = this.$refs.canvas;
             const vw = video.videoWidth;
             const vh = video.videoHeight;
-            if (!vw || !vh) return null;
+            if (!vw || !vh) return [];
 
             // Downscale before decoding -- jsQR's cost scales with pixel
             // count, and QR codes fill a printed/e-ticket frame generously
@@ -190,17 +189,44 @@ function qrScanner() {
 
             const ctx = canvas.getContext("2d", { willReadFrequently: true });
             ctx.drawImage(video, 0, 0, w, h);
-            const imageData = ctx.getImageData(0, 0, w, h);
-            const code = window.jsQR(imageData.data, w, h, { inversionAttempts: "dontInvert" });
-            return code ? code.data : null;
+
+            const first = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
+            if (!first) return [];
+
+            // jsQR returns just one code per call, but door staff are on iOS
+            // (no BarcodeDetector), so this is the only place we can notice a
+            // second ticket in frame. Blank out the code we just found and
+            // decode again: if another QR is present it now surfaces, and
+            // considerCodes() refuses the ambiguous frame instead of silently
+            // scanning one of a fanned-out stack.
+            this.blankRegion(ctx, first.location, w, h);
+            const second = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
+
+            return second ? [first.data, second.data] : [first.data];
+        },
+
+        blankRegion(ctx, location, w, h) {
+            // Paint over the bounding box of an already-decoded code so a
+            // second jsQR pass can't just re-find it. Pad the box so the
+            // code's quiet zone and finder patterns are fully covered.
+            if (!location) return;
+            const xs = [location.topLeftCorner.x, location.topRightCorner.x, location.bottomLeftCorner.x, location.bottomRightCorner.x];
+            const ys = [location.topLeftCorner.y, location.topRightCorner.y, location.bottomLeftCorner.y, location.bottomRightCorner.y];
+            const pad = Math.max(w, h) * 0.04;
+            const x0 = Math.max(0, Math.min(...xs) - pad);
+            const y0 = Math.max(0, Math.min(...ys) - pad);
+            const x1 = Math.min(w, Math.max(...xs) + pad);
+            const y1 = Math.min(h, Math.max(...ys) + pad);
+            ctx.fillStyle = "#808080";
+            ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
         },
 
         considerCodes(codes) {
             // Refuse to scan when more than one QR is in frame. With several
             // tickets fanned out we can't tell which one the staffer means, so
             // we scan none of them and wait for a single code to be isolated.
-            // (Only the native BarcodeDetector reports multiples; the jsQR
-            // fallback returns at most one, so this guard is a no-op there.)
+            // (BarcodeDetector reports multiples natively; the jsQR fallback
+            // gets there via a second masked decode -- see decodeWithJsQR.)
             const now = performance.now();
             if (codes.length > 1) {
                 this.multiple = true;

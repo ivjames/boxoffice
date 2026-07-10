@@ -225,6 +225,12 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
 
         from orders.models import Order
 
+        # This org HAS Stripe configured, so create_checkout_session takes the
+        # real (mocked) Stripe path rather than the no-keys stub (which is
+        # covered separately below).
+        self.org.stripe_secret_key = "sk_test_org_a_secret"
+        self.org.save(update_fields=["stripe_secret_key"])
+
         self.post_as(
             "org-a",
             f"/performances/{self.performance.pk}/hold/",
@@ -261,6 +267,137 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         resp = self.post_as("org-a", "/checkout/", {"hold_id": hold.pk})
         self.assertEqual(resp.status_code, 404)  # expired hold no longer matches the lookup
         self.assertEqual(Order.objects.count(), 0)
+
+    def test_checkout_post_without_stripe_keys_redirects_to_stub_not_500(self):
+        """With no Stripe keys on the org (the demo/pre-launch state),
+        "Proceed to payment" must NOT 500 on a Stripe auth error -- it
+        redirects to the simulated checkout stub instead, and never touches
+        Stripe."""
+        from unittest.mock import patch
+
+        from orders.models import Order
+
+        self.assertEqual(self.org.stripe_secret_key, "")  # no Stripe configured
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        hold = Hold.objects.get(performance=self.performance)
+
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            resp = self.post_as("org-a", "/checkout/", {"hold_id": hold.pk})
+            mock_create.assert_not_called()  # Stripe is never called without a key
+
+        self.assertRedirects(
+            resp,
+            f"http://org-a.localhost/checkout/stub/?hold_id={hold.pk}",
+            fetch_redirect_response=False,
+        )
+        # Nothing is fulfilled yet -- that happens when the stub form is posted.
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_stub_checkout_get_renders_simulated_payment_page(self):
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        hold = Hold.objects.get(performance=self.performance)
+
+        resp = self.get_as("org-a", f"/checkout/stub/?hold_id={hold.pk}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Simulated payment")
+        self.assertContains(resp, "$40.00")  # 2 x $20 GA tier
+
+    def test_stub_checkout_post_fulfills_order_without_stripe(self):
+        from orders.models import Order, Payment
+
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        hold = Hold.objects.get(performance=self.performance)
+
+        resp = self.post_as(
+            "org-a",
+            "/checkout/stub/",
+            {"hold_id": hold.pk, "buyer_name": "Stub Buyer", "buyer_email": "stub@example.com"},
+        )
+
+        order = Order.objects.get()
+        self.assertRedirects(
+            resp, f"/tickets/{order.token}/", fetch_redirect_response=False
+        )
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(order.buyer_email, "stub@example.com")
+        self.assertEqual(order.total, Decimal("40.00"))
+        self.assertEqual(order.tickets.count(), 2)
+        # A stub order is a simulated payment, never a real Stripe one.
+        self.assertIsNone(order.stripe_checkout_session_id)
+        self.assertEqual(Payment.objects.get(order=order).provider, "stub")
+        # The hold is consumed exactly like a real fulfillment.
+        self.assertFalse(Hold.objects.filter(pk=hold.pk).exists())
+
+    def test_stub_checkout_post_requires_email(self):
+        from orders.models import Order
+
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        hold = Hold.objects.get(performance=self.performance)
+
+        resp = self.post_as("org-a", "/checkout/stub/", {"hold_id": hold.pk})
+        self.assertRedirects(
+            resp,
+            f"/checkout/stub/?hold_id={hold.pk}",
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+
+
+class GAInertSeatMapTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """A GA performance whose venue has a seating chart shows that chart as an
+    INERT (display-only) map -- a picture of the room -- without turning the
+    page into the reserved-seat picker: GA stays quantity-based."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue)
+        chart = SeatingChart.objects.create(
+            organization=self.org, venue=self.venue, name="Standard"
+        )
+        section = Section.objects.create(organization=self.org, chart=chart, name="Floor")
+        for n in range(1, 4):
+            Seat.objects.create(
+                organization=self.org, section=section, row_label="A", number=str(n)
+            )
+
+    def test_ga_detail_renders_inert_map_and_keeps_quantity_form(self):
+        resp = self.get_as("org-a", f"/performances/{self.performance.pk}/")
+        self.assertEqual(resp.status_code, 200)
+        # Inert map is present...
+        self.assertContains(resp, "seat-map--inert")
+        self.assertContains(resp, "inertSeatMap()")
+        # ...but the interactive reserved-seat picker (and its hold form) is not.
+        self.assertNotContains(resp, "seatMap()")
+        # The quantity selector is still the actual purchase control.
+        self.assertContains(resp, 'name="quantity"')
+
+    def test_ga_detail_without_a_chart_omits_the_map(self):
+        # A GA performance at a bare venue (no seating chart) simply has no
+        # map to show -- the page must still render with just the quantity form.
+        org, venue = self.build_org("org-b")
+        _, performance, _ = self.build_ga(org, venue, slug="bare-ga")
+        resp = self.get_as("org-b", f"/performances/{performance.pk}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, "seat-map--inert")
+        self.assertContains(resp, 'name="quantity"')
 
 
 class ReservedHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):

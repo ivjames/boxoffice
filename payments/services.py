@@ -32,6 +32,8 @@ the two callers differ only in idempotency strategy and where buyer_email/
 buyer_name/payment_ref come from.
 """
 
+import logging
+
 from django.db import IntegrityError, transaction
 from django.urls import reverse
 from django.utils import timezone
@@ -42,6 +44,8 @@ from events.models import GAAllocation
 from orders import services as order_services
 from orders.models import Hold, Order, OrderItem, Payment, Ticket
 from venues.models import Seat
+
+logger = logging.getLogger(__name__)
 
 
 class CheckoutError(Exception):
@@ -88,6 +92,17 @@ def create_checkout_session(hold, request):
     the checkout.session.completed webhook. `request` supplies the tenant
     host (for success/cancel URLs) and nothing else; it is never sent to
     Stripe.
+
+    STUB MODE: if this tenant hasn't connected a Stripe account yet
+    (Organization.stripe_secret_key is blank), there is no key to
+    authenticate a real Stripe call -- calling Stripe anyway just raises
+    stripe.error.AuthenticationError and 500s the "Proceed to payment" POST.
+    Instead we SIMULATE the hosted checkout: return the URL of an internal
+    stub payment page (orders/views.py's checkout_stub) that fulfills the
+    hold with a simulated payment (no money moves, no Stripe call of any
+    kind). This keeps the browse -> buy -> ticket flow working end to end on
+    a tenant with no Stripe keys, which is the whole point of the demo/
+    pre-launch setup. See checkout_stub for the "simulated payment" half.
     """
     if hold.expires_at <= timezone.now():
         raise CheckoutError("Your hold has expired. Please make your selection again.")
@@ -97,6 +112,16 @@ def create_checkout_session(hold, request):
         raise CheckoutError("There's nothing to check out.")
 
     organization = hold.organization
+
+    if not organization.stripe_secret_key:
+        logger.info(
+            "Organization %s has no Stripe secret key; using the simulated "
+            "checkout stub for hold %s instead of calling Stripe.",
+            organization.pk,
+            hold.pk,
+        )
+        return request.build_absolute_uri(reverse("checkout_stub")) + f"?hold_id={hold.pk}"
+
     success_url = request.build_absolute_uri(reverse("checkout_success")) + "?session_id={CHECKOUT_SESSION_ID}"
     cancel_url = request.build_absolute_uri(reverse("checkout_cancel"))
 

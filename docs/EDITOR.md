@@ -199,3 +199,33 @@ of testing that produced items 1-4 above:
    lockstep, `SharedFormulaContractTests` covering both), and remove the
    "disabled with a note" UI treatment — the offset controls are always
    available now, arc or no arc.
+
+## Round 6 refinements (touch/Safari + grid feedback)
+Three fixes from continued real-device testing:
+1. **A different solution for touch/Safari**: rounds 3–5 kept enlarging the tiny
+   on-canvas move handle and hardening pointer capture, but precisely grabbing a
+   ~0.5-unit dot with a finger stays unreliable on iPad/Safari. New approach:
+   **move a section by dragging its BODY** — a pointerdown on any seat starts a
+   section-move drag (the same `origin` path the handle uses, snap included); a
+   clean **tap** (pointer never passes a ~6px threshold) still opens that seat's
+   accessible/delete popover. Rotate/resize/offset already have sidebar sliders,
+   so touch users never need the small handles at all. Capture is taken on the
+   stable `<svg>` root, not the seat circle — `renderSection()` rebuilds every
+   seat `<circle>` each drag frame, so a capture on the circle drops the moment
+   the section first moves (and iOS Safari then stops delivering pointermove,
+   the exact "can't drag" failure). Desktop handles are unchanged.
+2. **Snap-to-grid must conform to the grid**: the move drag snapped
+   *incrementally* — `round(origin + per-event-delta)` with the reference reset
+   each event — so with snap on, every sub-1-unit per-event delta rounded
+   straight back to the current origin and the section never landed on a grid
+   line. Fixed to compute the new origin from the drag-start origin + the FULL
+   pointer delta, then snap once, so a snapped drag clicks cleanly onto whole-
+   unit grid squares (default seat/row pitch is 1.0, so the seats line up with
+   the minor grid).
+3. **Background grid was basically invisible**: the reference grid drew at
+   0.015/0.025 SVG user-unit strokes in a near-white border color — a sub-pixel
+   ghost at fit zoom. Restyled to a stronger slate color at a visibly heavier
+   (but still sub-seat) user-unit width so it reads clearly at fit and holds up
+   zoomed in/out. Kept in user units rather than `non-scaling-stroke`, which
+   older iPad WebKit ignores inside a `<pattern>` (falling back to a 1-unit
+   stroke that would flood each tile solid).

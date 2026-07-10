@@ -239,6 +239,10 @@ function chartEditor(config) {
         _bgStart: null,
         _activePointers: new Map(), // pointerId -> {x, y} for background touches
         _pinch: null,               // two-finger pinch-zoom/pan gesture state
+        // Round 6 (touch/Safari): drag-the-section-BODY gesture state. Set when
+        // a pointerdown lands on a seat (startBodyDrag) so onHandleDrag can tell
+        // a section-move drag apart from a clean tap (which opens the popover).
+        _bodyDrag: null,
         popover: null, // {sectionId, row, number, accessible, screenX, screenY}
         dirty: false,
         saving: false,
@@ -430,11 +434,15 @@ function chartEditor(config) {
                 circle.setAttribute("fill", section.color);
                 circle.dataset.row = seat.row;
                 circle.dataset.number = seat.number;
+                // Round 6 (touch/Safari, "a different solution"): pointerdown on
+                // a seat starts a potential SECTION-BODY drag (startBodyDrag) --
+                // dragging the block itself is a finger-sized target that no
+                // longer depends on grabbing the ~0.5-unit move handle. A clean
+                // tap (no drag past a small threshold) still opens this seat's
+                // popover; see startBodyDrag()/onHandleDrag()'s "origin" case/
+                // endHandleDrag() for the tap-vs-drag split.
                 circle.addEventListener("pointerdown", (evt) => {
-                    evt.stopPropagation();
-                    evt.preventDefault();
-                    this.selectSection(id);
-                    this.openPopover(id, seat, evt);
+                    this.startBodyDrag(id, seat, evt);
                 });
                 // The popover's `@click.outside="closePopover()"` (template)
                 // listens on `document`. For a MOUSE-originated pointer,
@@ -1046,13 +1054,61 @@ function chartEditor(config) {
 
         // -- transform box: dragging --------------------------------------
 
+        // Round 6 (touch/Safari, "a different solution for touch screens"):
+        // start a potential section-BODY drag from a seat pointerdown. Moving
+        // a section by dragging the block itself is a forgiving, finger-sized
+        // gesture -- unlike hunting for the ~0.5-unit move handle -- and it
+        // reuses the exact same "origin" drag path (onHandleDrag) the handle
+        // uses, snap-to-grid included. A clean tap (pointer never passes the
+        // ~6px threshold) opens the seat popover instead (endHandleDrag).
+        startBodyDrag(id, seat, evt) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.selectSection(id);
+            const s = this.sections[id];
+            if (!s) return;
+            this.dragMode = "origin";
+            this._dragSectionId = id;
+            this._dragStart = {
+                pointer: this.clientToViewBox(evt.clientX, evt.clientY),
+                originX: s.origin_x,
+                originY: s.origin_y,
+            };
+            this._bodyDrag = {
+                sectionId: id,
+                seat,
+                moved: false,
+                pointerId: evt.pointerId,
+                startClientX: evt.clientX,
+                startClientY: evt.clientY,
+            };
+            // Pointer capture is DEFERRED until the gesture actually crosses the
+            // drag threshold (onHandleDrag's "origin" case), NOT taken here on
+            // pointerdown. Capturing on the <svg> root retargets the trailing
+            // `click` away from the seat circle, which bypasses the circle's
+            // click-stopPropagation guard and lets the popover's @click.outside
+            // immediately close a popover a pure TAP is about to open. A tap
+            // therefore never captures; only a real drag does (see below).
+            this._captureTarget = null;
+            this._capturePointerId = null;
+        },
+
         startHandleDrag(mode, evt) {
             if (!this.selected) return;
             evt.preventDefault();
             evt.stopPropagation();
             this.dragMode = mode;
             this._dragSectionId = this.selectedId;
-            this._dragStart = { pointer: this.clientToViewBox(evt.clientX, evt.clientY) };
+            // Stash the section's origin at gesture start so the "origin"
+            // (move-section) drag can compute an ABSOLUTE new position from
+            // base + total pointer delta rather than accumulating per-event
+            // deltas -- see onHandleDrag()'s "origin" case for why the old
+            // incremental form broke snap-to-grid.
+            this._dragStart = {
+                pointer: this.clientToViewBox(evt.clientX, evt.clientY),
+                originX: this.selected.origin_x,
+                originY: this.selected.origin_y,
+            };
             // Pointer capture glues the whole drag to this handle even as a
             // fingertip slides off the small hit target -- essential on touch.
             // Guarded in try/catch: iOS Safari can throw here (e.g. the pointer
@@ -1096,12 +1152,59 @@ function chartEditor(config) {
                 // Translate the whole section -- a pure pointer-delta drag,
                 // unaffected by rotation/pivot (see handleOrigin()'s doc
                 // comment: origin_x/origin_y is the placement anchor, not a
-                // rotated local point). Round 3 #11: snapped to the grid
-                // (WORLD position, not the delta) when snap-to-grid is on.
-                const [startPx, startPy] = this._dragStart.pointer;
-                s.origin_x = this.snapValue(s.origin_x + (px - startPx));
-                s.origin_y = this.snapValue(s.origin_y + (py - startPy));
-                this._dragStart.pointer = [px, py];
+                // rotated local point).
+                //
+                // Round 6 (snap fix, "the grid snapping doesn't conform to a
+                // grid"): compute the new origin from the drag-START origin +
+                // the FULL pointer delta, then snap ONCE. The old code added
+                // the tiny per-event delta to the live origin, snapped, and
+                // reset the reference every event -- so with snap on, each
+                // sub-1-unit per-event delta rounded straight back to the
+                // current origin and the section never actually moved onto a
+                // grid line. Absolute base + total delta snaps cleanly to
+                // whole-unit grid squares (default seat/row pitch is 1.0, so
+                // the seats themselves line up with the minor grid) and still
+                // moves smoothly (identity snap) when snap is off.
+                //
+                // For a BODY drag (started on a seat, _bodyDrag set) hold the
+                // section still until the gesture clearly passes the tap
+                // threshold, so a tap that wobbles a few px doesn't nudge the
+                // section (and mark it dirty) before opening the popover.
+                if (this._bodyDrag && !this._bodyDrag.moved) {
+                    const moved = Math.hypot(
+                        evt.clientX - this._bodyDrag.startClientX,
+                        evt.clientY - this._bodyDrag.startClientY
+                    );
+                    if (moved > 6) {
+                        this._bodyDrag.moved = true;
+                        // Threshold crossed -> this is a real drag, not a tap.
+                        // NOW take pointer capture on the STABLE <svg> root so
+                        // the rest of the drag stays glued to the finger even
+                        // as renderSection() rebuilds the seat <circle> under
+                        // it (a capture on the circle would drop the instant it
+                        // first re-renders, and iOS Safari would then stop
+                        // delivering pointermove -- the classic "can't drag on
+                        // touch"). Deferred to here so a pure tap never captures
+                        // (see startBodyDrag). The window-level move/up handlers
+                        // still drive the drag even if capture is refused.
+                        const svg = this.$refs.svg;
+                        this._captureTarget = svg;
+                        this._capturePointerId = this._bodyDrag.pointerId;
+                        try {
+                            if (svg && svg.setPointerCapture) svg.setPointerCapture(this._bodyDrag.pointerId);
+                        } catch (e) {
+                            /* capture is best-effort */
+                        }
+                    }
+                }
+                if (!this._bodyDrag || this._bodyDrag.moved) {
+                    const [startPx, startPy] = this._dragStart.pointer;
+                    s.origin_x = this.snapValue(this._dragStart.originX + (px - startPx));
+                    s.origin_y = this.snapValue(this._dragStart.originY + (py - startPy));
+                    this.dirty = true;
+                    this.renderSection(this._dragSectionId);
+                }
+                return;
             } else if (this.dragMode === "move_pivot") {
                 // Reposition the ROTATION PIVOT (Round 2, docs/EDITOR.md
                 // #2): a pivot's world position is always origin +
@@ -1159,7 +1262,7 @@ function chartEditor(config) {
             this.renderSection(this._dragSectionId);
         },
 
-        endHandleDrag() {
+        endHandleDrag(evt) {
             if (this._captureTarget && this._capturePointerId != null) {
                 try {
                     if (this._captureTarget.releasePointerCapture)
@@ -1168,11 +1271,23 @@ function chartEditor(config) {
                     /* already released (e.g. pointercancel got here first) */
                 }
             }
+            // Round 6: a section-body gesture that never passed the drag
+            // threshold is a plain tap -- open that seat's popover (anchored at
+            // the original touch point). A pointercancel (system-interrupted
+            // gesture) is never a tap, so it opens nothing.
+            const body = this._bodyDrag;
             this._captureTarget = null;
             this._capturePointerId = null;
             this.dragMode = null;
             this._dragSectionId = null;
             this._dragStart = null;
+            this._bodyDrag = null;
+            if (body && !body.moved && evt && evt.type !== "pointercancel") {
+                this.openPopover(body.sectionId, body.seat, {
+                    clientX: body.startClientX,
+                    clientY: body.startClientY,
+                });
+            }
         },
 
         // -- background: pan + click-to-deselect ------------------------------
@@ -1198,7 +1313,7 @@ function chartEditor(config) {
 
         onCanvasPointerUp(evt) {
             if (this.dragMode) {
-                this.endHandleDrag();
+                this.endHandleDrag(evt);
                 return;
             }
             const wasPinching = !!this._pinch;

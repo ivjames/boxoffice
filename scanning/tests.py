@@ -420,6 +420,55 @@ class ScanHomeViewTests(ScanFixtureMixin, TestCase):
         follow = self.client.get(resp.headers["Location"], HTTP_HOST=host_for("roxy"))
         self.assertContains(follow, "FAIL")
 
+    def test_manual_entry_json_redeems_in_page(self):
+        """With JS on, the manual form POSTs with Accept: application/json and
+        gets the ScanResult JSON back (no redirect) so the verdict renders
+        in-page -- and the ticket is actually redeemed by that same request."""
+        self.client.force_login(self.scanner_user)
+        resp = self.client.post(
+            "/scan/",
+            {"token": str(self.ticket.token)},
+            HTTP_HOST=host_for("roxy"),
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "application/json")
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["ticket"]["status"], "used")
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, Ticket.Status.USED)
+
+    def test_manual_entry_json_garbage_token_is_invalid_code(self):
+        """A malformed code via the JSON path comes back as an invalid_code
+        verdict (rendered red inline) rather than the HTML error page."""
+        self.client.force_login(self.scanner_user)
+        resp = self.client.post(
+            "/scan/",
+            {"token": "bad token!"},
+            HTTP_HOST=host_for("roxy"),
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["reason"], "invalid_code")
+
+    def test_manual_entry_json_unknown_token_not_found(self):
+        """A well-formed but unknown code flows through redeem_ticket and comes
+        back as not_found JSON."""
+        self.client.force_login(self.scanner_user)
+        resp = self.client.post(
+            "/scan/",
+            {"token": "ABCDEFG234567AB"},
+            HTTP_HOST=host_for("roxy"),
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["reason"], "not_found")
+
     def test_platform_host_404s(self):
         self.client.force_login(self.scanner_user)
         resp = self.client.get("/scan/")

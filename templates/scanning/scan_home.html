@@ -81,10 +81,12 @@
     </div>
 
     <!-- Manual entry, right below the scan area: no camera / permission denied /
-         a code that won't scan. Type the ticket code (the /S/ segment). -->
-    <form class="scan-manual" method="post">
+         a code that won't scan. Type the ticket code (the /S/ segment). With JS
+         on, @submit.prevent redeems in-page and shows the verdict overlay above,
+         same as the camera; with JS off it posts normally to the result page. -->
+    <form class="scan-manual" method="post" @submit.prevent="submitManual($event)">
         {% csrf_token %}
-        <input type="text" name="token" class="scan-manual__input"
+        <input type="text" name="token" class="scan-manual__input" x-ref="manualInput"
                placeholder="Enter ticket code" autocomplete="off"
                autocapitalize="characters" spellcheck="false" required>
         <button type="submit" class="button scan-manual__submit">Redeem</button>

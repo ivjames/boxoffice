@@ -28,25 +28,45 @@ def scan_home(request):
     available, jsQR everywhere else -- see static/js/scanner.js) plus a
     manual token-entry fallback for desktops/denied camera permissions.
     Manual entry recomputes a valid signature server-side (the staffer is
-    already authenticated + scanner-role-gated to be on this page at all)
-    and bounces to the normal redeem URL, so there is still exactly one
-    code path -- scan_redeem()/redeem_ticket() -- that ever decides
-    pass/fail, whether the ticket got here via camera, manual entry, or a
-    phone's camera app opening the QR's URL directly.
+    already authenticated + scanner-role-gated to be on this page at all),
+    so there is still exactly one code path -- redeem_ticket() -- that ever
+    decides pass/fail, whether the ticket got here via camera, manual entry,
+    or a phone's camera app opening the QR's URL directly.
+
+    With JS on, the manual form fetch()es this view with Accept:
+    application/json and gets the same JSON verdict the camera loop renders,
+    so staff stay on the app-like scan screen. With JS off it falls back to a
+    plain POST that redirects to the full scan_redeem result page.
     """
     error = None
     if request.method == "POST":
+        wants_json = _wants_json(request)
         # Tokens are uppercase alphanumeric (orders.models.new_token); accept a
         # lowercase paste too by upper()ing first. The regex is just a shape
         # guard so a stray paste can't reach reverse() with a char the
         # <slug:token> route can't build (which would 500) -- a genuinely
-        # wrong-but-well-formed code still flows through to
-        # scan_redeem/redeem_ticket, the single place that decides pass/fail.
+        # wrong-but-well-formed code still flows through to redeem_ticket, the
+        # single place that decides pass/fail.
         raw_token = request.POST.get("token", "").strip().upper()
         if not raw_token or not re.fullmatch(r"[A-Z0-9]+", raw_token):
             error = "That doesn't look like a valid ticket code."
+            if wants_json:
+                return JsonResponse(
+                    {"ok": False, "reason": "invalid_code", "message": error, "ticket": None}
+                )
         else:
             sig = sign_token(raw_token, request.organization.id)
+            if wants_json:
+                # In-page manual entry: redeem here and hand back the same
+                # ScanResult JSON the camera loop renders, so staff never leave
+                # the scan screen.
+                result = redeem_ticket(
+                    organization=request.organization,
+                    token=raw_token,
+                    sig=sig,
+                    scanned_by=request.user,
+                )
+                return JsonResponse(result.as_dict())
             return redirect(reverse("scan_redeem", args=[raw_token, sig]))
 
     return render(request, "scanning/scan_home.html", {"error": error})

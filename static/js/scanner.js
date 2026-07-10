@@ -255,6 +255,58 @@ function qrScanner() {
             }
         },
 
+        async submitManual(evt) {
+            // Manual token entry, redeemed in-page so staff stay on the scan
+            // screen instead of navigating to the full result page. POST the
+            // form (token + CSRF) to /scan/ with Accept: application/json;
+            // scanning.views.scan_home signs the token server-side and returns
+            // the same ScanResult JSON the camera loop renders.
+            const form = evt.target;
+            const body = new FormData(form);
+            const token = (body.get("token") || "").toString().trim();
+            if (!token || this.busy) return;
+
+            this.busy = true;
+            try {
+                let resp;
+                try {
+                    resp = await fetch(form.action, {
+                        method: "POST",
+                        body,
+                        headers: { Accept: "application/json" },
+                        credentials: "same-origin",
+                    });
+                } catch (e) {
+                    this.recordResult({
+                        ok: false,
+                        reason: "network_error",
+                        message: "Network error — check connectivity and try again.",
+                        ticket: null,
+                    });
+                    return;
+                }
+
+                let data;
+                try {
+                    data = await resp.json();
+                } catch (e) {
+                    this.recordResult({
+                        ok: false,
+                        reason: "session_expired",
+                        message: "Unexpected response — your session may have expired. Reload the page.",
+                        ticket: null,
+                    });
+                    return;
+                }
+                this.recordResult(data);
+                // Clear + refocus so staff can key the next code straight in.
+                form.reset();
+                if (this.$refs.manualInput) this.$refs.manualInput.focus();
+            } finally {
+                this.busy = false;
+            }
+        },
+
         recordResult(data) {
             // Three visible outcomes, not two: a valid admit (green), a QR
             // that scanned fine but shouldn't admit yet (amber -- either

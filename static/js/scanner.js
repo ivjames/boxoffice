@@ -171,54 +171,60 @@ function qrScanner() {
 
         decodeWithJsQR(video) {
             if (typeof window.jsQR !== "function") return [];
-            const canvas = this.$refs.canvas;
             const vw = video.videoWidth;
             const vh = video.videoHeight;
             if (!vw || !vh) return [];
 
-            // Downscale before decoding -- jsQR's cost scales with pixel
-            // count, and QR codes fill a printed/e-ticket frame generously
-            // enough that a 480px-max-dimension image decodes fine while
-            // being much cheaper per attempt on a phone.
-            const maxDim = 480;
-            const scale = Math.min(1, maxDim / Math.max(vw, vh));
-            const w = Math.max(1, Math.round(vw * scale));
-            const h = Math.max(1, Math.round(vh * scale));
-            canvas.width = w;
-            canvas.height = h;
+            // Primary decode over the whole frame, downscaled -- jsQR's cost
+            // scales with pixel count and a QR filling a held-up ticket decodes
+            // fine at 480px, so the common single-ticket path stays cheap.
+            const primary = this.decodeRegion(video, 0, 0, vw, vh, 480);
+            if (!primary) return [];
 
-            const ctx = canvas.getContext("2d", { willReadFrequently: true });
-            ctx.drawImage(video, 0, 0, w, h);
+            // A code decoded, but door staff are on iOS (no BarcodeDetector),
+            // so this is our only chance to notice a SECOND ticket in frame --
+            // e.g. a monitor or sheet showing several codes at once. A single
+            // full-frame decode can't: jsQR returns just the sharpest code and
+            // the rest are too small at 480px to surface. So re-decode
+            // overlapping halves, where each code is larger (and thus more
+            // likely to decode) and two codes tend to fall in different halves.
+            // Any DISTINCT second code means the frame is ambiguous and
+            // considerCodes() must refuse it. Skip this probe while busy --
+            // we won't redeem anyway, so don't pay for it.
+            if (this.busy) return [primary];
 
-            const first = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
-            if (!first) return [];
-
-            // jsQR returns just one code per call, but door staff are on iOS
-            // (no BarcodeDetector), so this is the only place we can notice a
-            // second ticket in frame. Blank out the code we just found and
-            // decode again: if another QR is present it now surfaces, and
-            // considerCodes() refuses the ambiguous frame instead of silently
-            // scanning one of a fanned-out stack.
-            this.blankRegion(ctx, first.location, w, h);
-            const second = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
-
-            return second ? [first.data, second.data] : [first.data];
+            const seen = new Set([primary]);
+            // Left / right / top / bottom, each 60% of the frame so a code near
+            // the middle still lands whole in at least one probe.
+            const halves = [
+                [0, 0, vw * 0.6, vh],
+                [vw * 0.4, 0, vw * 0.6, vh],
+                [0, 0, vw, vh * 0.6],
+                [0, vh * 0.4, vw, vh * 0.6],
+            ];
+            for (const [sx, sy, sw, sh] of halves) {
+                const code = this.decodeRegion(video, sx, sy, sw, sh, 512);
+                if (code) seen.add(code);
+                if (seen.size > 1) return Array.from(seen).slice(0, 2); // enough to know it's multiple
+            }
+            return [primary];
         },
 
-        blankRegion(ctx, location, w, h) {
-            // Paint over the bounding box of an already-decoded code so a
-            // second jsQR pass can't just re-find it. Pad the box so the
-            // code's quiet zone and finder patterns are fully covered.
-            if (!location) return;
-            const xs = [location.topLeftCorner.x, location.topRightCorner.x, location.bottomLeftCorner.x, location.bottomRightCorner.x];
-            const ys = [location.topLeftCorner.y, location.topRightCorner.y, location.bottomLeftCorner.y, location.bottomRightCorner.y];
-            const pad = Math.max(w, h) * 0.04;
-            const x0 = Math.max(0, Math.min(...xs) - pad);
-            const y0 = Math.max(0, Math.min(...ys) - pad);
-            const x1 = Math.min(w, Math.max(...xs) + pad);
-            const y1 = Math.min(h, Math.max(...ys) + pad);
-            ctx.fillStyle = "#808080";
-            ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+        decodeRegion(video, sx, sy, sw, sh, maxDim) {
+            // Decode a rectangular crop of the video (source px sx,sy,sw,sh),
+            // scaled so its longest side is maxDim, and return the code string
+            // or null. Cropping lets each code fill more of the decoded image
+            // than it would in a downscaled full frame.
+            const canvas = this.$refs.canvas;
+            const scale = Math.min(1, maxDim / Math.max(sw, sh));
+            const w = Math.max(1, Math.round(sw * scale));
+            const h = Math.max(1, Math.round(sh * scale));
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
+            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
+            const code = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
+            return code ? code.data : null;
         },
 
         considerCodes(codes) {
@@ -226,7 +232,7 @@ function qrScanner() {
             // tickets fanned out we can't tell which one the staffer means, so
             // we scan none of them and wait for a single code to be isolated.
             // (BarcodeDetector reports multiples natively; the jsQR fallback
-            // gets there via a second masked decode -- see decodeWithJsQR.)
+            // gets there by decoding overlapping halves -- see decodeWithJsQR.)
             const now = performance.now();
             if (codes.length > 1) {
                 this.multiple = true;

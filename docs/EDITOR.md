@@ -130,3 +130,34 @@ anything that isn't actually live/usable.
    canvas. The create form is just Name (required) + Tier (optional label); rows/
    seats-per-row/pitch keep sensible model defaults so the section is immediately
    visible and usable on the canvas.
+
+## Round 3 refinements (iPad + desktop testing)
+The on-canvas TRANSFORM SYSTEM is the crux — it's currently broken. Priority order:
+1. **Transform handles broken/missing**: corner (resize) handles AND the rotation
+   handle don't render/aren't usable. Rebuild the transform frame so it reliably
+   shows 4 corner resize handles, a rotation handle, offset/skew handle(s), and the
+   pivot marker — all clearly visible and grabbable.
+2. **Transform box must ROTATE WITH the section**: when tilt/rotation changes, the
+   bounding box + handles rotate to match the block's orientation. Today the frame
+   doesn't follow the rotation.
+3. **Chunky, reliable TOUCH targets** (top touch priority): iPad touch is flaky.
+   Handles need large, robust hit areas on touch (bigger than the current
+   coarse-pointer bump) with proper pointer capture so drags don't drift/drop —
+   generous invisible hit zones around each visible handle.
+4. **Handles clear of seats + hover CURSORS**: offset/skew handles must not sit on
+   top of seats (occlusion); desktop hover shows the right cursor (nwse/nesw-resize
+   on corners, a rotate cursor, move cursor) so the action is obvious.
+5. **Seat labels missing**: seats MUST show their number/label inside the circle
+   (storefront + old editor did). Legible at fit; degrade gracefully when zoomed out.
+6. **Arc STILL offsets the section** (survived 2 rounds): fix arc-in-place for real
+   and VERIFY in-browser — enabling/tightening arc must NOT move the section
+   (anchor front-center). Prove with before/after screenshot.
+7. **Pitch controls with arc**: seat/row pitch editing (+ corner handles where they
+   map) must stay available when arc is on (they currently vanish).
+8. **Offset amount range**: max of 2 is too small — raise to a useful range.
+9. **Alternating add/drop = ±1 only**: alt-row seat delta limited to -1/0/+1.
+10. **Offset + arc**: offset doesn't work with arc on — either make it work or
+    clearly disable+label it for arc sections (low priority; user says maybe fine).
+11. **Snap-to-grid**: optional, OFF by default; snaps dragging/positioning to grid
+    increments (pairs with the background grid).
+12. **JSON import/export**: round-trip the new pivot fields in chart_io.

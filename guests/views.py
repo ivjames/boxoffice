@@ -65,6 +65,24 @@ def guest_request_link(request):
 
     email = normalize_email(form.cleaned_data["email"])
     guest = GuestAccount.objects.for_organization(request.organization).filter(email=email).first()
+
+    if not services.email_delivery_configured():
+        # SMTP isn't set up yet, so an emailed link would silently go nowhere
+        # and lock the buyer out of their tickets. Show the link on screen
+        # instead. This necessarily reveals whether an account exists (the
+        # anti-enumeration guarantee below only holds once email works), which
+        # is an accepted trade-off for this bootstrap state -- it self-heals
+        # the moment EMAIL_HOST is configured.
+        return render(
+            request,
+            "guests/portal_signin.html",
+            {
+                "form": GuestEmailForm(),
+                "login_link": services.build_login_link(guest, request) if guest else None,
+                "requested_email": email,
+            },
+        )
+
     if guest is not None:
         try:
             services.send_login_link(guest, request)

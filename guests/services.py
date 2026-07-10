@@ -74,6 +74,33 @@ def get_current_guest(request):
     return guest
 
 
+def build_login_link(guest, request):
+    """The absolute magic-link URL that signs `guest` into the portal.
+
+    `request` supplies the tenant host so the URL is correct in dev vs prod
+    without hardcoding a domain (same approach as the ticket email). Shared by
+    send_login_link (what we email) and the portal's SMTP-not-configured
+    fallback (what we show on screen) so both mint the link the same way."""
+    token = make_login_token(guest)
+    return request.build_absolute_uri(f"{reverse('guest_verify')}?token={token}")
+
+
+def email_delivery_configured():
+    """Whether a sign-in email will actually reach the guest's inbox.
+
+    The portal falls back to showing the magic link on screen when this is
+    False -- the "SMTP is not set up yet" case, i.e. the prod SMTP backend is
+    selected but EMAIL_HOST is still blank -- so a returning buyer isn't locked
+    out of their tickets while mail delivery is being wired up. Any other
+    backend (console/locmem/dummy in dev & tests, or a fully configured SMTP
+    host in prod) is treated as "email works", and the flip happens
+    automatically the moment EMAIL_HOST is set."""
+    backend = getattr(settings, "EMAIL_BACKEND", "") or ""
+    if backend.endswith("smtp.EmailBackend"):
+        return bool(getattr(settings, "EMAIL_HOST", ""))
+    return True
+
+
 def send_login_link(guest, request):
     """Email `guest` a magic sign-in link for the portal. `request` supplies
     the tenant host so the absolute URL is correct in dev vs prod without
@@ -81,8 +108,7 @@ def send_login_link(guest, request):
     configured EMAIL_BACKEND; raises on transport failure so the caller can
     decide whether to surface it (the portal does, since the whole point of
     the request was to receive this email)."""
-    token = make_login_token(guest)
-    link = request.build_absolute_uri(f"{reverse('guest_verify')}?token={token}")
+    link = build_login_link(guest, request)
     context = {
         "organization": guest.organization,
         "guest": guest,

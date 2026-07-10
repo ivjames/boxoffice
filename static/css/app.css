@@ -962,6 +962,29 @@ textarea:focus-visible,
     margin-top: 1.5rem;
 }
 
+/* Fallback panel shown when SMTP isn't configured: the magic link is surfaced
+   on screen instead of emailed (guests/views.guest_request_link). */
+.signin-link-panel {
+    max-width: 32rem;
+    margin: 1.5rem 0;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: var(--bg-color);
+}
+
+.signin-link-panel > :first-child {
+    margin-top: 0;
+}
+
+.signin-link-panel > :last-child {
+    margin-bottom: 0;
+}
+
+.signin-link-panel .button {
+    margin: 0.5rem 0;
+}
+
 .signin-form .field,
 .field--email-capture {
     margin: 0.75rem 0;

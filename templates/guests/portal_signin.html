@@ -6,6 +6,25 @@
     <a class="back-link" href="{% url 'home' %}">&larr; Back to {{ organization.name }}</a>
     <h1>My tickets</h1>
 
+    {% if login_link %}
+        <div class="signin-link-panel">
+            <p>
+                Email isn't switched on here yet, so here's your secure sign-in
+                link for <strong>{{ requested_email }}</strong>:
+            </p>
+            <p><a class="button" href="{{ login_link }}">View my tickets</a></p>
+            <p class="muted">
+                This link signs you in without a password and expires in 24 hours.
+            </p>
+        </div>
+    {% elif requested_email %}
+        <p class="muted">
+            It doesn't look like there are any orders for
+            <strong>{{ requested_email }}</strong> — double-check the email you
+            used at checkout and try again.
+        </p>
+    {% endif %}
+
     <p class="muted">
         Bought tickets from {{ organization.name }}? Enter the email you used at
         checkout and we'll send you a secure sign-in link — no password needed.

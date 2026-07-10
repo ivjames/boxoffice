@@ -2232,23 +2232,22 @@ table.dash-table th {
 .scan-tally__fail { color: #fca5a5; }
 .scan-tally__sep { opacity: 0.6; }
 
-/* Verdict banner anchored to the bottom of the square stage. */
+/* Verdict card below the manual entry -- a normal block in the flow, not an
+   overlay, so the live camera above stays unobstructed. Stays until the next
+   scan replaces it or staff tap it to dismiss (no auto-hide). */
 .scan-verdict {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    margin-top: 0.75rem;
     padding: 0.9rem 1.1rem;
     text-align: center;
     color: #fff;
-    background: rgba(17, 17, 17, 0.82);
-    /* Auto-hides after a few seconds; also tappable to clear early. */
+    background: #111;
+    border-radius: 0.75rem;
     cursor: pointer;
 }
 
-.scan-verdict--pass { background: rgba(22, 101, 52, 0.92); }
-.scan-verdict--used { background: rgba(146, 64, 14, 0.92); }
-.scan-verdict--fail { background: rgba(153, 27, 27, 0.92); }
+.scan-verdict--pass { background: #166534; }
+.scan-verdict--used { background: #92400e; }
+.scan-verdict--fail { background: #991b1b; }
 
 .scan-verdict__headline {
     margin: 0;

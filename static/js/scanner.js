@@ -24,17 +24,11 @@
  * form below the scanner.
  */
 
-// How long a PASS/FAIL/WRONG TIME verdict lingers over the camera before it
-// auto-hides. Staff can also tap it to dismiss immediately (dismissResult) --
-// either way the camera keeps scanning underneath the whole time.
-const RESULT_TTL_MS = 5000;
-
 function qrScanner() {
     return {
         status: "idle", // idle | starting | scanning | error
         errorMessage: "",
         lastResult: null,
-        resultTimer: null, // auto-hides the verdict after RESULT_TTL_MS
         tally: { pass: 0, fail: 0 },
         busy: false,
         lastCode: null,
@@ -324,19 +318,12 @@ function qrScanner() {
                 this.tally.fail += 1;
             }
             this.feedback(category);
-            // Auto-hide so a stale verdict doesn't sit over the live camera; a
-            // fresh scan replaces it and restarts the clock. Staff can also tap
-            // the verdict to clear it early (dismissResult).
-            if (this.resultTimer) clearTimeout(this.resultTimer);
-            this.resultTimer = setTimeout(() => {
-                this.lastResult = null;
-                this.resultTimer = null;
-            }, RESULT_TTL_MS);
+            // The verdict card sits below the manual entry, clear of the live
+            // camera, so it no longer auto-hides -- it stays until the next scan
+            // replaces it or staff tap it to dismiss (dismissResult).
         },
 
         dismissResult() {
-            if (this.resultTimer) clearTimeout(this.resultTimer);
-            this.resultTimer = null;
             this.lastResult = null;
         },
 
@@ -361,24 +348,25 @@ function qrScanner() {
             });
 
             if (category === "pass") {
-                // Bright rising two-note "accept" chirp.
+                // Bright rising two-note "accept" chirp -- loud enough to carry
+                // over a busy door.
                 this.playTones([
-                    { freq: 880, dur: 0.09 },
-                    { freq: 1319, dur: 0.15 },
+                    { freq: 880, dur: 0.09, vol: 0.55 },
+                    { freq: 1319, dur: 0.15, vol: 0.55 },
                 ]);
                 this.vibrate(50);
             } else if (category === "used") {
                 // Neutral double blip -- a warning, not an alarm.
                 this.playTones([
-                    { freq: 620, dur: 0.11, type: "triangle" },
-                    { freq: 620, dur: 0.11, type: "triangle", gap: 0.05 },
+                    { freq: 620, dur: 0.11, type: "triangle", vol: 0.55 },
+                    { freq: 620, dur: 0.11, type: "triangle", vol: 0.55, gap: 0.05 },
                 ]);
                 this.vibrate([40, 60, 40]);
             } else {
                 // Low buzz for a reject.
                 this.playTones([
-                    { freq: 200, dur: 0.18, type: "sawtooth", vol: 0.28 },
-                    { freq: 150, dur: 0.24, type: "sawtooth", vol: 0.28 },
+                    { freq: 200, dur: 0.18, type: "sawtooth", vol: 0.6 },
+                    { freq: 150, dur: 0.24, type: "sawtooth", vol: 0.6 },
                 ]);
                 this.vibrate([90, 60, 90]);
             }
@@ -429,7 +417,7 @@ function qrScanner() {
                     // non-zero floor because exponentialRampToValueAtTime(0) is
                     // illegal.
                     gain.gain.setValueAtTime(0.0001, t);
-                    gain.gain.exponentialRampToValueAtTime(tone.vol || 0.2, t + 0.012);
+                    gain.gain.exponentialRampToValueAtTime(tone.vol || 0.45, t + 0.012);
                     gain.gain.exponentialRampToValueAtTime(0.0001, t + tone.dur);
                     osc.connect(gain).connect(ctx.destination);
                     osc.start(t);

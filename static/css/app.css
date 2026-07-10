@@ -2184,6 +2184,24 @@ table.dash-table th {
     pointer-events: none;
 }
 
+/* "Multiple codes" hint over the live camera: sits below the reticle so it
+   doesn't cover the frame the staffer is aiming. */
+.scan-stage__hint {
+    position: absolute;
+    left: 50%;
+    bottom: 8%;
+    transform: translateX(-50%);
+    max-width: 80%;
+    padding: 0.4rem 0.8rem;
+    border-radius: 999px;
+    background: rgba(239, 68, 68, 0.92);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-align: center;
+    pointer-events: none;
+}
+
 .scan-stage__status {
     position: absolute;
     inset: 0;
@@ -2382,14 +2400,14 @@ table.dash-table th {
 
 /* Full-screen color wash fired on every scan (scanner.js feedback()). Fixed +
    pointer-events:none so it never blocks the next scan; the fade is a one-shot
-   keyframe whose ~0.6s matches the flash timer that clears the element. */
+   keyframe whose ~1.2s matches the flash timer that clears the element. */
 .scan-flash {
     position: fixed;
     inset: 0;
     z-index: 90;
     pointer-events: none;
     opacity: 0;
-    animation: scan-flash-fade 0.6s ease-out forwards;
+    animation: scan-flash-fade 1.2s ease-out forwards;
 }
 
 .scan-flash--pass { background: #22c55e; }

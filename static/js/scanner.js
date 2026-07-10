@@ -34,6 +34,15 @@ function qrScanner() {
         lastCode: null,
         lastCodeAt: 0,
         lastAttemptAt: 0,
+        // Settle gate: we only redeem a code once the SAME single code has
+        // held steady in frame for SETTLE_MS. `pendingCode`/`pendingSince`
+        // track the candidate currently settling; `multiple` is true while
+        // more than one QR is visible (which we refuse to scan -- see
+        // considerCodes()).
+        SETTLE_MS: 500,
+        pendingCode: null,
+        pendingSince: 0,
+        multiple: false,
         stream: null,
         useBarcodeDetector: typeof window.BarcodeDetector !== "undefined",
         detector: null,
@@ -142,18 +151,19 @@ function qrScanner() {
                 this.lastAttemptAt = now;
                 const video = this.$refs.video;
                 if (video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth) {
-                    let text = null;
+                    let codes = null; // decoded strings this frame, or null if we skipped
                     if (this.useBarcodeDetector && this.detector) {
                         try {
-                            const codes = await this.detector.detect(video);
-                            if (codes.length) text = codes[0].rawValue;
+                            const found = await this.detector.detect(video);
+                            codes = found.map((c) => c.rawValue);
                         } catch (e) {
                             // Transient decode error -- just try the next frame.
                         }
                     } else {
-                        text = this.decodeWithJsQR(video);
+                        const text = this.decodeWithJsQR(video);
+                        codes = text ? [text] : [];
                     }
-                    if (text) this.handleCode(text);
+                    if (codes) this.considerCodes(codes);
                 }
             }
 
@@ -183,6 +193,43 @@ function qrScanner() {
             const imageData = ctx.getImageData(0, 0, w, h);
             const code = window.jsQR(imageData.data, w, h, { inversionAttempts: "dontInvert" });
             return code ? code.data : null;
+        },
+
+        considerCodes(codes) {
+            // Refuse to scan when more than one QR is in frame. With several
+            // tickets fanned out we can't tell which one the staffer means, so
+            // we scan none of them and wait for a single code to be isolated.
+            // (Only the native BarcodeDetector reports multiples; the jsQR
+            // fallback returns at most one, so this branch is a no-op there.)
+            if (codes.length > 1) {
+                this.multiple = true;
+                this.pendingCode = null;
+                this.pendingSince = 0;
+                return;
+            }
+            this.multiple = false;
+
+            if (codes.length === 0) {
+                // Frame is empty -- drop any half-settled candidate so a code
+                // that leaves and returns has to settle again.
+                this.pendingCode = null;
+                this.pendingSince = 0;
+                return;
+            }
+
+            const text = codes[0];
+            const now = performance.now();
+            if (text !== this.pendingCode) {
+                // A new single code just appeared: start its settle clock. We
+                // redeem only after it has held steady for SETTLE_MS, so a code
+                // swept past mid-motion (or a one-frame misread) never fires.
+                this.pendingCode = text;
+                this.pendingSince = now;
+                return;
+            }
+            if (now - this.pendingSince >= this.SETTLE_MS) {
+                this.handleCode(text);
+            }
         },
 
         handleCode(text) {
@@ -344,7 +391,7 @@ function qrScanner() {
                 if (this.flashTimer) clearTimeout(this.flashTimer);
                 this.flashTimer = setTimeout(() => {
                     this.flash = null;
-                }, 600);
+                }, 1200);
             });
 
             if (category === "pass") {

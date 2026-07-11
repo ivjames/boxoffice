@@ -2,6 +2,12 @@
 # promptly. See orders/management/commands/release_expired_holds.py for what
 # this does and why it's safe to run this often (idempotent, cheap DELETE).
 #
+# DJANGO_SETTINGS_MODULE=config.settings.prod is REQUIRED (mirroring
+# boxoffice-provision.cron): manage.py defaults to dev settings, which point
+# at a different, unmigrated SQLite file — so without this the sweeper reads
+# the wrong database, errors every tick ("no such table"), and never GCs the
+# real DB's expired holds. PATH is set for cron's minimal default.
+#
 # Install (as root, since lab980 apps run as root and there's no dedicated
 # service user):
 #
@@ -13,4 +19,4 @@
 #
 #   (crontab -l 2>/dev/null; cat deploy/boxoffice-sweeper.cron | grep -v '^#') | crontab -
 
-* * * * * cd /var/www/boxoffice && venv/bin/python manage.py release_expired_holds >> data/release_expired_holds.log 2>&1
+* * * * * cd /var/www/boxoffice && DJANGO_SETTINGS_MODULE=config.settings.prod PATH=/usr/local/bin:/usr/bin:/bin venv/bin/python manage.py release_expired_holds >> data/release_expired_holds.log 2>&1

@@ -120,15 +120,16 @@ app directory from the symlink target, not `cwd`.
 ```bash
 boxoffice migrate
 boxoffice deploy            # pip install (no-op first time) + migrate + collectstatic + pm2 start/restart
-DJANGO_SETTINGS_MODULE=config.settings.prod venv/bin/python manage.py createsuperuser
+boxoffice manage createsuperuser
 ```
 
-Note the explicit `DJANGO_SETTINGS_MODULE=config.settings.prod` on
-`createsuperuser`: a bare `manage.py` defaults to **dev** settings, which would
-create the admin in the dev SQLite (repo root), not the prod DB in `data/` —
-and you'd never be able to log in on the live site. `boxoffice`-wrapped
-commands already export prod settings from `.env`; only direct `manage.py`
-calls need the prefix.
+Run one-off management commands through `boxoffice manage <cmd>`, not a bare
+`venv/bin/python manage.py <cmd>`: `manage.py` defaults to **dev** settings,
+which would create the admin in the dev SQLite (repo root), not the prod DB in
+`data/` — and you'd never be able to log in on the live site. The `boxoffice`
+operate CLI sources `.env` and exports prod settings for every subcommand,
+including `manage`. (If you must call `manage.py` directly, prefix it:
+`DJANGO_SETTINGS_MODULE=config.settings.prod venv/bin/python manage.py …`.)
 
 `boxoffice deploy` starts the pm2 app automatically the first time (from
 `deploy/ecosystem.config.js`, name `boxoffice`, running `bin/boxoffice
@@ -336,8 +337,10 @@ Two things that bite:
   `/admin/`. To exercise a full *tenant storefront* on staging, onboard a
   throwaway tenant that lives only on the beta box —
   `boxoffice-beta add-tenant demo` gives `demo.boxo.show` its own vhost pointed
-  at the beta port; seed it with `manage.py create_demo_tenant` and, with
-  `ENABLE_TEST_CHECKOUT=true`, run the whole browse→checkout→scan flow. Add
+  at the beta port; seed it with `boxoffice-beta manage create_demo_tenant`
+  (or `boxoffice-beta manage seed_showcase` for a whole populated platform)
+  and, with `ENABLE_TEST_CHECKOUT=true`, run the whole browse→checkout→scan
+  flow. Add
   that host to this box's `ALLOWED_HOSTS` (e.g. `beta.boxo.show,demo.boxo.show`)
   and keep the subdomain reserved for staging so prod never provisions it.
 - **`DEPLOY_REF=origin/staging`** makes a bare `boxoffice-beta deploy` track
@@ -490,9 +493,11 @@ Nothing else in the app changes — `psycopg` is already in
   provisioning.
 - **500s after a deploy, static files 404 or raise `ValueError: Missing
   staticfiles manifest entry`**: `collectstatic` didn't run or didn't
-  complete — re-run `boxoffice deploy` (or `venv/bin/python manage.py
-  collectstatic --noinput --clear` directly, dropping `--verbosity 0` to
-  watch each file) and check for errors.
+  complete — re-run `boxoffice deploy` (or `boxoffice manage collectstatic
+  --noinput --clear` directly, dropping `--verbosity 0` to watch each file)
+  and check for errors. Use `boxoffice manage`, not a bare `venv/bin/python
+  manage.py`, so it runs under prod settings (the right STATIC_ROOT and
+  manifest storage).
 - **`no such table` errors**: migrations haven't run against the file
   `config/settings/prod.py` actually points at (`data/db.sqlite3`, not the
   dev-only `db.sqlite3` at the repo root) — run `boxoffice migrate` with

@@ -301,9 +301,14 @@ Two things that bite:
 - **`beta` MUST be in this box's `RESERVED_SUBDOMAINS`** (it is, above). Its
   host is `beta.boxo.show` with `BASE_DOMAIN=boxo.show`, so `beta` parses as a
   subdomain — un-reserved, `TenantMiddleware` looks for a nonexistent `beta`
-  tenant and 404s. To instead serve a *demo storefront* on staging, add
-  `DEFAULT_TENANT=<demo-subdomain>` to the `.env` above (see step 6 of
-  first-time provisioning) and `create_demo_tenant` in this box's DB.
+  tenant and 404s. `beta.boxo.show` itself only ever serves the landing page +
+  `/admin/`. To exercise a full *tenant storefront* on staging, onboard a
+  throwaway tenant that lives only on the beta box —
+  `boxoffice-beta add-tenant demo` gives `demo.boxo.show` its own vhost pointed
+  at the beta port; seed it with `manage.py create_demo_tenant` and, with
+  `ENABLE_TEST_CHECKOUT=true`, run the whole browse→checkout→scan flow. Add
+  that host to this box's `ALLOWED_HOSTS` (e.g. `beta.boxo.show,demo.boxo.show`)
+  and keep the subdomain reserved for staging so prod never provisions it.
 - **`DEPLOY_REF=origin/staging`** makes a bare `boxoffice-beta deploy` track
   the `staging` branch (prod tracks `origin/main`). `ENABLE_TEST_CHECKOUT=true`
   is safe here (throwaway data) and exercises checkout without Stripe — never

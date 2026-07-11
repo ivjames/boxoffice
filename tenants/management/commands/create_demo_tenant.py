@@ -68,16 +68,10 @@ class Command(BaseCommand):
         )
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("Demo staff login (owner role, full access):"))
-        if settings.DEFAULT_TENANT and settings.DEFAULT_TENANT == subdomain:
-            self.stdout.write(
-                "  URL:      /login/ on your main site — this org is DEFAULT_TENANT, so it's "
-                "served on the platform host (no subdomain needed)."
-            )
-        else:
-            self.stdout.write(
-                f"  URL:      http://{subdomain}.localhost:8000/login/  "
-                f"(or https://{subdomain}.{settings.BASE_DOMAIN}/login/ once that subdomain is provisioned)"
-            )
+        self.stdout.write(
+            f"  URL:      http://{subdomain}.localhost:8000/login/  "
+            f"(or https://{subdomain}.{settings.BASE_DOMAIN}/login/ once that subdomain is provisioned)"
+        )
         self.stdout.write(f"  Email:    {owner_email}")
         self.stdout.write(f"  Password: {owner_password}")
         self.stdout.write(

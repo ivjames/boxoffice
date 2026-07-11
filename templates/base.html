@@ -13,8 +13,8 @@
     <style>
         :root {
             /* Per-tenant branding. Falls back to the platform defaults when
-               request.organization is None (reserved subdomain / bare host,
-               no DEFAULT_TENANT configured). */
+               request.organization is None (the platform host: reserved
+               subdomain / bare host). */
             --primary-color: {% if organization %}{{ organization.primary_color }}{% else %}#111111{% endif %};
             --accent-color: {% if organization %}{{ organization.accent_color }}{% else %}#e11d48{% endif %};
         }
@@ -76,9 +76,9 @@
                        class="site-nav__link{% if request.resolver_match.url_name == 'login' %} is-active{% endif %}">Staff login</a>
                 {% else %}
                     {% comment %}
-                        Platform host, no tenant/default-tenant resolved -- staff sign-in is
-                        tenant-scoped (accounts.views.login_view) and has nothing to sign in
-                        to here, so the nav only offers what actually works at this host.
+                        Platform host, no tenant resolved -- staff sign-in is tenant-scoped
+                        (accounts.views.login_view) and has nothing to sign in to here, so the
+                        nav only offers what actually works at this host.
                     {% endcomment %}
                     <a href="/admin/" class="site-nav__link">Admin</a>
                 {% endif %}

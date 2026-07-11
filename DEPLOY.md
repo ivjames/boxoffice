@@ -151,16 +151,11 @@ landing page — but only because `boxoffice` is listed in `RESERVED_SUBDOMAINS`
 where you'll set up tenants' Stripe keys and branding once they're onboarded
 (next section).
 
-**Running as a single box office (no client subdomains yet):** set
-`DEFAULT_TENANT=<org-subdomain>` in `.env` (e.g. `DEFAULT_TENANT=roxy` for the
-demo tenant) and restart. The main host then serves that venue's storefront
-directly — `/` lists its events, and staff `/login`, `/dashboard`, `/scan`
-all work against it too — with zero DNS/nginx/TLS changes. Leave it unset and
-the main host stays on the landing page. Multi-tenant subdomains remain
-available via `boxoffice add-tenant` (next section) whenever you're ready to
-onboard a client onto its own `<sub>.lab980.com`; `DEFAULT_TENANT` and real
-tenant subdomains can run side by side (a request to an actual tenant
-subdomain is always resolved to that tenant, regardless of `DEFAULT_TENANT`).
+**Tenants live on their own subdomains.** The platform host (bare
+`boxoffice.lab980.com` / any reserved subdomain) always serves the marketing
+landing page and `/admin/` — it never serves a theater's catalog. Each venue
+gets its own `<sub>.lab980.com` via `boxoffice add-tenant` (next section),
+and `/`, `/login`, `/dashboard`, `/scan` all work against that subdomain.
 
 ### 7. Install the Hold sweeper
 

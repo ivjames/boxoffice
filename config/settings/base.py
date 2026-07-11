@@ -155,19 +155,6 @@ RESERVED_SUBDOMAINS = set(
 # this suffix off the Host header to find the subdomain.
 BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
 
-# Optional. Client subdomains are deferred for now — this lets ONE
-# Organization (by subdomain) serve its storefront directly on the platform
-# host, so the site is usable without provisioning any tenant subdomains.
-# When set to an existing, active Organization's subdomain, TenantMiddleware
-# resolves the platform host (a reserved subdomain / bare BASE_DOMAIN / an
-# unrecognized host) to that Organization instead of leaving
-# request.organization None, and sets request.is_default_tenant = True.
-# Empty (default) or naming a nonexistent/inactive Organization: no change in
-# behavior, the platform host still serves the landing page. Real subdomain
-# resolution (an explicit tenant subdomain in the Host header) is completely
-# unaffected either way — this only changes the platform-host fallback.
-DEFAULT_TENANT = env("DEFAULT_TENANT", default="")
-
 # --- TEST CHECKOUT (env-gated fake-payment path) -------------------------
 # When True, orders/views.py's checkout_test view (and the "Pay (TEST -- no
 # real charge)" button it powers, see templates/orders/checkout.html +

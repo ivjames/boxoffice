@@ -175,14 +175,16 @@ class RemoveTenantCommandTests(TestCase):
             call_command("remove_tenant", "does-not-exist")
 
 
-class DefaultTenantModeTests(TestCase):
-    """Phase 8: settings.DEFAULT_TENANT lets the platform host (no client
-    subdomains provisioned yet) serve one Organization's storefront directly.
-    Mirrors orders/test_views.py's Host-header approach: pytest-django runs
-    with DEBUG forced False, so a bare `self.client.get("/")` (Host:
-    testserver) never matches BASE_DOMAIN ("localhost" in dev settings) and
-    always takes the platform-host path in TenantMiddleware._resolve --
-    exactly like hitting the bare lab980.com host in prod with no subdomain.
+
+class PlatformHostTests(TestCase):
+    """The platform host (a reserved subdomain / bare BASE_DOMAIN / an
+    unrecognized host) is never a tenant: it serves the landing page and
+    never leaks a theater's catalog. Real tenant subdomains resolve to their
+    own Organization independently. pytest-django runs with DEBUG forced
+    False, so a bare `self.client.get("/")` (Host: testserver) never matches
+    BASE_DOMAIN ("localhost" in dev settings) and always takes the
+    platform-host path in TenantMiddleware._resolve -- exactly like hitting
+    the bare lab980.com host in prod with no subdomain.
     """
 
     def setUp(self):
@@ -190,8 +192,8 @@ class DefaultTenantModeTests(TestCase):
         venue = Venue.objects.create(organization=self.org, name="Main Stage")
         event = Event.objects.create(
             organization=self.org,
-            title="Default Tenant Show",
-            slug="default-tenant-show",
+            title="Roxy Season Opener",
+            slug="roxy-season-opener",
             status=Event.Status.PUBLISHED,
         )
         performance = Performance.objects.create(
@@ -207,48 +209,19 @@ class DefaultTenantModeTests(TestCase):
             organization=self.org, performance=performance, name="GA", amount=Decimal("20.00")
         )
 
-    def test_unset_still_shows_platform_landing(self):
+    def test_platform_host_shows_landing_not_any_tenant_catalog(self):
         resp = self.client.get("/")
-        self.assertContains(resp, "Boxo.show")
-        self.assertNotContains(resp, "Default Tenant Show")
-
-    def test_set_to_active_org_serves_its_storefront_on_platform_host(self):
-        with override_settings(DEFAULT_TENANT="roxy"):
-            resp = self.client.get("/")
-        self.assertContains(resp, "Default Tenant Show")
-        self.assertEqual(resp.wsgi_request.organization, self.org)
-        self.assertTrue(resp.wsgi_request.is_default_tenant)
-
-    def test_unknown_subdomain_falls_back_to_landing(self):
-        with override_settings(DEFAULT_TENANT="does-not-exist"):
-            resp = self.client.get("/")
-        self.assertContains(resp, "Boxo.show")
-        self.assertNotContains(resp, "Default Tenant Show")
         self.assertIsNone(resp.wsgi_request.organization)
-        self.assertFalse(resp.wsgi_request.is_default_tenant)
-
-    def test_inactive_org_falls_back_to_landing(self):
-        self.org.is_active = False
-        self.org.save(update_fields=["is_active"])
-        with override_settings(DEFAULT_TENANT="roxy"):
-            resp = self.client.get("/")
         self.assertContains(resp, "Boxo.show")
-        self.assertIsNone(resp.wsgi_request.organization)
+        self.assertNotContains(resp, "Roxy Season Opener")
 
-    def test_real_tenant_subdomain_unaffected_by_default_tenant(self):
-        """A request to a DIFFERENT, real tenant subdomain always resolves to
-        that tenant, regardless of DEFAULT_TENANT -- the existing subdomain
-        path is untouched, DEFAULT_TENANT only fills in the platform-host
-        fallback."""
+    def test_real_tenant_subdomain_resolves_to_its_org(self):
         other = make_org("globe")
-        with override_settings(DEFAULT_TENANT="roxy"):
-            resp = self.client.get("/", HTTP_HOST="globe.localhost")
+        resp = self.client.get("/", HTTP_HOST="globe.localhost")
         self.assertEqual(resp.wsgi_request.organization, other)
-        self.assertFalse(resp.wsgi_request.is_default_tenant)
 
-    def test_admin_reachable_regardless_of_default_tenant_mode(self):
-        with override_settings(DEFAULT_TENANT="roxy"):
-            resp = self.client.get("/admin/login/")
+    def test_admin_reachable_on_platform_host(self):
+        resp = self.client.get("/admin/login/")
         self.assertEqual(resp.status_code, 200)
 
     def test_unmatched_url_renders_branded_404(self):
@@ -256,11 +229,10 @@ class DefaultTenantModeTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertContains(resp, "Page not found", status_code=404)
 
-    def test_dev_tenant_override_still_takes_priority_when_debug(self):
-        """The DEBUG-only ?_tenant=/X-Tenant override (existing behavior) is
-        untouched by default-tenant mode -- it's resolved before the
-        platform-host fallback ever runs."""
+    def test_dev_tenant_override_resolves_tenant_when_debug(self):
+        """The DEBUG-only ?_tenant=/X-Tenant override lets a laptop hit a
+        tenant without per-tenant /etc/hosts entries; never active in prod."""
         other = make_org("globe")
-        with override_settings(DEBUG=True, DEFAULT_TENANT="roxy"):
+        with override_settings(DEBUG=True):
             resp = self.client.get("/", HTTP_X_TENANT="globe")
         self.assertEqual(resp.wsgi_request.organization, other)

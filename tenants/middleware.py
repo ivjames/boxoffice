@@ -65,7 +65,7 @@ class TenantMiddleware:
         return request.GET.get("_tenant") or request.headers.get("X-Tenant")
 
     def _subdomain_from_host(self, host):
-        # Strip a port, e.g. "roxy.lab980.com:8000" -> "roxy.lab980.com".
+        # Strip a port, e.g. "roxy.boxo.show:8000" -> "roxy.boxo.show".
         host = host.split(":")[0].lower()
         base_domain = settings.BASE_DOMAIN.lower()
 

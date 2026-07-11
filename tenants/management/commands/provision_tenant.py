@@ -25,7 +25,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "subdomain",
-            help="Subdomain label for the tenant, e.g. 'roxy' for roxy.lab980.com.",
+            help="Subdomain label for the tenant, e.g. 'roxy' for roxy.boxo.show.",
         )
         parser.add_argument(
             "--name",

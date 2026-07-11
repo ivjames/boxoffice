@@ -33,21 +33,27 @@ If the repo is private, export a token before provisioning so the clone works:
 
 ### 1. Scaffold the site (DNS + dir + repo + nginx + TLS)
 
+The platform host is the **bare apex** `boxo.show` (not a subdomain), so
+scaffold it with `provision-site`'s apex mode (`@`):
+
 ```bash
-provision-site boxoffice ivjames/boxoffice
+provision-site @ ivjames/boxoffice --domain boxo.show --dir /var/www/boxoffice
 ```
 
 This is the lab980 `bin/provision-site` script (see `lab980.com/bin/`, and
-`lab980.com/CLAUDE.md` for the platform conventions it encodes). It:
+`lab980.com/CLAUDE.md` for the platform conventions it encodes). In apex mode it:
 
-- creates the DNS A record `boxoffice.lab980.com -> <droplet IP>` (doctl)
+- creates the DNS A records `boxo.show -> <droplet IP>` and
+  `www.boxo.show -> <droplet IP>` (doctl)
 - creates `/var/www/boxoffice` and `/var/www/boxoffice/data`
 - clones this repo into `/var/www/boxoffice`
 - reserves a local port (8060+) and seeds it into `/var/www/boxoffice/.env`
   as `PORT=<n>`
-- writes `/etc/nginx/sites-available/boxoffice.lab980.com` (plain proxy to
-  `127.0.0.1:$PORT`) and symlinks it into `sites-enabled`
-- issues a certbot cert for `boxoffice.lab980.com` with the 80->443 redirect
+- writes `/etc/nginx/sites-available/boxo.show` (plain proxy to
+  `127.0.0.1:$PORT`, `server_name boxo.show www.boxo.show`) and symlinks it
+  into `sites-enabled`
+- issues one certbot cert covering `boxo.show` + `www.boxo.show` with the
+  80->443 redirect
 
 It deliberately stops there — it does not build or start the app.
 
@@ -74,23 +80,25 @@ printf "SECRET_KEY='%s'\n" "$KEY" >> .env
 cat >> .env <<'EOF'
 DEBUG=false
 DJANGO_SETTINGS_MODULE=config.settings.prod
-BASE_DOMAIN=lab980.com
-RESERVED_SUBDOMAINS=www,app,admin,boxoffice
-ALLOWED_HOSTS=boxoffice.lab980.com,.lab980.com
-CSRF_TRUSTED_ORIGINS=https://*.lab980.com,https://lab980.com
+BASE_DOMAIN=boxo.show
+RESERVED_SUBDOMAINS=www,app,admin,beta
+ALLOWED_HOSTS=boxo.show,.boxo.show
+CSRF_TRUSTED_ORIGINS=https://*.boxo.show,https://boxo.show
 WEB_CONCURRENCY=3
 EMAIL_HOST=<your SMTP host>
 EMAIL_HOST_USER=<...>
 EMAIL_HOST_PASSWORD=<...>
-DEFAULT_FROM_EMAIL=no-reply@lab980.com
+DEFAULT_FROM_EMAIL=no-reply@boxo.show
 EOF
 chmod 600 .env
 ```
 
 Two `.env` rules the hard way:
-- **`RESERVED_SUBDOMAINS` must include `boxoffice`** (the platform's own
-  subdomain). Otherwise `boxoffice.lab980.com` is parsed as a nonexistent
-  tenant and 404s. Add every future platform host (e.g. `app`, `admin`) here too.
+- **The platform host is the bare apex `boxo.show`**, so it needs no reserved
+  subdomain of its own (a bare/absent Host subdomain always resolves to the
+  platform host). Do keep `beta` in `RESERVED_SUBDOMAINS` — `beta.boxo.show` is
+  the staging deploy's host (see "Beta / staging site" below) — plus any other
+  platform hosts (`www`, `app`, `admin`) so a tenant can never claim them.
 - `bin/boxoffice` reads this file literally (not via bash). It strips an
   inline `# comment` after an unquoted value, but keep comments on their own
   line anyway — and single-quote any value containing `#`, `)`, `$`, or spaces.
@@ -142,20 +150,20 @@ venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:$PORT \
 ### 6. Verify
 
 ```bash
-curl -s https://boxoffice.lab980.com/healthz   # {"status": "ok"}
+curl -s https://boxo.show/healthz   # {"status": "ok"}
 ```
 
-With no tenant Organization yet, `boxoffice.lab980.com` serves the platform
-landing page — but only because `boxoffice` is listed in `RESERVED_SUBDOMAINS`
-(step 3); omit it and this host 404s as a nonexistent tenant. `/admin/` is
-where you'll set up tenants' Stripe keys and branding once they're onboarded
-(next section).
+With no tenant Organization yet, `boxo.show` (the bare apex) serves the
+platform landing page — the platform-host path in `TenantMiddleware`, which a
+bare/absent subdomain always takes, so there's no reserved-subdomain caveat
+here anymore. `/admin/` is where you'll set up tenants' Stripe keys and
+branding once they're onboarded (next section).
 
-**Tenants live on their own subdomains.** The platform host (bare
-`boxoffice.lab980.com` / any reserved subdomain) always serves the marketing
-landing page and `/admin/` — it never serves a theater's catalog. Each venue
-gets its own `<sub>.lab980.com` via `boxoffice add-tenant` (next section),
-and `/`, `/login`, `/dashboard`, `/scan` all work against that subdomain.
+**Tenants live on their own subdomains.** The platform host (bare `boxo.show`
+/ any reserved subdomain) always serves the marketing landing page and
+`/admin/` — it never serves a theater's catalog. Each venue gets its own
+`<sub>.boxo.show` via `boxoffice add-tenant` (next section), and `/`,
+`/login`, `/dashboard`, `/scan` all work against that subdomain.
 
 ### 7. Install the Hold sweeper
 
@@ -175,7 +183,7 @@ systemctl enable --now boxoffice-sweeper.timer
 
 ## Onboarding a tenant (no-wildcard subdomain flow)
 
-Every theater gets a real `<sub>.lab980.com` — no wildcard DNS or cert. All
+Every theater gets a real `<sub>.boxo.show` — no wildcard DNS or cert. All
 tenant subdomains proxy to the SAME boxoffice gunicorn process/port;
 `TenantMiddleware` resolves which Organization a request belongs to from the
 `Host` header. Onboarding is one command:
@@ -189,13 +197,13 @@ This does, in order:
 1. **DB**: `manage.py provision_tenant roxy --name "The Roxy Theater"` —
    creates the `Organization` row (idempotent; safe to re-run). This step
    does **not** require root.
-2. **DNS**: creates the `roxy.lab980.com -> <droplet IP>` A record via
+2. **DNS**: creates the `roxy.boxo.show -> <droplet IP>` A record via
    `doctl` (idempotent — leaves an existing record alone). Requires root.
-3. **nginx**: writes `/etc/nginx/sites-available/roxy.lab980.com` — the
+3. **nginx**: writes `/etc/nginx/sites-available/roxy.boxo.show` — the
    exact proxy-to-port block from `deploy/nginx.sample.conf` /
    lab980 `provision-site`, pointed at the SAME `$PORT` as the main app —
    and symlinks + reloads. Requires root.
-4. **TLS**: `certbot --nginx -d roxy.lab980.com --redirect -n`. Requires
+4. **TLS**: `certbot --nginx -d roxy.boxo.show --redirect -n`. Requires
    root.
 
 If you run `add-tenant` **not** as root, step 1 still runs (so the org
@@ -229,10 +237,10 @@ It does **not** automatically delete the TLS cert or DNS record — it prints
 the exact commands to do so by hand, e.g.:
 
 ```
-certbot delete --cert-name roxy.lab980.com -n
-doctl compute domain records list lab980.com --format ID,Type,Name \
+certbot delete --cert-name roxy.boxo.show -n
+doctl compute domain records list boxo.show --format ID,Type,Name \
   | awk -v n=roxy '$2=="A" && $3==n {print $1}' \
-  | xargs -I{} doctl compute domain records delete lab980.com {} -f
+  | xargs -I{} doctl compute domain records delete boxo.show {} -f
 ```
 
 (This mirrors lab980 `deprovision-site`'s DNS/cert removal, but boxoffice's
@@ -240,6 +248,138 @@ doctl compute domain records list lab980.com --format ID,Type,Name \
 moment you deactivate an org is riskier than for a whole-site teardown, since
 reactivating a tenant is common and shouldn't require re-provisioning
 infrastructure.)
+
+## Beta / staging site (beta.boxo.show)
+
+A second, isolated instance for testing releases before they hit prod: its
+own app dir, port, SQLite DB, and git branch. It runs on the same droplet as
+prod but shares nothing with it. This is possible with no code changes because
+`bin/boxoffice` and `deploy/ecosystem.config.js` derive the pm2 app name from
+the install directory, so a `/var/www/boxoffice-beta` install supervises the
+pm2 app `boxoffice-beta` without colliding with prod's `boxoffice`.
+
+Prereq: a `staging` branch exists in the repo (that's what this box tracks).
+Then, on the droplet as root, top to bottom:
+
+```bash
+# 1. Scaffold beta.boxo.show on its OWN dir + port + cert. Ordinary subdomain
+#    provisioning (DNS A beta.boxo.show, its own nginx vhost on a fresh 8060+
+#    port, its own cert). `beta` is reserved in prod's RESERVED_SUBDOMAINS so
+#    no tenant can ever take it.
+provision-site beta ivjames/boxoffice --domain boxo.show --dir /var/www/boxoffice-beta
+
+# 2. Build its venv and its OWN .env (separate SECRET_KEY + separate data/ DB
+#    — never point it at prod's). provision-site already seeded PORT.
+cd /var/www/boxoffice-beta
+python3 -m venv venv && venv/bin/pip install -r requirements.txt
+KEY=$(venv/bin/python -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(64)))")
+printf "SECRET_KEY='%s'\n" "$KEY" >> .env
+cat >> .env <<'EOF'
+DEBUG=false
+DJANGO_SETTINGS_MODULE=config.settings.prod
+BASE_DOMAIN=boxo.show
+ALLOWED_HOSTS=beta.boxo.show
+CSRF_TRUSTED_ORIGINS=https://beta.boxo.show
+RESERVED_SUBDOMAINS=www,app,admin,beta
+DEPLOY_REF=origin/staging
+DEFAULT_FROM_EMAIL=no-reply@boxo.show
+ENABLE_TEST_CHECKOUT=true
+EOF
+chmod 600 .env
+
+# 3. Give it its own operate symlink, migrate, deploy. It comes up as the pm2
+#    app "boxoffice-beta" (derived from the dir name) tracking origin/staging.
+ln -sf /var/www/boxoffice-beta/bin/boxoffice /usr/local/bin/boxoffice-beta
+boxoffice-beta migrate
+boxoffice-beta deploy
+
+# 4. Verify.
+curl -s https://beta.boxo.show/healthz   # {"status": "ok"}
+```
+
+Two things that bite:
+- **`beta` MUST be in this box's `RESERVED_SUBDOMAINS`** (it is, above). Its
+  host is `beta.boxo.show` with `BASE_DOMAIN=boxo.show`, so `beta` parses as a
+  subdomain — un-reserved, `TenantMiddleware` looks for a nonexistent `beta`
+  tenant and 404s. `beta.boxo.show` itself only ever serves the landing page +
+  `/admin/`. To exercise a full *tenant storefront* on staging, onboard a
+  throwaway tenant that lives only on the beta box —
+  `boxoffice-beta add-tenant demo` gives `demo.boxo.show` its own vhost pointed
+  at the beta port; seed it with `manage.py create_demo_tenant` and, with
+  `ENABLE_TEST_CHECKOUT=true`, run the whole browse→checkout→scan flow. Add
+  that host to this box's `ALLOWED_HOSTS` (e.g. `beta.boxo.show,demo.boxo.show`)
+  and keep the subdomain reserved for staging so prod never provisions it.
+- **`DEPLOY_REF=origin/staging`** makes a bare `boxoffice-beta deploy` track
+  the `staging` branch (prod tracks `origin/main`). `ENABLE_TEST_CHECKOUT=true`
+  is safe here (throwaway data) and exercises checkout without Stripe — never
+  set it on prod.
+
+pm2 now supervises `boxoffice` (prod, `origin/main`) and `boxoffice-beta`
+(staging, `origin/staging`) side by side. **Promotion flow:** land work on
+`staging` → it auto-deploys to beta on the next `boxoffice-beta deploy` →
+once it looks good, merge `staging` → `main` and `boxoffice deploy` on prod.
+
+## Moving boxoffice to its own boxo.show domain
+
+Boxoffice started on the `boxoffice.lab980.com` subdomain; it now moves to its
+own apex domain `boxo.show` so it can carry tenant subdomains and a beta site
+under a name of its own. Same droplet — a domain swap, not a server move.
+
+There's **no live data to preserve on lab980.com** here: no already-sold tickets
+whose emailed links point at the old host, and no tenant with a Stripe webhook
+configured against a `*.lab980.com` URL. So this is just a clean cutover — flip
+config, stand up the new vhosts, tear down the old ones. (If that ever stops
+being true — you onboard a tenant and wire its Stripe webhook before cutting
+over — repoint that webhook to the `boxo.show` host as part of step 4, or
+checkout fulfillment stops.)
+
+Runbook (on the droplet, as root):
+
+```bash
+# 1. Add boxo.show as a DigitalOcean DNS zone (doctl must be authed).
+doctl compute domain create boxo.show
+
+# 2. Flip the app's config to boxo.show, then redeploy so ALLOWED_HOSTS,
+#    BASE_DOMAIN, CSRF and the from-address all move together (this also runs
+#    the 0002 help_text migration). Edit /var/www/boxoffice/.env:
+#      BASE_DOMAIN=boxo.show
+#      ALLOWED_HOSTS=boxo.show,.boxo.show
+#      CSRF_TRUSTED_ORIGINS=https://*.boxo.show,https://boxo.show
+#      RESERVED_SUBDOMAINS=www,app,admin,beta
+#      DEFAULT_FROM_EMAIL=no-reply@boxo.show
+boxoffice deploy
+
+# 3. Provision the apex platform host (DNS boxo.show + www, nginx vhost, cert).
+#    /var/www/boxoffice already exists, so this only adds DNS/nginx/TLS — it
+#    won't re-clone or touch .env.
+provision-site @ ivjames/boxoffice --domain boxo.show --dir /var/www/boxoffice
+
+# 4. Onboard tenants on the new domain. add-tenant reads the new BASE_DOMAIN
+#    from step 2, so it builds <sub>.boxo.show DNS/nginx/cert. (Its DB step is
+#    idempotent, so it's also the way to re-home any tenant you'd already
+#    created on lab980 — same Organization row, new boxo.show infra.)
+boxoffice add-tenant roxy          # ...once per tenant subdomain
+```
+
+```text
+# 5. Verify:  curl -s https://boxo.show/healthz   # {"status": "ok"}
+#    plus a browse -> (test) checkout smoke test on a tenant subdomain.
+
+# 6. Decommission the old lab980 host(s):
+#      lab980-deprovision boxoffice          # boxoffice.lab980.com nginx + cert + DNS
+#    plus any tenant vhost you'd stood up on *.lab980.com:
+#      certbot delete --cert-name <sub>.lab980.com -n
+#      rm -f /etc/nginx/sites-{available,enabled}/<sub>.lab980.com && systemctl reload nginx
+#      doctl compute domain records list lab980.com --format ID,Type,Name \
+#        | awk -v n=<sub> '$2=="A" && $3==n {print $1}' \
+#        | xargs -I{} doctl compute domain records delete lab980.com {} -f
+```
+
+Moving to a **new droplet** later is an orthogonal change: rsync
+`/var/www/boxoffice` (app dir carries `.env` + `data/` + `media/`) to the new
+box, re-point the boxo.show DNS A records at its IP, re-issue certs with
+certbot, `pm2 start deploy/ecosystem.config.js && pm2 save`. Nothing in the app
+changes — it's purely infra.
 
 ## Updates
 

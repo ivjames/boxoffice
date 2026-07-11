@@ -9,7 +9,7 @@ class Organization(models.Model):
     subdomain = models.SlugField(
         max_length=63,
         unique=True,
-        help_text="The subdomain this tenant is served on, e.g. 'roxy' for roxy.lab980.com.",
+        help_text="The subdomain this tenant is served on, e.g. 'roxy' for roxy.boxo.show.",
     )
 
     logo = models.ImageField(upload_to="org_logos/", blank=True, null=True)

@@ -46,7 +46,7 @@ platform landing placeholder.
 ## Multi-tenancy: hitting a tenant subdomain locally
 
 In production, the tenant is resolved from the subdomain of the `Host`
-header (e.g. `roxy.lab980.com` → the `roxy` Organization), via
+header (e.g. `roxy.boxo.show` → the `roxy` Organization), via
 `tenants.middleware.TenantMiddleware`. Reserved subdomains (`www`, `app`,
 `admin`, or no subdomain at all) resolve to the platform host instead of a
 tenant (`request.organization = None`) — see `RESERVED_SUBDOMAINS` /

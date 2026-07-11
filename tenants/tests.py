@@ -184,7 +184,7 @@ class PlatformHostTests(TestCase):
     False, so a bare `self.client.get("/")` (Host: testserver) never matches
     BASE_DOMAIN ("localhost" in dev settings) and always takes the
     platform-host path in TenantMiddleware._resolve -- exactly like hitting
-    the bare lab980.com host in prod with no subdomain.
+    the bare boxo.show host in prod with no subdomain.
     """
 
     def setUp(self):

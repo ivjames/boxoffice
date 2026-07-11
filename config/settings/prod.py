@@ -37,10 +37,10 @@ if not SECRET_KEY or SECRET_KEY == "insecure-dev-key-do-not-use-in-prod" or len(
         "to start with a missing/default/weak key."
     )
 
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[".lab980.com"])
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[".boxo.show"])
 # Tenant subdomains all live under BASE_DOMAIN; trust them for CSRF.
 CSRF_TRUSTED_ORIGINS = env.list(
-    "CSRF_TRUSTED_ORIGINS", default=["https://*.lab980.com", "https://lab980.com"]
+    "CSRF_TRUSTED_ORIGINS", default=["https://*.boxo.show", "https://boxo.show"]
 )
 
 # SQLite lives in the app dir's data/ (created by lab980 provision-site). Ensure
@@ -85,4 +85,4 @@ EMAIL_PORT = env.int("EMAIL_PORT", default=587)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
-DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="no-reply@lab980.com")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="no-reply@boxo.show")

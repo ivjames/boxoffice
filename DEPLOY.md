@@ -366,7 +366,7 @@ boxoffice add-tenant roxy          # ...once per tenant subdomain
 #    plus a browse -> (test) checkout smoke test on a tenant subdomain.
 
 # 6. Decommission the old lab980 host(s):
-#      lab980-deprovision boxoffice          # boxoffice.lab980.com nginx + cert + DNS
+#      deprovision-site boxoffice            # boxoffice.lab980.com nginx + cert + DNS
 #    plus any tenant vhost you'd stood up on *.lab980.com:
 #      certbot delete --cert-name <sub>.lab980.com -n
 #      rm -f /etc/nginx/sites-{available,enabled}/<sub>.lab980.com && systemctl reload nginx

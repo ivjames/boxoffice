@@ -14,6 +14,12 @@ so only the infra half runs). Safe to run every minute: it's a no-op when
 nothing is PENDING, each row is claimed atomically so overlapping ticks can't
 double-provision, and add-tenant leaves any existing DNS/vhost/cert as-is.
 
+Provisions at most ONE tenant per run. certbot and DNS are slow and rate-
+limited, so a batch queued together (e.g. several tenants selected in the
+admin at once) drains one-per-minute across successive ticks rather than
+firing several certbot runs in a single tick. Reserved-subdomain rows are
+rejected without shelling out and don't consume the run's single slot.
+
 Must run under prod settings (DJANGO_SETTINGS_MODULE=config.settings.prod) so
 it reads the same DB the admin writes to, and as root so certbot/nginx/doctl
 can act. Both are set in deploy/boxoffice-provision.cron.
@@ -45,7 +51,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         In = Organization.InfraStatus
 
-        pending = list(Organization.objects.filter(infra_status=In.PENDING))
+        # FIFO by insertion (pk), so a batch queued together drains oldest-
+        # first over successive ticks.
+        pending = list(Organization.objects.filter(infra_status=In.PENDING).order_by("pk"))
         if not pending:
             return  # nothing queued — the common every-minute case
 
@@ -90,16 +98,24 @@ class Command(BaseCommand):
                 )
             except subprocess.TimeoutExpired:
                 self._finish(org, In.FAILED, "add-tenant timed out after 600s (DNS still propagating?). Re-queue to retry.")
-                continue
+                return
             except Exception as exc:  # pragma: no cover - unexpected spawn failure
                 self._finish(org, In.FAILED, f"failed to run add-tenant: {exc}")
-                continue
+                return
 
             output = _tail(f"{result.stdout}\n{result.stderr}")
             if result.returncode == 0:
                 self._finish(org, In.PROVISIONED, output or "Provisioned.")
             else:
                 self._finish(org, In.FAILED, output or f"add-tenant exited {result.returncode}.")
+
+            # One real provisioning job per run: certbot/DNS are slow and
+            # rate-limited, so we drain the queue one tenant per tick rather
+            # than firing several add-tenant/certbot runs in a single minute.
+            # A reserved-subdomain row above is cheap (no subprocess), so it
+            # doesn't consume this run's slot -- we keep scanning for the
+            # first tenant that actually needs provisioning.
+            return
 
     def _finish(self, org, status, message):
         Organization.objects.filter(pk=org.pk).update(

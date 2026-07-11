@@ -129,6 +129,51 @@ class ProvisionPendingTenantsCommandTests(TestCase):
             call_command("provision_pending_tenants")
         run.assert_not_called()
 
+    def test_provisions_one_per_run_and_drains_fifo(self):
+        """A batch queued together provisions ONE tenant per run (certbot is
+        slow/rate-limited), oldest-first, leaving the rest PENDING for the
+        next tick."""
+        second = Organization.objects.create(
+            name="Palace", slug="palace", subdomain="palace", contact_email="p@b.c",
+            infra_status=In.PENDING,
+        )
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(0, "ok")) as run:
+            call_command("provision_pending_tenants")  # tick 1
+            self.assertEqual(run.call_count, 1)
+            self.org.refresh_from_db(); second.refresh_from_db()
+            # Oldest queued (self.org, lower pk) goes first; the other waits.
+            self.assertEqual(self.org.infra_status, In.PROVISIONED)
+            self.assertEqual(second.infra_status, In.PENDING)
+
+            call_command("provision_pending_tenants")  # tick 2 drains the next
+            self.assertEqual(run.call_count, 2)
+            second.refresh_from_db()
+            self.assertEqual(second.infra_status, In.PROVISIONED)
+
+    def test_reserved_row_does_not_consume_the_run_slot(self):
+        """A reserved-subdomain row is rejected cheaply (no subprocess) and
+        does NOT use up the one-per-run slot -- a real tenant queued behind
+        it still gets provisioned in the same tick."""
+        self.org.subdomain = "admin"  # reserved; queued ahead of the real one
+        self.org.save(update_fields=["subdomain"])
+        real = Organization.objects.create(
+            name="Palace", slug="palace", subdomain="palace", contact_email="p@b.c",
+            infra_status=In.PENDING,
+        )
+        with override_settings(RESERVED_SUBDOMAINS={"www", "admin"}), \
+             mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(0, "ok")) as run:
+            call_command("provision_pending_tenants")
+
+        self.org.refresh_from_db(); real.refresh_from_db()
+        self.assertEqual(self.org.infra_status, In.FAILED)      # reserved -> failed
+        self.assertEqual(real.infra_status, In.PROVISIONED)     # provisioned same run
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][2], "palace")
+
 
 class CreateDemoTenantCommandTests(TestCase):
     def _counts(self):

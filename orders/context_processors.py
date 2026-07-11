@@ -3,8 +3,9 @@ from . import services
 
 def cart_count(request):
     """Expose a live `cart_count` (total held tickets) to every template for
-    the nav cart badge. 0 outside a tenant/default-tenant context, or before
-    the session has anything in it -- no DB hit in either of those cases."""
+    the nav cart badge. 0 outside a tenant context (the platform host), or
+    before the session has anything in it -- no DB hit in either of those
+    cases."""
     organization = getattr(request, "organization", None)
     if organization is None:
         return {"cart_count": 0}

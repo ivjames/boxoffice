@@ -10,10 +10,10 @@ class TenantMiddleware:
 
     - Reserved subdomains (settings.RESERVED_SUBDOMAINS, e.g. www/app/admin)
       and a bare/absent subdomain resolve to the *platform* host:
-      request.organization = None.
+      request.organization = None (which serves the landing page).
     - Any other subdomain must match an active Organization.subdomain, or the
       request 404s (unknown or inactive tenant) — this is the standard path;
-      see the security notes below for the DEBUG-only override.
+      see the security note below for the DEBUG-only override.
     - Everything downstream (views, templates, TenantScopedManager-based
       querysets) relies on request.organization being set before it runs, so
       this middleware must be listed after AuthenticationMiddleware but
@@ -30,26 +30,12 @@ class TenantMiddleware:
 
     This override is intentionally gated on DEBUG so it can never activate in
     production regardless of what a client sends.
-
-    Default-tenant mode (settings.DEFAULT_TENANT):
-    Client subdomains are deferred for now, so the platform host needs to be
-    able to serve a real storefront on its own. This does NOT change any of
-    the subdomain-resolution logic above — a request that resolves to a real
-    tenant subdomain behaves exactly as it always has. It only changes what
-    happens for a request that would otherwise land on the platform host
-    (reserved subdomain / bare host / unmatched host): if
-    settings.DEFAULT_TENANT names an existing, active Organization,
-    request.organization is set to that Organization (request.is_default_tenant
-    = True) instead of None, so `/`, `/login`, `/dashboard`, `/scan` etc. all
-    serve that org. Empty/unset/invalid DEFAULT_TENANT: behaves exactly as
-    before (request.organization = None, platform landing).
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        request.is_default_tenant = False
         request.organization = self._resolve(request)
         return self.get_response(request)
 
@@ -59,7 +45,9 @@ class TenantMiddleware:
             subdomain = self._subdomain_from_host(request.get_host())
 
         if not subdomain or subdomain in settings.RESERVED_SUBDOMAINS:
-            return self._resolve_platform_host(request)
+            # Platform host (reserved subdomain / bare host / unmatched host):
+            # no tenant, so the landing page is served.
+            return None
 
         try:
             organization = Organization.objects.get(subdomain=subdomain)
@@ -69,24 +57,6 @@ class TenantMiddleware:
         if not organization.is_active:
             raise Http404("This tenant is not active.")
 
-        return organization
-
-    def _resolve_platform_host(self, request):
-        """The platform host resolution path: None unless DEFAULT_TENANT
-        names an existing, active Organization, in which case that org's
-        storefront is served on the platform host instead of the landing
-        page. See the class docstring's "Default-tenant mode" note."""
-        subdomain = (settings.DEFAULT_TENANT or "").strip()
-        if not subdomain:
-            return None
-
-        organization = Organization.objects.filter(
-            subdomain=subdomain, is_active=True
-        ).first()
-        if organization is None:
-            return None
-
-        request.is_default_tenant = True
         return organization
 
     def _dev_override_subdomain(self, request):

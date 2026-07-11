@@ -31,11 +31,9 @@ def home(request):
     """
     Root URL. Renders the tenant storefront home (published events with at
     least one upcoming, published performance) when request.organization is
-    set — either a real tenant subdomain, or (see tenants.middleware) the
-    platform host in DEFAULT_TENANT mode — otherwise the platform landing
-    page (reserved subdomain / bare host, no DEFAULT_TENANT configured) —
-    and does NOT touch tenant data in that case, so the platform host never
-    leaks a theater's catalog.
+    set — i.e. on a real tenant subdomain — otherwise the platform landing
+    page (reserved subdomain / bare host) — and does NOT touch tenant data in
+    that case, so the platform host never leaks a theater's catalog.
     """
     if request.organization is None:
         return render(request, "tenants/platform_landing.html")

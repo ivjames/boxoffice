@@ -4,6 +4,17 @@ from django.db import models
 class Organization(models.Model):
     """A theater/tenant. One row per branded storefront subdomain."""
 
+    class InfraStatus(models.TextChoices):
+        # DNS/nginx/TLS state for this tenant's <subdomain>.<BASE_DOMAIN>.
+        # Creating the row (admin/CLI) is the DB half; these track the infra
+        # half, driven by the admin "Provision infrastructure" action ->
+        # `manage.py provision_pending_tenants` (root cron worker).
+        NONE = "none", "Not provisioned"
+        PENDING = "pending", "Queued"
+        PROVISIONING = "provisioning", "Provisioning…"
+        PROVISIONED = "provisioned", "Live"
+        FAILED = "failed", "Failed"
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True)
     subdomain = models.SlugField(
@@ -32,6 +43,21 @@ class Organization(models.Model):
 
     contact_email = models.EmailField()
     is_active = models.BooleanField(default=True)
+
+    # Infrastructure (DNS + nginx vhost + TLS) provisioning state for this
+    # tenant's subdomain. Set to PENDING by the admin action; advanced by the
+    # `provision_pending_tenants` cron worker (see tenants/admin.py and that
+    # command). infra_message holds the worker's last note/error for the admin.
+    # db_default (not just default) so a row inserted without these columns —
+    # e.g. via a historical model in a migration that predates this field —
+    # still gets a value, instead of tripping the NOT NULL constraint.
+    infra_status = models.CharField(
+        max_length=20,
+        choices=InfraStatus.choices,
+        default=InfraStatus.NONE,
+        db_default=InfraStatus.NONE,
+    )
+    infra_message = models.TextField(blank=True, default="", db_default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

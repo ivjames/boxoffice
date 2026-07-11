@@ -1,13 +1,133 @@
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest import mock
 
+from django.contrib.admin.sites import AdminSite
+from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.management import CommandError, call_command
-from django.test import TestCase, override_settings
+from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
 from events.models import Event, GAAllocation, Performance, PriceTier
+from tenants.admin import OrganizationAdmin
 from tenants.models import Organization
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
+
+_CMD = "tenants.management.commands.provision_pending_tenants"
+In = Organization.InfraStatus
+
+
+def _completed(returncode=0, stdout="", stderr=""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class ProvisionInfraAdminActionTests(TestCase):
+    """The admin action only flips infra_status to PENDING (a DB write); the
+    cron worker does the privileged DNS/nginx/TLS work."""
+
+    def _run_action(self, queryset):
+        request = RequestFactory().post("/admin/tenants/organization/")
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        OrganizationAdmin(Organization, AdminSite()).provision_infrastructure(request, queryset)
+        return [m.message for m in request._messages]
+
+    def test_queues_selected_and_skips_already_queued(self):
+        fresh = Organization.objects.create(
+            name="Fresh", slug="fresh", subdomain="fresh", contact_email="a@b.c"
+        )
+        already = Organization.objects.create(
+            name="Queued", slug="queued", subdomain="queued", contact_email="a@b.c",
+            infra_status=In.PENDING,
+        )
+        msgs = " ".join(self._run_action(Organization.objects.all()))
+
+        fresh.refresh_from_db()
+        already.refresh_from_db()
+        self.assertEqual(fresh.infra_status, In.PENDING)
+        self.assertEqual(already.infra_status, In.PENDING)
+        self.assertIn("Queued 1", msgs)
+        self.assertIn("Skipped 1", msgs)  # not "Skipped 2" — count taken pre-update
+
+    def test_requeues_failed_and_recovers_stranded_provisioning(self):
+        """Queueable from any non-PENDING state: retry a FAILED tenant, and
+        recover one left PROVISIONING by a crashed worker."""
+        failed = Organization.objects.create(
+            name="Retry", slug="retry", subdomain="retry", contact_email="a@b.c",
+            infra_status=In.FAILED,
+        )
+        stranded = Organization.objects.create(
+            name="Stranded", slug="stranded", subdomain="stranded", contact_email="a@b.c",
+            infra_status=In.PROVISIONING,
+        )
+        self._run_action(Organization.objects.filter(pk__in=[failed.pk, stranded.pk]))
+        failed.refresh_from_db()
+        stranded.refresh_from_db()
+        self.assertEqual(failed.infra_status, In.PENDING)
+        self.assertEqual(stranded.infra_status, In.PENDING)
+
+
+class ProvisionPendingTenantsCommandTests(TestCase):
+    """The root cron worker: claims PENDING rows and shells out to
+    `bin/boxoffice add-tenant <sub> --infra-only`, recording the outcome."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name="Roxy", slug="roxy", subdomain="roxy", contact_email="a@b.c",
+            infra_status=In.PENDING,
+        )
+
+    def test_success_marks_provisioned_and_calls_add_tenant(self):
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(0, "==> Onboarded roxy.boxo.show")) as run:
+            call_command("provision_pending_tenants")
+
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.infra_status, In.PROVISIONED)
+        self.assertIn("Onboarded", self.org.infra_message)
+        args = run.call_args.args[0]
+        self.assertEqual(args[1:], ["add-tenant", "roxy", "--infra-only"])
+
+    def test_nonzero_exit_marks_failed(self):
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(1, "", "certbot: DNS not propagated")):
+            call_command("provision_pending_tenants")
+
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.infra_status, In.FAILED)
+        self.assertIn("certbot", self.org.infra_message)
+
+    def test_not_root_leaves_pending_and_never_shells_out(self):
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=1000), \
+             mock.patch(f"{_CMD}.subprocess.run") as run:
+            call_command("provision_pending_tenants")
+
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.infra_status, In.PENDING)
+        run.assert_not_called()
+
+    @override_settings(RESERVED_SUBDOMAINS={"www", "admin", "roxy"})
+    def test_reserved_subdomain_fails_without_shelling_out(self):
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch(f"{_CMD}.subprocess.run") as run:
+            call_command("provision_pending_tenants")
+
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.infra_status, In.FAILED)
+        self.assertIn("reserved", self.org.infra_message)
+        run.assert_not_called()
+
+    def test_no_pending_is_a_noop(self):
+        self.org.infra_status = In.PROVISIONED
+        self.org.save(update_fields=["infra_status"])
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.subprocess.run") as run:
+            call_command("provision_pending_tenants")
+        run.assert_not_called()
 
 
 class CreateDemoTenantCommandTests(TestCase):

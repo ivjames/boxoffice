@@ -5,13 +5,15 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from django.contrib.admin.sites import AdminSite
+from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.management import CommandError, call_command
 from django.test import RequestFactory, TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
 from events.models import Event, GAAllocation, Performance, PriceTier
-from tenants.admin import OrganizationAdmin
+from tenants.admin import OrganizationAdmin, OrganizationAdminForm
 from tenants.models import Organization
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
@@ -22,6 +24,78 @@ In = Organization.InfraStatus
 
 def _completed(returncode=0, stdout="", stderr=""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class OrganizationAdminFormTests(TestCase):
+    """The admin form gives Organization sensible widgets: write-only Stripe
+    secrets, native color pickers, and validated dropdowns for timezone and
+    currency. The change form also carries a per-object provision button."""
+
+    def setUp(self):
+        self.admin_user = get_user_model().objects.create_superuser(
+            email="admin@boxo.show", password="pw"
+        )
+        self.client.force_login(self.admin_user)
+
+    # --- write-only secret handling (form-level) ---
+
+    def test_blank_secret_keeps_the_current_value(self):
+        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
+        form = OrganizationAdminForm(instance=org)
+        form.cleaned_data = {"stripe_secret_key": ""}
+        # A blank submit must not wipe the live key.
+        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_EXISTING")
+
+    def test_new_secret_overwrites(self):
+        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
+        form = OrganizationAdminForm(instance=org)
+        form.cleaned_data = {"stripe_secret_key": "sk_live_NEW"}
+        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_NEW")
+
+    # --- rendered change form ---
+
+    def _change_url(self, org):
+        return reverse("admin:tenants_organization_change", args=[org.pk])
+
+    def test_stored_secret_never_reaches_the_html(self):
+        org = make_org("roxy", stripe_secret_key="sk_live_TOPSECRET")
+        resp = self.client.get(self._change_url(org))
+        self.assertNotContains(resp, "sk_live_TOPSECRET")
+        # Rendered as a password input, not a plain text field.
+        self.assertContains(resp, 'type="password"')
+
+    def test_widgets_are_pickers_and_dropdowns(self):
+        org = make_org("roxy")
+        resp = self.client.get(self._change_url(org))
+        self.assertContains(resp, 'type="color"')  # color pickers
+        self.assertContains(resp, '<select name="timezone"')  # tz dropdown
+        self.assertContains(resp, '<select name="currency"')  # currency dropdown
+
+    def test_change_form_has_provision_button(self):
+        org = make_org("roxy")
+        resp = self.client.get(self._change_url(org))
+        self.assertContains(resp, "Provision infrastructure")
+        self.assertContains(
+            resp, reverse("admin:tenants_organization_provision", args=[org.pk])
+        )
+
+    # --- per-object provision button ---
+
+    def test_provision_button_queues_this_tenant(self):
+        org = make_org("roxy")
+        self.assertEqual(org.infra_status, In.NONE)
+        url = reverse("admin:tenants_organization_provision", args=[org.pk])
+        resp = self.client.post(url)
+        self.assertRedirects(resp, self._change_url(org))
+        org.refresh_from_db()
+        self.assertEqual(org.infra_status, In.PENDING)
+
+    def test_provision_endpoint_ignores_get(self):
+        org = make_org("roxy")
+        url = reverse("admin:tenants_organization_provision", args=[org.pk])
+        self.client.get(url)
+        org.refresh_from_db()
+        self.assertEqual(org.infra_status, In.NONE)  # unchanged; GET is a no-op
 
 
 class ProvisionInfraAdminActionTests(TestCase):

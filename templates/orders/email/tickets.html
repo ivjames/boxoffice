@@ -4,23 +4,38 @@
     <meta charset="UTF-8">
     <title>Your tickets — {{ organization.name }}</title>
 </head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; color: #1a1a1a; background: #ffffff; margin: 0; padding: 24px;">
-    <h1 style="font-size: 20px;">Your tickets for {{ order.performance.event.title }}</h1>
-    <p>{{ order.performance.starts_at|date:"D, M j Y — g:i A" }} — {{ order.performance.venue.name }}</p>
-    <p><strong>Order total: ${{ order.total }}</strong></p>
-    <p><a href="{{ tickets_url }}">View your tickets online</a></p>
-
-    {% for row in ticket_rows %}
-        <div style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 16px 0;">
-            <p style="margin: 0 0 8px;">
-                <strong>Ticket {{ forloop.counter }}</strong>
-                {% if row.ticket.seat %} — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}{% endif %}
-            </p>
-            <img src="{{ row.qr_data_uri }}" alt="Ticket QR code" width="200" height="200">
-            <p style="margin: 8px 0 0; font-size: 12px; color: #6b7280;">{{ row.ticket.token }}</p>
+<body style="font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; color: #1a1a1a; background: #f4f4f5; margin: 0; padding: 24px;">
+    <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 10px; overflow: hidden; border: 1px solid #e5e7eb;">
+        <div style="background: {{ organization.primary_color }}; padding: 24px; text-align: center;">
+            {% if logo_url %}
+                <img src="{{ logo_url }}" alt="{{ organization.name }}" height="40" style="height: 40px; width: auto; display: inline-block;">
+            {% else %}
+                <span style="color: #ffffff; font-size: 20px; font-weight: 700; letter-spacing: 0.01em;">{{ organization.name }}</span>
+            {% endif %}
         </div>
-    {% endfor %}
 
-    <p style="color: #6b7280;">Thank you for your order — {{ organization.name }}</p>
+        <div style="padding: 24px;">
+            <h1 style="font-size: 20px; margin: 0 0 4px; color: {{ organization.primary_color }};">Your tickets for {{ order.performance.event.title }}</h1>
+            <p style="margin: 0 0 4px; color: #6b7280;">{{ order.performance.starts_at|date:"D, M j Y — g:i A" }} — {{ order.performance.venue.name }}</p>
+            <p style="margin: 0 0 16px;"><strong>Order total: ${{ order.total }}</strong></p>
+
+            <p style="margin: 0 0 24px;">
+                <a href="{{ tickets_url }}" style="display: inline-block; background: {{ organization.accent_color }}; color: #ffffff; text-decoration: none; font-weight: 600; padding: 10px 20px; border-radius: 6px;">View your tickets online</a>
+            </p>
+
+            {% for row in ticket_rows %}
+                <div style="border: 1px solid #e5e7eb; border-top: 3px solid {{ organization.accent_color }}; border-radius: 8px; padding: 16px; margin: 0 0 16px;">
+                    <p style="margin: 0 0 8px;">
+                        <strong>Ticket {{ forloop.counter }}</strong>
+                        {% if row.ticket.seat %} — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}{% endif %}
+                    </p>
+                    <img src="{{ row.qr_data_uri }}" alt="Ticket QR code" width="200" height="200">
+                    <p style="margin: 8px 0 0; font-size: 12px; color: #6b7280;">{{ row.ticket.token }}</p>
+                </div>
+            {% endfor %}
+
+            <p style="color: #6b7280; margin: 24px 0 0;">Thank you for your order — {{ organization.name }}</p>
+        </div>
+    </div>
 </body>
 </html>

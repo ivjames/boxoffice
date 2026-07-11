@@ -27,9 +27,20 @@ def send_ticket_email(order, request):
     ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket)} for ticket in tickets]
     tickets_url = request.build_absolute_uri(reverse("ticket_detail", args=[order.token]))
 
+    # Carry the theater's branding into the email so a buyer sees the venue
+    # they bought from, not "Boxo.show". The palette lives on Organization
+    # (same fields templates/base.html themes the storefront with); the logo
+    # is an ImageField, so build an absolute URL from the in-flight request
+    # (order.organization.logo.url is host-relative) and only when one is set.
+    organization = order.organization
+    logo_url = (
+        request.build_absolute_uri(organization.logo.url) if organization.logo else None
+    )
+
     context = {
         "order": order,
-        "organization": order.organization,
+        "organization": organization,
+        "logo_url": logo_url,
         "ticket_rows": ticket_rows,
         "tickets_url": tickets_url,
     }

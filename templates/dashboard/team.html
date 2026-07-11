@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Team — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Team</h1>
+</div>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead><tr><th>Member</th><th>Role</th><th></th></tr></thead>
+    <tbody>
+    {% for membership in memberships %}
+        <tr>
+            <td>
+                {{ membership.user.email }}
+                {% if membership.user.get_full_name != membership.user.email %}
+                    <span class="muted">· {{ membership.user.get_full_name }}</span>
+                {% endif %}
+                {% if membership.id == my_membership_id %}<span class="muted">(you)</span>{% endif %}
+                {% if not membership.user.has_usable_password %}
+                    <span class="muted" title="Hasn't set a password yet">· invite pending</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if membership.id == my_membership_id %}
+                    {{ membership.get_role_display }}
+                {% else %}
+                    <form method="post" action="{% url 'dashboard_team_update_role' membership.id %}" class="team-inline-form">
+                        {% csrf_token %}
+                        <select name="role" aria-label="Role for {{ membership.user.email }}">
+                            {% for value, label in role_choices %}
+                                <option value="{{ value }}"
+                                    {% if value == membership.role %}selected{% endif %}
+                                    {% if value == 'owner' and value not in assignable_roles and membership.role != 'owner' %}disabled{% endif %}>
+                                    {{ label }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="button button--secondary button--sm">Save</button>
+                    </form>
+                {% endif %}
+            </td>
+            <td class="dash-table__actions">
+                {% if membership.id != my_membership_id %}
+                    <form method="post" action="{% url 'dashboard_team_remove' membership.id %}"
+                          onsubmit="return confirm('Remove {{ membership.user.email|escapejs }} from the team?');">
+                        {% csrf_token %}
+                        <button type="submit" class="button button--secondary button--sm">Remove</button>
+                    </form>
+                {% endif %}
+            </td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="3" class="muted">No team members yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<h2>Add a team member</h2>
+<p class="muted">
+    New people get an email with a link to set their password. Someone who already
+    has a Boxo.show account is added straight away and signs in with their
+    existing password.
+</p>
+<form method="post" action="{% url 'dashboard_team_add' %}" class="dash-form dash-form--inline">
+    {% csrf_token %}
+    <div class="field">
+        {{ form.email.label_tag }}
+        {{ form.email }}
+        {{ form.email.errors }}
+    </div>
+    <div class="field">
+        {{ form.first_name.label_tag }}
+        {{ form.first_name }}
+    </div>
+    <div class="field">
+        {{ form.last_name.label_tag }}
+        {{ form.last_name }}
+    </div>
+    <div class="field">
+        {{ form.role.label_tag }}
+        {{ form.role }}
+        {{ form.role.errors }}
+    </div>
+    <button type="submit" class="button">Add member</button>
+</form>
+{% endblock %}

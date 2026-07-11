@@ -46,6 +46,26 @@ class SendTicketEmailTests(OrdersFixtureMixin, TestCase):
         # One inline QR per ticket.
         self.assertEqual(html_body.count("data:image/png;base64,"), 2)
 
+    def test_html_email_uses_the_tenants_palette(self):
+        self.org.primary_color = "#0d3b66"
+        self.org.accent_color = "#f4a261"
+        self.org.save(update_fields=["primary_color", "accent_color"])
+
+        send_ticket_email(self.order, self.request)
+
+        html_body = mail.outbox[0].alternatives[0][0]
+        self.assertIn("#0d3b66", html_body)
+        self.assertIn("#f4a261", html_body)
+
+    def test_no_logo_falls_back_to_the_org_name(self):
+        # No logo uploaded on the fixture org -> the header shows the name,
+        # and there's no broken <img> pointing at an empty ImageField URL.
+        send_ticket_email(self.order, self.request)
+
+        html_body = mail.outbox[0].alternatives[0][0]
+        self.assertIn(self.org.name, html_body)
+        self.assertNotIn('src=""', html_body)
+
 
 class SendTicketEmailReservedSeatTests(OrdersFixtureMixin, TestCase):
     """Separate class/setUp from SendTicketEmailTests: that class's setUp

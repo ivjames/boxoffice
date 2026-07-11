@@ -1,14 +1,17 @@
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.forms import SetPasswordForm
+from django.contrib.auth.tokens import default_token_generator
 from django.shortcuts import redirect, render
 from django.urls import reverse
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.encoding import force_str
+from django.utils.http import url_has_allowed_host_and_scheme, urlsafe_base64_decode
 from django.views.decorators.http import require_POST
 
 from tenants.decorators import require_tenant
 
 from .forms import StaffLoginForm
-from .models import Membership
+from .models import Membership, User
 
 
 def _safe_next(request, next_url):
@@ -75,3 +78,40 @@ def logout_view(request):
     logout(request)
     messages.info(request, "Signed out.")
     return redirect("login")
+
+
+def _user_from_uid(uidb64):
+    try:
+        uid = force_str(urlsafe_base64_decode(uidb64))
+        return User.objects.get(pk=uid)
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        return None
+
+
+def set_password_view(request, uidb64, token):
+    """Set-password landing for an invited teammate (accounts/invites.py).
+    Token-gated with Django's default_token_generator -- the same signed
+    uid+token flow password reset uses -- so it needs no login and isn't
+    tenant-scoped (the invite link carries the tenant subdomain already).
+    Using the link consumes it: once a password is set, the token no longer
+    validates (it's bound to the user's has_usable_password state)."""
+    user = _user_from_uid(uidb64)
+    valid = user is not None and default_token_generator.check_token(user, token)
+
+    if not valid:
+        return render(request, "accounts/set_password.html", {"validlink": False})
+
+    if request.method == "POST":
+        form = SetPasswordForm(user, request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Password set. You can sign in now.")
+            return redirect("login")
+    else:
+        form = SetPasswordForm(user)
+
+    return render(
+        request,
+        "accounts/set_password.html",
+        {"validlink": True, "form": form, "email": user.email},
+    )

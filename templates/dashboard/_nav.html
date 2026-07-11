@@ -16,6 +16,10 @@
     {% if request.membership.can_scan %}
         <a href="{% url 'scan_home' %}" class="{% if url_name == 'scan_home' or url_name == 'scan_redeem' %}is-active{% endif %}">Scan</a>
     {% endif %}
+    {% if request.membership.can_manage_team %}
+        <a href="{% url 'dashboard_team' %}"
+           class="{% if url_name == 'dashboard_team' %}is-active{% endif %}">Team</a>
+    {% endif %}
     <a href="{% url 'home' %}" class="dash-nav__storefront">View storefront</a>
     <span class="muted dash-nav__whoami">{{ request.user.email }} · {{ request.membership.get_role_display }}</span>
     <form method="post" action="{% url 'logout' %}" class="dash-nav__logout">

@@ -351,7 +351,8 @@ boxoffice deploy
 
 # 3. Provision the apex platform host (DNS boxo.show + www, nginx vhost, cert).
 #    /var/www/boxoffice already exists, so this only adds DNS/nginx/TLS — it
-#    won't re-clone or touch .env.
+#    won't re-clone or touch .env, and it reuses the PORT already in that .env
+#    so the apex vhost proxies to the running gunicorn (pass --port to override).
 provision-site @ ivjames/boxoffice --domain boxo.show --dir /var/www/boxoffice
 
 # 4. Onboard tenants on the new domain. add-tenant reads the new BASE_DOMAIN

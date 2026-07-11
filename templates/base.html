@@ -74,11 +74,14 @@
                 {% elif organization %}
                     <a href="{% url 'login' %}?next={{ request.path|urlencode }}"
                        class="site-nav__link{% if request.resolver_match.url_name == 'login' %} is-active{% endif %}">Staff login</a>
-                {% comment %}
-                    Platform host (no tenant): this is the public marketing landing page, so
-                    the nav carries no staff/admin links. Staff sign in on their own tenant
-                    subdomain; the platform superuser admin lives at /admin/ directly.
-                {% endcomment %}
+                {% elif show_admin_link %}
+                    {% comment %}
+                        Platform host on the staging/beta deploy (SHOW_ADMIN_LINK=true): surface
+                        a convenience link to the platform admin. Prod leaves SHOW_ADMIN_LINK
+                        off, so its public marketing landing page carries no staff/admin links --
+                        staff sign in on their own tenant subdomain; /admin/ is reachable directly.
+                    {% endcomment %}
+                    <a href="/admin/" class="site-nav__link">Admin</a>
                 {% endif %}
             </nav>
         </div>
@@ -107,6 +110,7 @@
             </span>
             <nav class="site-footer__nav">
                 <a href="{% url 'home' %}">Home</a>
+                {% if show_admin_link and not organization %}<a href="/admin/">Admin</a>{% endif %}
             </nav>
         </div>
         {% if app_version %}

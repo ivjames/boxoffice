@@ -99,6 +99,8 @@ TEMPLATES = [
                 "payments.context_processors.test_checkout_enabled",
                 # Exposes the resolved deploy stamp as `app_version` (footer).
                 "config.context_processors.app_version",
+                # Exposes settings.SHOW_ADMIN_LINK as `show_admin_link` (nav/footer).
+                "config.context_processors.show_admin_link",
             ],
         },
     },
@@ -174,3 +176,10 @@ BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
 # shows the normal Stripe checkout button. See .env.example for the loud
 # warning next to ENABLE_TEST_CHECKOUT.
 ENABLE_TEST_CHECKOUT = env.bool("ENABLE_TEST_CHECKOUT", default=False)
+
+# Surface a convenience "Admin" link (-> /admin/) in the platform-host nav and
+# footer. Default False: the public marketing landing page (prod) deliberately
+# does not advertise the superuser surface. The staging/beta deploy sets
+# SHOW_ADMIN_LINK=true so operators can reach the admin from its landing page.
+# /admin/ itself is always reachable directly regardless of this flag.
+SHOW_ADMIN_LINK = env.bool("SHOW_ADMIN_LINK", default=False)

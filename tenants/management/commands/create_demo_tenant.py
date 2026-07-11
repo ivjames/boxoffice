@@ -26,7 +26,7 @@ User = get_user_model()
 # for a real (non-demo) Organization -- this command only ever seeds
 # `--subdomain roxy`-style throwaway tenants.
 DEMO_OWNER_EMAIL_TEMPLATE = "owner@{subdomain}.demo"
-DEMO_OWNER_PASSWORD = "roxy-demo-owner-2024"
+DEMO_OWNER_PASSWORD = "roxy-demo-owner-2026"
 
 
 class Command(BaseCommand):

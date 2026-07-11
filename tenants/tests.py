@@ -1,6 +1,8 @@
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.messages.storage.fallback import FallbackStorage
@@ -369,3 +371,98 @@ class PlatformHostTests(TestCase):
         with override_settings(DEBUG=True):
             resp = self.client.get("/", HTTP_X_TENANT="globe")
         self.assertEqual(resp.wsgi_request.organization, other)
+
+
+# Records the timezone that was active mid-request. Installed just after
+# TenantMiddleware by the tests below so they can observe the active zone
+# without depending on any particular template rendering a datetime.
+_PROBE = {}
+
+
+def _probe_zone_middleware(get_response):
+    def middleware(request):
+        _PROBE["zone"] = timezone.get_current_timezone_name()
+        return get_response(request)
+
+    return middleware
+
+
+def _with_probe():
+    from django.conf import settings
+
+    mw = list(settings.MIDDLEWARE)
+    mw.insert(
+        mw.index("tenants.middleware.TenantMiddleware") + 1,
+        "tenants.tests._probe_zone_middleware",
+    )
+    return mw
+
+
+@override_settings(TIME_ZONE="UTC")
+class TenantTimezoneActivationTests(TestCase):
+    """Datetimes are stored UTC-aware, but a showtime is a fact about a place:
+    every time renders in the tenant's own timezone (TenantMiddleware activates
+    Organization.timezone), so "8:00 PM at the Roxy" shows as 8pm ET for every
+    visitor. The platform host and unusable zone strings fall back to
+    settings.TIME_ZONE, and the active zone never leaks between requests."""
+
+    def setUp(self):
+        _PROBE.clear()
+
+    def _zone_during(self, host):
+        with override_settings(MIDDLEWARE=_with_probe()):
+            self.client.get("/", HTTP_HOST=host)
+        return _PROBE.get("zone")
+
+    def test_tenant_request_activates_venue_timezone(self):
+        make_org("roxy", timezone="America/New_York")
+        self.assertEqual(self._zone_during("roxy.localhost"), "America/New_York")
+
+    def test_platform_host_falls_back_to_settings_timezone(self):
+        make_org("roxy", timezone="America/New_York")
+        # Bare host (Host: testserver) -> platform host, no tenant -> default.
+        self.assertEqual(self._zone_during("testserver"), "UTC")
+
+    def test_bad_timezone_string_falls_back_instead_of_500(self):
+        make_org("roxy", timezone="Amerca/New_York")  # typo, not a real zone
+        # Request still succeeds; zone falls back rather than crashing.
+        self.assertEqual(self._zone_during("roxy.localhost"), "UTC")
+
+    def test_blank_timezone_falls_back(self):
+        make_org("roxy", timezone="")
+        self.assertEqual(self._zone_during("roxy.localhost"), "UTC")
+
+    def test_zone_does_not_leak_across_requests(self):
+        make_org("roxy", timezone="America/New_York")
+        self.client.get("/", HTTP_HOST="roxy.localhost")
+        # The worker thread is reused; the next request must not inherit the
+        # Roxy's zone (the middleware deactivates in a finally).
+        self.assertEqual(timezone.get_current_timezone_name(), "UTC")
+
+    def test_storefront_renders_showtime_in_venue_timezone(self):
+        """End-to-end: the actual rendered showtime string is the venue-local
+        time, not UTC. 2027-01-15 02:00 UTC is 2027-01-14 21:00 in New York."""
+        org = make_org("roxy", timezone="America/New_York")
+        venue = Venue.objects.create(organization=org, name="Main Stage")
+        event = Event.objects.create(
+            organization=org,
+            title="Midnight Matinee",
+            slug="midnight-matinee",
+            status=Event.Status.PUBLISHED,
+        )
+        performance = Performance.objects.create(
+            organization=org,
+            event=event,
+            venue=venue,
+            starts_at=datetime(2027, 1, 15, 2, 0, tzinfo=ZoneInfo("UTC")),
+            seating_mode=Performance.SeatingMode.GA,
+            status=Performance.Status.PUBLISHED,
+        )
+        GAAllocation.objects.create(organization=org, performance=performance, capacity=10)
+        PriceTier.objects.create(
+            organization=org, performance=performance, name="GA", amount=Decimal("20.00")
+        )
+
+        resp = self.client.get("/", HTTP_HOST="roxy.localhost")
+        self.assertContains(resp, "Thu, Jan 14 2027 — 9:00 PM")  # ET, not 2:00 AM UTC
+        self.assertNotContains(resp, "2:00 AM")

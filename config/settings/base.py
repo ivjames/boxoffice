@@ -146,12 +146,15 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # rather than a specific tenant. An empty/missing Host subdomain (e.g. bare
 # BASE_DOMAIN, or a host that doesn't end in BASE_DOMAIN at all — like an IP
 # or localhost during early dev) is always treated as reserved too.
+# "beta" is reserved by default because beta.<BASE_DOMAIN> is the staging
+# deployment's host (a separate app instance, see DEPLOY.md "Beta / staging
+# site") — reserving it here keeps a tenant from ever claiming that label.
 RESERVED_SUBDOMAINS = set(
-    env.list("RESERVED_SUBDOMAINS", default=["www", "app", "admin"])
+    env.list("RESERVED_SUBDOMAINS", default=["www", "app", "admin", "beta"])
 )
 
-# The base domain tenants live under, e.g. "lab980.com" so that
-# "roxy.lab980.com" resolves to the "roxy" tenant. TenantMiddleware strips
+# The base domain tenants live under, e.g. "boxo.show" so that
+# "roxy.boxo.show" resolves to the "roxy" tenant. TenantMiddleware strips
 # this suffix off the Host header to find the subdomain.
 BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
 

@@ -9,11 +9,20 @@
 // `bin/boxoffice serve`), so this file does not need an `env:` block for
 // those -- .env is the single source of truth, matching every other
 // lab980 site.
+//
+// cwd and the pm2 app name are derived from this file's own location (its
+// parent dir) rather than hard-coded, so the SAME file works unchanged for a
+// second install: the beta/staging deploy at /var/www/boxoffice-beta comes up
+// as the pm2 app "boxoffice-beta" (matching bin/boxoffice's PM2_APP_NAME),
+// with no collision against prod's "boxoffice".
+const path = require("path");
+const appDir = path.resolve(__dirname, "..");
+
 module.exports = {
   apps: [
     {
-      name: "boxoffice",
-      cwd: "/var/www/boxoffice",
+      name: path.basename(appDir),
+      cwd: appDir,
       script: "bin/boxoffice",
       args: "serve",
       interpreter: "none",

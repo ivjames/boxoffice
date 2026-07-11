@@ -9,7 +9,7 @@ which is fine, because it's meant purely as a laptop convenience, not a
 tested code path. Instead these tests resolve tenants the same way
 production does: a `Host` header ending in `.<BASE_DOMAIN>`. BASE_DOMAIN
 defaults to "localhost" in config.settings.dev, so `org-a.localhost` ->
-the "org-a" Organization, exactly like `roxy.lab980.com` -> "roxy" in prod.
+the "org-a" Organization, exactly like `roxy.boxo.show` -> "roxy" in prod.
 """
 
 from decimal import Decimal
@@ -506,7 +506,7 @@ class PlatformHostLockoutTests(StorefrontFixtureMixin, TestCase):
     BASE_DOMAIN -> TenantMiddleware treats it as the platform host
     (request.organization = None) -> require_tenant 404s every storefront
     URL. This is the same code path a request straight to the bare
-    lab980.com/boxoffice platform host takes in production."""
+    boxo.show platform host takes in production."""
 
     def setUp(self):
         self.org, self.venue = self.build_org("org-a")

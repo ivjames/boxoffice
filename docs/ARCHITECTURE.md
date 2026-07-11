@@ -37,7 +37,7 @@ writing code and must not deviate without flagging the orchestrator.
   gunicorn binds `127.0.0.1:$PORT` where PORT comes from the app-dir `.env`
   (seeded by lab980 `provision-site`). Prod settings set
   `SECURE_PROXY_SSL_HEADER=('HTTP_X_FORWARDED_PROTO','https')`,
-  `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS` covering `.lab980.com`.
+  `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS` covering `.boxo.show`.
 
 ## Multi-tenancy
 
@@ -52,7 +52,7 @@ Shared-schema, row-level tenancy (NOT schema-per-tenant). Simpler ops, fine for 
   A reserved subdomain (`www`, `app`, `admin`, none) serves the marketing/landing +
   tenant signup + platform staff area.
 - **Subdomain onboarding matches the lab980 model — no wildcard.** Each tenant
-  gets a real `<sub>.lab980.com` provisioned the lab980 way: one DNS A record
+  gets a real `<sub>.boxo.show` provisioned the lab980 way: one DNS A record
   (doctl) + one nginx vhost + one per-site certbot cert. The trick: every tenant
   vhost proxies to the SAME boxoffice gunicorn port; the middleware discriminates
   by Host. Onboarding a theater = create the Organization row + run the lab980

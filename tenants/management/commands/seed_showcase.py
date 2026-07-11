@@ -60,7 +60,7 @@ SEED = 980
 
 # Well-known shared password for every seeded staff login, so a demo
 # walk-through has one answer to "how do I log in as a manager/scanner?".
-STAFF_PASSWORD = "showcase-demo-2024"
+STAFF_PASSWORD = "showcase-demo-2026"
 
 ROLES = [
     (Membership.Role.OWNER, "Olivia", "Owner"),

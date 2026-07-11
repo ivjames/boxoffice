@@ -129,6 +129,19 @@ class ProvisionPendingTenantsCommandTests(TestCase):
             call_command("provision_pending_tenants")
         run.assert_not_called()
 
+    def test_subprocess_path_includes_nginx_and_certbot_dirs(self):
+        """add-tenant runs with a PATH that covers where nginx (/usr/sbin) and
+        a snap certbot (/snap/bin) live, regardless of the cron's PATH -- so a
+        minimal cron PATH can't cause 'required command not found: nginx'."""
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch.dict(f"{_CMD}.os.environ", {"PATH": "/usr/bin:/bin"}, clear=False), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(0, "ok")) as run:
+            call_command("provision_pending_tenants")
+        path = run.call_args.kwargs["env"]["PATH"].split(":")
+        self.assertIn("/usr/sbin", path)
+        self.assertIn("/snap/bin", path)
+
     def test_provisions_one_per_run_and_drains_fifo(self):
         """A batch queued together provisions ONE tenant per run (certbot is
         slow/rate-limited), oldest-first, leaving the rest PENDING for the

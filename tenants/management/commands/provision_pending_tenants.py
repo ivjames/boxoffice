@@ -35,10 +35,34 @@ from tenants.models import Organization
 
 _MSG_LIMIT = 4000  # keep infra_message readable in the admin
 
+# Dirs add-tenant's tools live in: nginx (/usr/sbin), certbot (/usr/bin or,
+# snap-installed, /snap/bin), doctl + the boxoffice CLI (/usr/local/bin).
+# We force these onto the subprocess PATH so provisioning finds them no
+# matter how minimal a PATH cron hands us -- a bare cron PATH missing
+# /usr/sbin is what made add-tenant fail with "required command not found:
+# nginx".
+_TOOL_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/snap/bin")
+
 
 def _tail(text, limit=_MSG_LIMIT):
     text = (text or "").strip()
     return text[-limit:] if len(text) > limit else text
+
+
+def _subprocess_env():
+    """os.environ with _TOOL_DIRS guaranteed on PATH (prepended, de-duped),
+    so add-tenant's nginx/certbot/doctl lookups don't depend on the cron's
+    PATH being complete."""
+    env = dict(os.environ)
+    existing = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    seen = set()
+    parts = []
+    for p in (*_TOOL_DIRS, *existing):
+        if p not in seen:
+            seen.add(p)
+            parts.append(p)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
 
 
 class Command(BaseCommand):
@@ -95,6 +119,7 @@ class Command(BaseCommand):
                     capture_output=True,
                     text=True,
                     timeout=600,  # certbot can wait on DNS; generous ceiling
+                    env=_subprocess_env(),  # ensure nginx/certbot/doctl are on PATH
                 )
             except subprocess.TimeoutExpired:
                 self._finish(org, In.FAILED, "add-tenant timed out after 600s (DNS still propagating?). Re-queue to retry.")

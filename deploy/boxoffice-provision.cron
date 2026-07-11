@@ -1,0 +1,21 @@
+# Cron sample: provision infrastructure (DNS + nginx vhost + TLS) for tenants
+# queued from the Django admin (Organization.infra_status = "pending"). See
+# tenants/management/commands/provision_pending_tenants.py for what it does.
+#
+# This runs the privileged half of admin-driven onboarding, so unlike the Hold
+# sweeper it has two hard requirements baked into the line below:
+#
+#   * AS ROOT -- certbot, `nginx -s reload`, and doctl all need it. lab980 apps
+#     run as root already, so this belongs in root's crontab.
+#   * DJANGO_SETTINGS_MODULE=config.settings.prod -- manage.py defaults to dev
+#     (a different DB), so without this the worker reads the wrong database and
+#     never sees the tenants the admin queued.
+#   * PATH including /usr/local/bin -- cron's default PATH is minimal; doctl,
+#     certbot, and the `boxoffice` operate CLI live there.
+#
+# Install (root crontab):
+#   (crontab -l 2>/dev/null; grep -v '^#' deploy/boxoffice-provision.cron) | crontab -
+#
+# It's a no-op on every tick when nothing is queued, so once a minute is fine.
+
+* * * * * cd /var/www/boxoffice && DJANGO_SETTINGS_MODULE=config.settings.prod PATH=/usr/local/bin:/usr/bin:/bin venv/bin/python manage.py provision_pending_tenants >> data/provision_pending_tenants.log 2>&1

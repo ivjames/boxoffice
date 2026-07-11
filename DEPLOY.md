@@ -225,6 +225,36 @@ but checkout will fail until you set:
 - `contact_email`, `timezone`, `currency` if the `provision_tenant`
   defaults aren't right
 
+### Onboarding from the admin (no SSH)
+
+The CLI above is the one-shot path. You can also do the whole thing from
+`/admin` without touching a shell — create the `Organization` (name +
+subdomain + branding + Stripe), then select it and run the **"Provision
+infrastructure (DNS + nginx + TLS)"** action. That's the DB half (the row you
+just created) plus a *queued* infra half.
+
+The split matters: the admin action only flips the tenant's `infra_status` to
+**Queued** — a plain DB write. It deliberately does **not** run
+certbot/nginx/doctl from the web process (that would block a gunicorn worker
+for the length of a cert issuance, and hand the web tier root powers it
+shouldn't have). Instead a root cron worker,
+`manage.py provision_pending_tenants`, picks up queued tenants once a minute
+and runs the same idempotent `add-tenant --infra-only` flow, writing the
+result back to the row. Watch the **Infra status** column go
+`Queued → Provisioning… → Live` (or **Failed**, with the certbot/nginx output
+in `infra_message`; re-running the action retries it).
+
+Install the worker once, in **root's** crontab (it needs root for
+certbot/nginx/doctl, and prod settings to read the right DB):
+
+```bash
+(crontab -l 2>/dev/null; grep -v '^#' deploy/boxoffice-provision.cron) | crontab -
+```
+
+Without that cron entry, queued tenants just sit at **Queued** — the admin
+action has nothing to run it. (It's a no-op every minute when nothing is
+queued, same shape as the Hold sweeper in step 7.)
+
 ### Removing a tenant
 
 ```bash

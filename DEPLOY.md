@@ -258,58 +258,61 @@ prod but shares nothing with it. This is possible with no code changes because
 the install directory, so a `/var/www/boxoffice-beta` install supervises the
 pm2 app `boxoffice-beta` without colliding with prod's `boxoffice`.
 
-1. **Scaffold** `beta.boxo.show` on a *new* port and *new* dir:
+Prereq: a `staging` branch exists in the repo (that's what this box tracks).
+Then, on the droplet as root, top to bottom:
 
-   ```bash
-   provision-site beta ivjames/boxoffice --domain boxo.show --dir /var/www/boxoffice-beta
-   ```
+```bash
+# 1. Scaffold beta.boxo.show on its OWN dir + port + cert. Ordinary subdomain
+#    provisioning (DNS A beta.boxo.show, its own nginx vhost on a fresh 8060+
+#    port, its own cert). `beta` is reserved in prod's RESERVED_SUBDOMAINS so
+#    no tenant can ever take it.
+provision-site beta ivjames/boxoffice --domain boxo.show --dir /var/www/boxoffice-beta
 
-   (Ordinary subdomain provisioning — DNS A `beta.boxo.show`, its own nginx
-   vhost on a fresh 8060+ port, its own cert. `beta` is reserved in prod's
-   `RESERVED_SUBDOMAINS` so no tenant can ever take it.)
+# 2. Build its venv and its OWN .env (separate SECRET_KEY + separate data/ DB
+#    — never point it at prod's). provision-site already seeded PORT.
+cd /var/www/boxoffice-beta
+python3 -m venv venv && venv/bin/pip install -r requirements.txt
+KEY=$(venv/bin/python -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(64)))")
+printf "SECRET_KEY='%s'\n" "$KEY" >> .env
+cat >> .env <<'EOF'
+DEBUG=false
+DJANGO_SETTINGS_MODULE=config.settings.prod
+BASE_DOMAIN=boxo.show
+ALLOWED_HOSTS=beta.boxo.show
+CSRF_TRUSTED_ORIGINS=https://beta.boxo.show
+RESERVED_SUBDOMAINS=www,app,admin,beta
+DEPLOY_REF=origin/staging
+DEFAULT_FROM_EMAIL=no-reply@boxo.show
+ENABLE_TEST_CHECKOUT=true
+EOF
+chmod 600 .env
 
-2. **Build + configure** its own `.env` (a *separate* `SECRET_KEY` and DB — do
-   not point it at prod's `data/`):
+# 3. Give it its own operate symlink, migrate, deploy. It comes up as the pm2
+#    app "boxoffice-beta" (derived from the dir name) tracking origin/staging.
+ln -sf /var/www/boxoffice-beta/bin/boxoffice /usr/local/bin/boxoffice-beta
+boxoffice-beta migrate
+boxoffice-beta deploy
 
-   ```bash
-   cd /var/www/boxoffice-beta
-   python3 -m venv venv && venv/bin/pip install -r requirements.txt
-   # PORT is already seeded by provision-site; append the rest:
-   cat >> .env <<'EOF'
-   DEBUG=false
-   DJANGO_SETTINGS_MODULE=config.settings.prod
-   BASE_DOMAIN=boxo.show
-   ALLOWED_HOSTS=beta.boxo.show
-   CSRF_TRUSTED_ORIGINS=https://beta.boxo.show
-   RESERVED_SUBDOMAINS=www,app,admin,beta
-   DEPLOY_REF=origin/staging
-   DEFAULT_FROM_EMAIL=no-reply@boxo.show
-   ENABLE_TEST_CHECKOUT=true
-   EOF
-   ```
+# 4. Verify.
+curl -s https://beta.boxo.show/healthz   # {"status": "ok"}
+```
 
-   Two things matter here:
-   - **`beta` MUST be in this box's `RESERVED_SUBDOMAINS`.** Its host is
-     `beta.boxo.show` and `BASE_DOMAIN=boxo.show`, so `beta` parses as a
-     subdomain — without reserving it, `TenantMiddleware` looks for a
-     nonexistent `beta` tenant and 404s. To instead serve a *demo storefront*
-     on staging, set `DEFAULT_TENANT=<demo-subdomain>` (see step 6 of
-     first-time provisioning).
-   - **`DEPLOY_REF=origin/staging`** makes a bare `boxoffice deploy` on this
-     box track the `staging` branch (prod tracks `origin/main`). `ENABLE_TEST_CHECKOUT=true`
-     is safe here (throwaway data) and lets you exercise checkout without Stripe.
-
-3. **Deploy** (optionally give it its own operate symlink):
-
-   ```bash
-   ln -sf /var/www/boxoffice-beta/bin/boxoffice /usr/local/bin/boxoffice-beta
-   boxoffice-beta migrate
-   boxoffice-beta deploy      # tracks origin/staging; comes up as pm2 app "boxoffice-beta"
-   ```
+Two things that bite:
+- **`beta` MUST be in this box's `RESERVED_SUBDOMAINS`** (it is, above). Its
+  host is `beta.boxo.show` with `BASE_DOMAIN=boxo.show`, so `beta` parses as a
+  subdomain — un-reserved, `TenantMiddleware` looks for a nonexistent `beta`
+  tenant and 404s. To instead serve a *demo storefront* on staging, add
+  `DEFAULT_TENANT=<demo-subdomain>` to the `.env` above (see step 6 of
+  first-time provisioning) and `create_demo_tenant` in this box's DB.
+- **`DEPLOY_REF=origin/staging`** makes a bare `boxoffice-beta deploy` track
+  the `staging` branch (prod tracks `origin/main`). `ENABLE_TEST_CHECKOUT=true`
+  is safe here (throwaway data) and exercises checkout without Stripe — never
+  set it on prod.
 
 pm2 now supervises `boxoffice` (prod, `origin/main`) and `boxoffice-beta`
-(staging, `origin/staging`) side by side. **Promote a release** by merging
-`staging` → `main`, then `boxoffice deploy` on prod.
+(staging, `origin/staging`) side by side. **Promotion flow:** land work on
+`staging` → it auto-deploys to beta on the next `boxoffice-beta deploy` →
+once it looks good, merge `staging` → `main` and `boxoffice deploy` on prod.
 
 ## Moving boxoffice to its own boxo.show domain
 

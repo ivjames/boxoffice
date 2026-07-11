@@ -277,7 +277,14 @@ class Command(BaseCommand):
             timezone=spec["tz"],
             currency="USD",
             contact_email=f"boxoffice@{spec['subdomain']}.example.com",
-            infra_status=Organization.InfraStatus.PROVISIONED,
+            # Leave infra_status at its default (NONE / "Not provisioned"):
+            # this command only writes DB rows, it does NOT create the
+            # subdomain's DNS + nginx vhost + TLS. Claiming PROVISIONED
+            # ("Live") here would be a lie -- that state is owned by the real
+            # provision_pending_tenants worker, which sets it only after the
+            # infra actually exists. To make a seeded tenant reachable, run
+            # `boxoffice[-beta] add-tenant <sub>` (or the admin's "provision"
+            # action) separately.
         )
 
         self._create_team(org)

@@ -311,33 +311,27 @@ pm2 now supervises `boxoffice` (prod, `origin/main`) and `boxoffice-beta`
 (staging, `origin/staging`) side by side. **Promote a release** by merging
 `staging` → `main`, then `boxoffice deploy` on prod.
 
-## Migrating boxoffice.lab980.com → boxo.show (hard swap)
+## Moving boxoffice to its own boxo.show domain
 
-Boxoffice launched on the `boxoffice.lab980.com` subdomain; it now moves to its
+Boxoffice started on the `boxoffice.lab980.com` subdomain; it now moves to its
 own apex domain `boxo.show` so it can carry tenant subdomains and a beta site
-under a name of its own. Same droplet — this is a domain swap, not a server
-move. It's a **hard swap**: once cut over, `*.lab980.com` URLs stop resolving.
-Two things break unless handled, both because they hold *old* absolute URLs:
+under a name of its own. Same droplet — a domain swap, not a server move.
 
-- **Already-emailed QR tickets** link to `https://<tenant>.lab980.com/tickets/…`,
-  and so do any bookmarks. Those links 404 after cutover — notify tenants /
-  re-send if it matters. The QR payload is a bare ticket code, not a URL (see
-  `orders/qr.py`), so **door scanning keeps working**; only the emailed *link*
-  to the ticket page breaks.
-- **Per-tenant Stripe webhooks** POST to `https://<tenant>.lab980.com/…`. If not
-  repointed, checkout fulfillment (order creation + ticket email) silently
-  stops. Step 6 below.
+There's **no live data to preserve on lab980.com** here: no already-sold tickets
+whose emailed links point at the old host, and no tenant with a Stripe webhook
+configured against a `*.lab980.com` URL. So this is just a clean cutover — flip
+config, stand up the new vhosts, tear down the old ones. (If that ever stops
+being true — you onboard a tenant and wire its Stripe webhook before cutting
+over — repoint that webhook to the `boxo.show` host as part of step 4, or
+checkout fulfillment stops.)
 
 Runbook (on the droplet, as root):
 
 ```bash
-# 1. Snapshot first.
-boxoffice backup
-
-# 2. Add boxo.show as a DigitalOcean DNS zone (doctl must be authed).
+# 1. Add boxo.show as a DigitalOcean DNS zone (doctl must be authed).
 doctl compute domain create boxo.show
 
-# 3. Flip the app's config to boxo.show, then redeploy so ALLOWED_HOSTS,
+# 2. Flip the app's config to boxo.show, then redeploy so ALLOWED_HOSTS,
 #    BASE_DOMAIN, CSRF and the from-address all move together (this also runs
 #    the 0002 help_text migration). Edit /var/www/boxoffice/.env:
 #      BASE_DOMAIN=boxo.show
@@ -345,33 +339,27 @@ doctl compute domain create boxo.show
 #      CSRF_TRUSTED_ORIGINS=https://*.boxo.show,https://boxo.show
 #      RESERVED_SUBDOMAINS=www,app,admin,beta
 #      DEFAULT_FROM_EMAIL=no-reply@boxo.show
-#    (To avoid a blackout while boxo.show DNS propagates, you can temporarily
-#     keep the old hosts in ALLOWED_HOSTS/CSRF too — e.g.
-#     ALLOWED_HOSTS=boxo.show,.boxo.show,.lab980.com — and drop them in step 7.)
 boxoffice deploy
 
-# 4. Provision the apex platform host (DNS boxo.show + www, nginx vhost, cert).
+# 3. Provision the apex platform host (DNS boxo.show + www, nginx vhost, cert).
 #    /var/www/boxoffice already exists, so this only adds DNS/nginx/TLS — it
 #    won't re-clone or touch .env.
 provision-site @ ivjames/boxoffice --domain boxo.show --dir /var/www/boxoffice
 
-# 5. Re-provision each existing tenant under boxo.show. The Organization rows
-#    are unchanged (same subdomain label) — add-tenant's DB step is idempotent
-#    and just adds fresh DNS/nginx/cert for <sub>.boxo.show. It reads the new
-#    BASE_DOMAIN from step 3, so run it AFTER the .env flip.
-boxoffice add-tenant roxy          # ...once per existing tenant subdomain
+# 4. Onboard tenants on the new domain. add-tenant reads the new BASE_DOMAIN
+#    from step 2, so it builds <sub>.boxo.show DNS/nginx/cert. (Its DB step is
+#    idempotent, so it's also the way to re-home any tenant you'd already
+#    created on lab980 — same Organization row, new boxo.show infra.)
+boxoffice add-tenant roxy          # ...once per tenant subdomain
 ```
 
 ```text
-# 6. In each tenant's Stripe dashboard, repoint the webhook endpoint from
-#    https://<tenant>.lab980.com/…  to  https://<tenant>.boxo.show/…
+# 5. Verify:  curl -s https://boxo.show/healthz   # {"status": "ok"}
+#    plus a browse -> (test) checkout smoke test on a tenant subdomain.
 
-# 7. Verify one tenant end to end: browse -> (test) checkout -> emailed ticket
-#    link now on boxo.show -> scan at the door. And: curl -s https://boxo.show/healthz
-
-# 8. Decommission the old lab980 hosts once you're confident:
+# 6. Decommission the old lab980 host(s):
 #      lab980-deprovision boxoffice          # boxoffice.lab980.com nginx + cert + DNS
-#    then per old tenant vhost on *.lab980.com:
+#    plus any tenant vhost you'd stood up on *.lab980.com:
 #      certbot delete --cert-name <sub>.lab980.com -n
 #      rm -f /etc/nginx/sites-{available,enabled}/<sub>.lab980.com && systemctl reload nginx
 #      doctl compute domain records list lab980.com --format ID,Type,Name \

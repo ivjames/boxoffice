@@ -1507,6 +1507,49 @@ table.dash-table th {
     text-align: right;
 }
 
+/* -- team / roles -------------------------------------------------------- */
+
+.button--sm {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.875rem;
+}
+
+/* Inline add-member form: fields sit in a row instead of stacking. */
+.dash-form--inline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 1rem;
+}
+
+.dash-form--inline .field {
+    margin-bottom: 0;
+}
+
+.dash-form--inline input,
+.dash-form--inline select {
+    width: auto;
+    min-width: 12rem;
+}
+
+/* Role dropdown + Save button, inline in a table cell. */
+.team-inline-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.dash-form.team-inline-form select,
+.team-inline-form select {
+    width: auto;
+    min-width: 9rem;
+}
+
+.dash-table__actions {
+    text-align: right;
+    white-space: nowrap;
+}
+
 .field-error {
     display: block;
     margin-top: 0.25rem;

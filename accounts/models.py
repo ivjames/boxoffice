@@ -131,3 +131,10 @@ class Membership(models.Model):
 
     def can_sell_tickets(self):
         return self.is_box_office_or_above()
+
+    def can_manage_team(self):
+        # Managers and owners can view the team and add/adjust staff, but
+        # granting or changing the OWNER role is gated to owners themselves
+        # (enforced in dashboard.views' team handlers) -- a manager can't
+        # promote anyone (including themselves) to owner.
+        return self.is_manager_or_above()

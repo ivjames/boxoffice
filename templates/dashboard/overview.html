@@ -44,10 +44,28 @@
     <p class="muted">No upcoming performances.</p>
 {% endif %}
 
+<h2>Revenue by event</h2>
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead><tr><th>Event</th><th>Paid orders</th><th>Revenue</th></tr></thead>
+    <tbody>
+    {% for row in event_revenue_rows %}
+        <tr>
+            <td>{{ row.event_title }}</td>
+            <td>{{ row.orders }}</td>
+            <td>${{ row.revenue }}</td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="3" class="muted">No paid orders yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+
 <h2>Sold / capacity by performance</h2>
 <div class="dash-table-wrap">
 <table class="dash-table">
-    <thead><tr><th>Event</th><th>When</th><th>Sold</th><th>Capacity</th></tr></thead>
+    <thead><tr><th>Event</th><th>When</th><th>Sold</th><th>Capacity</th><th>Revenue</th></tr></thead>
     <tbody>
     {% for row in performance_rows %}
         <tr>
@@ -55,9 +73,10 @@
             <td>{{ row.performance.starts_at|date:"M j Y g:i A" }}</td>
             <td>{{ row.sold }}</td>
             <td>{% if row.capacity is not None %}{{ row.capacity }}{% else %}—{% endif %}</td>
+            <td>${{ row.revenue }}</td>
         </tr>
     {% empty %}
-        <tr><td colspan="4" class="muted">No performances yet.</td></tr>
+        <tr><td colspan="5" class="muted">No performances yet.</td></tr>
     {% endfor %}
     </tbody>
 </table>

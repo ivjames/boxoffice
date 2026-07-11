@@ -1,0 +1,8 @@
+You've been added to {{ organization.name }} on Boxo.show.
+
+Set your password to get started:
+{{ set_password_url }}
+
+If you weren't expecting this, you can ignore this email.
+
+— {{ organization.name }}

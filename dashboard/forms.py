@@ -7,9 +7,31 @@ docs/ARCHITECTURE.md "Tenant isolation is non-negotiable."
 
 from django import forms
 
+from accounts.models import Membership
 from events.models import Event, GAAllocation, Performance, PriceTier
 from orders.services import get_seating_chart
 from venues.models import SeatingChart, Section, Venue
+
+
+class InviteMemberForm(forms.Form):
+    """Add-a-teammate form. `allowed_roles` is the set of role values the
+    acting staffer may grant (owners can grant any role; managers can't grant
+    'owner') -- the view passes it in and re-checks server-side, so tampering
+    with the POSTed role can't escalate past what the actor is allowed to
+    assign."""
+
+    email = forms.EmailField()
+    first_name = forms.CharField(max_length=150, required=False)
+    last_name = forms.CharField(max_length=150, required=False)
+    role = forms.ChoiceField(choices=Membership.Role.choices)
+
+    def __init__(self, *args, allowed_roles=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if allowed_roles is not None:
+            allowed = set(allowed_roles)
+            self.fields["role"].choices = [
+                choice for choice in Membership.Role.choices if choice[0] in allowed
+            ]
 
 
 class EventForm(forms.ModelForm):

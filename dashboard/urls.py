@@ -27,6 +27,19 @@ urlpatterns = [
         views.performance_price_tiers,
         name="dashboard_performance_price_tiers",
     ),
+    # -- team / roles -------------------------------------------------------
+    path("dashboard/team/", views.team, name="dashboard_team"),
+    path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),
+    path(
+        "dashboard/team/<int:pk>/role/",
+        views.team_update_role,
+        name="dashboard_team_update_role",
+    ),
+    path(
+        "dashboard/team/<int:pk>/remove/",
+        views.team_remove,
+        name="dashboard_team_remove",
+    ),
     path("dashboard/orders/", views.OrderListView.as_view(), name="dashboard_order_list"),
     path(
         "dashboard/orders/<slug:token>/",

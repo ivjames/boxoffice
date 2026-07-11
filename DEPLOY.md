@@ -309,8 +309,12 @@ cat >> .env <<'EOF'
 DEBUG=false
 DJANGO_SETTINGS_MODULE=config.settings.prod
 BASE_DOMAIN=boxo.show
-ALLOWED_HOSTS=beta.boxo.show
-CSRF_TRUSTED_ORIGINS=https://beta.boxo.show
+# Whole-domain wildcard (leading dot) so every tenant subdomain provisioned
+# on beta -- roxy.boxo.show, etc. -- is accepted, not just beta.boxo.show.
+# Narrowing these to a single host makes every provisioned tenant 400
+# (DisallowedHost) / 403 (CSRF) until it's hand-added. Matches prod's defaults.
+ALLOWED_HOSTS=.boxo.show
+CSRF_TRUSTED_ORIGINS=https://*.boxo.show
 RESERVED_SUBDOMAINS=www,app,admin,beta
 DEPLOY_REF=origin/staging
 DEFAULT_FROM_EMAIL=no-reply@boxo.show
@@ -340,9 +344,9 @@ Two things that bite:
   at the beta port; seed it with `boxoffice-beta manage create_demo_tenant`
   (or `boxoffice-beta manage seed_showcase` for a whole populated platform)
   and, with `ENABLE_TEST_CHECKOUT=true`, run the whole browse→checkout→scan
-  flow. Add
-  that host to this box's `ALLOWED_HOSTS` (e.g. `beta.boxo.show,demo.boxo.show`)
-  and keep the subdomain reserved for staging so prod never provisions it.
+  flow. With `ALLOWED_HOSTS=.boxo.show` above, its host is already accepted --
+  no per-tenant edit needed. (If you deliberately pinned `ALLOWED_HOSTS`/
+  `CSRF_TRUSTED_ORIGINS` to specific hosts instead, add this one to both.)
 - **`DEPLOY_REF=origin/staging`** makes a bare `boxoffice-beta deploy` track
   the `staging` branch (prod tracks `origin/main`). `ENABLE_TEST_CHECKOUT=true`
   is safe here (throwaway data) and exercises checkout without Stripe — never

@@ -39,6 +39,7 @@ from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.utils import timezone
@@ -233,9 +234,34 @@ class Command(BaseCommand):
         self.stdout.write("  Email:    <role>@<subdomain>.demo   e.g. owner@roxy.demo, scanner@hillside.demo")
         self.stdout.write("  Roles:    owner / manager / box_office / scanner")
         self.stdout.write("")
-        self.stdout.write("Dashboards (dev):")
+        self._print_dashboards()
+
+    def _print_dashboards(self):
+        """Print each tenant's dashboard URL for the CURRENT environment,
+        derived from settings.BASE_DOMAIN -- so this reads correctly whether
+        it's run against dev (localhost:8000) or a real deploy (boxo.show),
+        instead of always printing localhost."""
+        base = settings.BASE_DOMAIN
+        # Dev serves the tenant off the runserver port over http; a real
+        # deploy serves <sub>.<BASE_DOMAIN> over TLS.
+        is_local = base in ("localhost", "127.0.0.1") or base.endswith(".localhost")
+        scheme = "http" if is_local else "https"
+        port = ":8000" if is_local else ""
+
+        self.stdout.write(f"Dashboards ({base}):")
         for sub in SHOWCASE_SUBDOMAINS:
-            self.stdout.write(f"  http://{sub}.localhost:8000/dashboard/   (or ?_tenant={sub} on localhost:8000)")
+            url = f"{scheme}://{sub}.{base}{port}/dashboard/"
+            if is_local:
+                # No /etc/hosts or subdomain needed in dev: the middleware's
+                # DEBUG-only ?_tenant override resolves the tenant too.
+                self.stdout.write(f"  {url}   (or {scheme}://{base}{port}/dashboard/?_tenant={sub})")
+            else:
+                self.stdout.write(f"  {url}")
+        if not is_local:
+            self.stdout.write(
+                "  (each subdomain must be provisioned first -- see infra_status / "
+                "the provision_pending_tenants worker)"
+            )
 
     # -- teardown ----------------------------------------------------------
 

@@ -215,6 +215,19 @@ class PlatformHostTests(TestCase):
         self.assertContains(resp, "Boxo.show")
         self.assertNotContains(resp, "Roxy Season Opener")
 
+    def test_platform_host_hides_admin_link_by_default(self):
+        """Prod (SHOW_ADMIN_LINK unset/False): the public marketing landing
+        page advertises no /admin/ link, even though /admin/ still works."""
+        resp = self.client.get("/")
+        self.assertNotContains(resp, 'href="/admin/"')
+
+    @override_settings(SHOW_ADMIN_LINK=True)
+    def test_platform_host_shows_admin_link_when_enabled(self):
+        """Staging/beta sets SHOW_ADMIN_LINK=true so the platform-host landing
+        page surfaces a convenience link to /admin/."""
+        resp = self.client.get("/")
+        self.assertContains(resp, 'href="/admin/"')
+
     def test_real_tenant_subdomain_resolves_to_its_org(self):
         other = make_org("globe")
         resp = self.client.get("/", HTTP_HOST="globe.localhost")

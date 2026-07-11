@@ -284,6 +284,7 @@ RESERVED_SUBDOMAINS=www,app,admin,beta
 DEPLOY_REF=origin/staging
 DEFAULT_FROM_EMAIL=no-reply@boxo.show
 ENABLE_TEST_CHECKOUT=true
+SHOW_ADMIN_LINK=true
 EOF
 chmod 600 .env
 

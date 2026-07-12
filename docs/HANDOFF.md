@@ -4,6 +4,13 @@ _Derived from `docs/AUDIT.md` (2026-07-12). Each item below is a
 **self-contained work unit** sized for one delegated agent. Read the audit
 entry it references, then execute — no re-audit needed._
 
+> **STATUS: all items landed (BO-1 … BO-10).** Implemented on
+> `claude/project-audit-gaps-hnv49q` as one commit per task. The suite grew
+> from 603 → 632 tests (all green); `makemigrations --check` and
+> `check --deploy` are clean. BO-4 was built in full (resend/cancel/refund),
+> so the fallback BO-4d (trimming the help center) was not needed. The
+> per-task detail below is retained as the record of what each change covers.
+
 ## How to run each task (applies to every item)
 
 Per `CLAUDE.md` (beta-first, autonomous):

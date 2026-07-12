@@ -9,6 +9,7 @@
          the page use the full screen under the notch. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}</title>
+    <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
     <style>
         :root {

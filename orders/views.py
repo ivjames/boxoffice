@@ -382,7 +382,20 @@ def checkout_stub(request):
     Scoped to THIS org + THIS session's own hold, exactly like checkout_view
     and checkout_test -- a stub POST can no more reach another tenant's or
     another session's hold than a real checkout can.
+
+    GATE: the stub SIMULATES payment (it hands out real tickets for free), so
+    it must only exist for a tenant that genuinely can't charge yet -- exactly
+    the condition under which create_checkout_session (payments/services.py)
+    routes here. Once a tenant finishes Connect onboarding
+    (stripe_charges_enabled True), real checkout goes to Stripe and this
+    endpoint 404s, so a buyer can't POST straight to /checkout/stub/ and mint
+    free tickets on a live tenant. (checkout_test is the deliberate,
+    env-gated way to exercise the free-ticket flow regardless of Connect
+    status -- see ENABLE_TEST_CHECKOUT.)
     """
+    if request.organization.stripe_charges_enabled:
+        raise Http404("Stub checkout is unavailable once the theater can take real payments.")
+
     session_key = services.get_session_key(request)
     hold = get_object_or_404(
         Hold,

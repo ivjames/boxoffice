@@ -1,6 +1,10 @@
 {% with url_name=request.resolver_match.url_name %}
 <nav class="dash-nav" aria-label="Dashboard section">
-    <a href="{% url 'dashboard_overview' %}" class="{% if url_name == 'dashboard_overview' %}is-active{% endif %}">Overview</a>
+    {% if request.membership.can_sell_tickets %}
+        {# Scanners work the door only -- no overview/reports for them (they
+           land on Scan). Overview starts at box office and up. #}
+        <a href="{% url 'dashboard_overview' %}" class="{% if url_name == 'dashboard_overview' or url_name == 'dashboard_performance_detail' %}is-active{% endif %}">Overview</a>
+    {% endif %}
     {% if request.membership.can_manage_events %}
         <a href="{% url 'dashboard_event_list' %}"
            class="{% if url_name == 'dashboard_event_list' or url_name == 'dashboard_event_create' or url_name == 'dashboard_event_detail' or url_name == 'dashboard_event_update' or url_name == 'dashboard_performance_create' or url_name == 'dashboard_performance_update' or url_name == 'dashboard_performance_price_tiers' or url_name == 'dashboard_performance_pricing_zones' %}is-active{% endif %}">Events</a>

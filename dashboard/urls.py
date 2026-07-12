@@ -4,6 +4,11 @@ from . import views
 
 urlpatterns = [
     path("dashboard/", views.overview, name="dashboard_overview"),
+    path(
+        "dashboard/performances/<int:pk>/",
+        views.performance_detail,
+        name="dashboard_performance_detail",
+    ),
     path("dashboard/events/", views.EventListView.as_view(), name="dashboard_event_list"),
     path("dashboard/events/new/", views.EventCreateView.as_view(), name="dashboard_event_create"),
     path("dashboard/events/<int:pk>/", views.EventDetailView.as_view(), name="dashboard_event_detail"),

@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% load showtimes %}
+{% load static %}
+
+{% block title %}{{ performance.event.title }} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_overview' %}">&larr; Overview</a>
+
+<div class="dash-header">
+    <h1>{{ performance.event.title }}</h1>
+</div>
+<p>
+    <span class="badge badge--{{ performance.status }}">{{ performance.get_status_display }}</span>
+</p>
+<p class="muted">
+    {% showtime performance.starts_at performance.venue.timezone "D, M j Y — g:i A" %}
+    · {{ performance.venue.name }}
+    · {{ performance.get_seating_mode_display }}
+</p>
+
+<div class="stat-row">
+    <div class="stat-tile">
+        <span class="stat-tile__value">{{ sold }}</span>
+        <span class="stat-tile__label">Tickets sold</span>
+    </div>
+    <div class="stat-tile">
+        <span class="stat-tile__value">{% if capacity is not None %}{{ capacity }}{% else %}—{% endif %}</span>
+        <span class="stat-tile__label">Capacity</span>
+    </div>
+    <div class="stat-tile">
+        <span class="stat-tile__value">{{ checked_in }}</span>
+        <span class="stat-tile__label">Checked in</span>
+    </div>
+    {% if show_revenue %}
+    <div class="stat-tile">
+        <span class="stat-tile__value">${{ revenue }}</span>
+        <span class="stat-tile__label">Revenue (paid orders)</span>
+    </div>
+    {% endif %}
+</div>
+
+<h2>Ticket lookup</h2>
+<form method="get" class="search-form">
+    <input type="text" name="q" value="{{ q }}"
+           placeholder="Search guest name, email, or ticket code" aria-label="Search tickets for this performance">
+    <button type="submit" class="button">Search</button>
+</form>
+{% if q %}
+    {% if search_results %}
+    <div class="dash-table-wrap">
+    <table class="dash-table">
+        <thead><tr><th>Ticket</th><th>Guest</th><th>Buyer</th><th>Seat</th><th>Status</th><th>Order</th></tr></thead>
+        <tbody>
+        {% for ticket in search_results %}
+            <tr>
+                <td>{{ ticket.token }}</td>
+                <td>{{ ticket.holder_name|default:"—" }}</td>
+                <td>{{ ticket.order.buyer_name|default:ticket.order.buyer_email }}</td>
+                <td>{% if ticket.seat %}{{ ticket.seat.section.name }} · {{ ticket.seat.row_label }}{{ ticket.seat.number }}{% else %}GA{% endif %}</td>
+                <td><span class="badge badge--{{ ticket.status }}">{{ ticket.get_status_display }}</span></td>
+                <td><a href="{% url 'dashboard_order_detail' ticket.order.token %}">{{ ticket.order.token }}</a></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+        <p class="muted">No tickets match “{{ q }}” for this performance.</p>
+    {% endif %}
+{% else %}
+    <p class="muted">Search a guest’s name or email to pull up their ticket and seat for this performance.</p>
+{% endif %}
+
+<h2>Seating chart</h2>
+{% if seating_mode == "GA" %}
+    {% if ga_seats_json %}
+        <p class="muted">
+            General admission — {{ sold }} sold{% if capacity %} of {{ capacity }}{% endif %}.
+            Seats aren’t assigned; the map is a picture of the room.
+        </p>
+        {% include "orders/_seat_map_inert.html" %}
+    {% else %}
+        <p class="muted">General admission — {{ sold }} sold. No seat map configured for this venue.</p>
+    {% endif %}
+{% else %}
+    {% if seats_json %}
+        {% include "dashboard/_seat_map_readonly.html" %}
+    {% else %}
+        <p class="muted">No seating chart configured for this performance’s venue.</p>
+    {% endif %}
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+    {# WCAG seat-label contrast for the GA inert map; loads before Alpine's
+       deferred init so window.SeatContrast exists when the component runs. #}
+    <script src="{% static 'js/seat_contrast.js' %}"></script>
+{% endblock %}

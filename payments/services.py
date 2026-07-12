@@ -81,6 +81,12 @@ class AvailabilityChangedError(FulfillmentError):
     docs/ARCHITECTURE.md's "re-validate the hold" instruction."""
 
 
+class RefundError(Exception):
+    """Raised by refund_order when Stripe won't process the refund. The
+    message may carry Stripe API detail, so views flash a generic version and
+    log this one."""
+
+
 class TenantMismatchError(FulfillmentError):
     """The session's metadata.organization_id doesn't match the organization
     resolved from the event's connected account (`event.account` ->
@@ -583,6 +589,70 @@ def fulfill_checkout_session(organization, session):
         ) from exc
 
     return order, True
+
+
+# --- Refunds (staff-facing) ----------------------------------------------
+
+
+@transaction.atomic
+def refund_order(order):
+    """Refund a PAID order in full, void its tickets, and mark it REFUNDED.
+
+    Idempotent: an order that isn't currently PAID (already refunded,
+    cancelled, or pending) is a no-op returning False, so a double-click or a
+    retried request can't refund twice. For a real Stripe order, issues a
+    Stripe Refund on the theater's connected account against the charge's
+    PaymentIntent; for a stub/test order (provider != "stripe", no real
+    charge) it records the reversal without calling Stripe. Voids every live
+    ticket via order_services.void_order so a refunded ticket can't be
+    admitted and its inventory is freed, then records a Payment row
+    (status="refunded") for the audit trail. Returns True when a refund was
+    performed.
+
+    Raises RefundError (rolling back the whole transaction, so the order stays
+    PAID and nothing is voided) if Stripe rejects the refund.
+    """
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    if order.status != Order.Status.PAID:
+        return False
+
+    payment = order.payments.filter(status="succeeded").order_by("id").first()
+    provider = payment.provider if payment is not None else "stripe"
+    refund_ref = ""
+
+    if provider == "stripe":
+        payment_intent = payment.provider_ref if payment is not None else ""
+        if not payment_intent.startswith("pi_"):
+            # provider_ref falls back to the session id when a session carried
+            # no payment_intent (rare); a Refund needs the PaymentIntent, so
+            # send staff to the Stripe dashboard rather than guessing.
+            raise RefundError(
+                "This order has no Stripe PaymentIntent on file; refund it from the "
+                "Stripe dashboard."
+            )
+        try:
+            refund = stripe.Refund.create(
+                payment_intent=payment_intent,
+                api_key=settings.STRIPE_SECRET_KEY,
+                stripe_account=order.organization.stripe_account_id,
+            )
+        except stripe.error.StripeError as exc:
+            logger.exception("Stripe refund failed for order %s", order.pk)
+            raise RefundError(str(exc)) from exc
+        refund_ref = refund.id
+
+    order_services.void_order(order)
+    order.status = Order.Status.REFUNDED
+    order.save(update_fields=["status"])
+    Payment.objects.create(
+        organization=order.organization,
+        order=order,
+        provider=provider,
+        amount=order.total,
+        status="refunded",
+        provider_ref=refund_ref,
+    )
+    return True
 
 
 def _fulfill_ga(organization, hold, order):

@@ -11,10 +11,14 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from unittest.mock import patch
+
+from django.core import mail
+
 from accounts.models import Membership
 from accounts.tests import StaffFixtureMixin, host_for
 from events.models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
-from orders.models import Order, Ticket
+from orders.models import Order, Payment, Ticket
 from orders.services import get_seating_chart
 from venues.generation import generate_seats
 from venues.models import Seat, SeatingChart, Section, Venue
@@ -1995,3 +1999,96 @@ class PricingZoneExportTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         resp = self.client.get(self._export_url(performance2.pk), HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.content.startswith(b"\x89PNG"))
+
+
+class OrderActionsTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """The staff order actions (BO-4): resend tickets, cancel/void, refund.
+    Gated to box_office+, org-scoped by token, and correct about freeing
+    inventory + recording the reversal."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("roxy")
+        self.event, self.performance, self.tier = self.build_ga_event(
+            self.org, self.venue, capacity=10, sold=2
+        )
+        self.box_office, self.pw = self.make_staff(self.org, Membership.Role.BOX_OFFICE)
+        self.client.force_login(self.box_office)
+
+    def _order(self, provider="stripe", provider_ref="pi_test_123"):
+        order = self.make_paid_order(self.org, self.performance, "40.00", n_tickets=2)
+        Payment.objects.create(
+            organization=self.org, order=order, provider=provider, amount=Decimal("40.00"),
+            status="succeeded", provider_ref=provider_ref,
+        )
+        return order
+
+    def _post(self, order, action):
+        return self.client.post(
+            f"/dashboard/orders/{order.token}/{action}/", HTTP_HOST=host_for("roxy")
+        )
+
+    def test_resend_sends_email(self):
+        order = self._order()
+        resp = self._post(order, "resend")
+        self.assertRedirects(resp, f"/dashboard/orders/{order.token}/", fetch_redirect_response=False)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["buyer@example.com"])
+
+    def test_cancel_voids_tickets_and_frees_ga_inventory(self):
+        order = self._order()
+        self.assertEqual(self.performance.ga_allocation.sold, 2)
+        self._post(order, "cancel")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.CANCELLED)
+        self.assertEqual(order.tickets.exclude(status=Ticket.Status.VOID).count(), 0)
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)  # 2 freed
+
+    def test_refund_stripe_order_calls_stripe_and_marks_refunded(self):
+        order = self._order(provider="stripe", provider_ref="pi_test_123")
+        with patch("payments.services.stripe.Refund.create") as mock_refund:
+            mock_refund.return_value = type("R", (), {"id": "re_test_1"})()
+            self._post(order, "refund")
+            mock_refund.assert_called_once()
+            _, kwargs = mock_refund.call_args
+            self.assertEqual(kwargs["payment_intent"], "pi_test_123")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDED)
+        self.assertEqual(order.tickets.exclude(status=Ticket.Status.VOID).count(), 0)
+        self.assertTrue(order.payments.filter(status="refunded", provider_ref="re_test_1").exists())
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)
+
+    def test_refund_stub_order_needs_no_stripe_call(self):
+        order = self._order(provider="stub", provider_ref="stub-abc")
+        with patch("payments.services.stripe.Refund.create") as mock_refund:
+            self._post(order, "refund")
+            mock_refund.assert_not_called()
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDED)
+
+    def test_refund_is_idempotent(self):
+        order = self._order(provider="stub", provider_ref="stub-abc")
+        self._post(order, "refund")
+        with patch("payments.services.stripe.Refund.create") as mock_refund:
+            self._post(order, "refund")  # second time: no-op
+            mock_refund.assert_not_called()
+        self.assertEqual(order.payments.filter(status="refunded").count(), 1)
+
+    def test_scanner_cannot_act_on_orders(self):
+        scanner, _ = self.make_staff(self.org, Membership.Role.SCANNER, email="s@roxy.example.com")
+        self.client.force_login(scanner)
+        order = self._order()
+        resp = self._post(order, "cancel")
+        self.assertEqual(resp.status_code, 403)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+
+    def test_cannot_act_on_another_orgs_order(self):
+        org_b, venue_b = self.build_org("other")
+        _, perf_b, _ = self.build_ga_event(org_b, venue_b, slug="b-show")
+        order_b = self.make_paid_order(org_b, perf_b, "40.00", n_tickets=1)
+        resp = self._post(order_b, "cancel")  # box_office is logged into roxy
+        self.assertEqual(resp.status_code, 404)
+        order_b.refresh_from_db()
+        self.assertEqual(order_b.status, Order.Status.PAID)

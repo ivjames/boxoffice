@@ -403,6 +403,39 @@ def set_reserved_hold(*, organization, performance, session_key, user, seat_ids)
     return hold
 
 
+@transaction.atomic
+def void_order(order):
+    """Void every live (valid/used) Ticket on `order` and release the
+    inventory it held. For GA, the performance's GAAllocation.sold is
+    decremented by the number of GA tickets voided (locked + floored at 0);
+    for reserved seats, voiding alone frees the seat -- the
+    unique_live_ticket_per_performance_seat constraint excludes void, so the
+    seat is immediately re-bookable through the normal sell flow (this is the
+    "cancel-and-reissue" building block: cancel here, then re-sell). Does NOT
+    change Order.status -- the caller decides whether this is a plain
+    cancellation (Order.Status.CANCELLED) or a refund
+    (Order.Status.REFUNDED). Idempotent: already-void tickets are skipped, so
+    calling twice frees inventory only once. Returns the count newly voided.
+    """
+    tickets = list(order.tickets.select_for_update().exclude(status=Ticket.Status.VOID))
+    if not tickets:
+        return 0
+
+    ga_count = sum(1 for ticket in tickets if ticket.seat_id is None)
+    Ticket.objects.filter(pk__in=[t.pk for t in tickets]).update(status=Ticket.Status.VOID)
+
+    if ga_count:
+        allocation = (
+            GAAllocation.objects.select_for_update()
+            .filter(performance=order.performance)
+            .first()
+        )
+        if allocation is not None:
+            allocation.sold = max(allocation.sold - ga_count, 0)
+            allocation.save(update_fields=["sold"])
+    return len(tickets)
+
+
 def cart_item_count(organization, session_key):
     """Total ticket count across the session's active (unexpired) holds --
     GA quantity plus one per held reserved seat. Read-only, cheap aggregate

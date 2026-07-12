@@ -24,8 +24,10 @@ from accounts.permissions import (
 from events import zones as zone_services
 from events.models import Event, Performance, PriceTier, PricingZone, ZoneTemplate
 from events.zone_export import ZoneExportError, render_zone_map
+from orders.emails import send_ticket_email
 from orders.models import Order, PerformanceSeatBlock, Ticket
-from orders.services import get_seating_chart, performance_seats
+from orders.services import get_seating_chart, performance_seats, void_order
+from payments.services import RefundError, refund_order
 from venues import generation
 from venues.models import Seat, SeatingChart, Section, Venue
 
@@ -601,6 +603,83 @@ class OrderDetailView(BoxOfficeRequiredMixin, DetailView):
             "seat", "seat__section", "scanned_by"
         ).order_by("id")
         return context
+
+
+# --- order actions (box_office+) ------------------------------------------
+#
+# The staff order surface used to be read-only; these three POST actions are
+# what the built-in help center already tells box office they can do (resend
+# tickets, cancel/void, refund -- see helpcenter/builtins.py). Each is
+# org-scoped by token (a box-office user can't touch another tenant's order)
+# and gated to box_office+.
+
+
+def _org_order(request, token):
+    return get_object_or_404(
+        Order.objects.filter(organization=request.organization), token=token
+    )
+
+
+@box_office_required
+@require_POST
+def order_resend(request, token):
+    """Re-send the confirmation/ticket email for an order (e.g. the buyer lost
+    it or gave a typo'd address that's since been corrected)."""
+    order = _org_order(request, token)
+    if not order.buyer_email:
+        messages.error(request, "This order has no email address on file to send to.")
+        return redirect("dashboard_order_detail", token=order.token)
+    try:
+        send_ticket_email(order, request)
+    except Exception:  # delivery/transport failure -- don't 500 the dashboard
+        messages.error(request, "Couldn't send the email just now. Please try again.")
+    else:
+        messages.success(request, f"Resent tickets to {order.buyer_email}.")
+    return redirect("dashboard_order_detail", token=order.token)
+
+
+@box_office_required
+@require_POST
+def order_cancel(request, token):
+    """Cancel an order: void its tickets and free the inventory (see
+    orders.services.void_order) without moving any money. Use this for a comp/
+    test order or when a refund is handled outside the system; use Refund when
+    the buyer paid via Stripe and should get their money back."""
+    order = _org_order(request, token)
+    if order.status in (Order.Status.CANCELLED, Order.Status.REFUNDED):
+        messages.info(request, "That order is already cancelled.")
+        return redirect("dashboard_order_detail", token=order.token)
+    voided = void_order(order)
+    order.status = Order.Status.CANCELLED
+    order.save(update_fields=["status"])
+    messages.success(
+        request, f"Cancelled the order and released {voided} ticket(s) back to inventory."
+    )
+    return redirect("dashboard_order_detail", token=order.token)
+
+
+@box_office_required
+@require_POST
+def order_refund(request, token):
+    """Refund a paid order in full (Stripe Refund on the connected account for
+    a real charge; a recorded reversal for a stub/test order), voiding its
+    tickets and freeing inventory -- see payments.services.refund_order.
+    Idempotent: refunding an order that isn't currently paid is a no-op."""
+    order = _org_order(request, token)
+    try:
+        refunded = refund_order(order)
+    except RefundError:
+        messages.error(
+            request,
+            "Stripe couldn't process the refund. Check the order in the Stripe "
+            "dashboard and try again.",
+        )
+        return redirect("dashboard_order_detail", token=order.token)
+    if refunded:
+        messages.success(request, "Refunded the order and voided its tickets.")
+    else:
+        messages.info(request, "That order isn't in a refundable state.")
+    return redirect("dashboard_order_detail", token=order.token)
 
 
 # --- seating chart builder (manager+) --------------------------------------

@@ -51,6 +51,21 @@ urlpatterns = [
         views.OrderDetailView.as_view(),
         name="dashboard_order_detail",
     ),
+    path(
+        "dashboard/orders/<slug:token>/resend/",
+        views.order_resend,
+        name="dashboard_order_resend",
+    ),
+    path(
+        "dashboard/orders/<slug:token>/cancel/",
+        views.order_cancel,
+        name="dashboard_order_cancel",
+    ),
+    path(
+        "dashboard/orders/<slug:token>/refund/",
+        views.order_refund,
+        name="dashboard_order_refund",
+    ),
     # -- seating chart builder (Phase A, docs/SEATING.md) -------------------
     path("dashboard/venues/", views.VenueListView.as_view(), name="dashboard_venue_list"),
     path(

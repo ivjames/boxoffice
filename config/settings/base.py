@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "payments",
     "dashboard",
     "scanning",
+    "helpcenter",
 ]
 
 MIDDLEWARE = [

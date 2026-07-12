@@ -2820,3 +2820,102 @@ table.dash-table th {
     .scan-flash { animation-duration: 0.01s; }
 }
 
+
+/* --- Help center ------------------------------------------------------------
+   Shared by the staff Help pages (dashboard) and the storefront FAQ. Kept
+   tenant-agnostic (only the neutral --*-color tokens, plus --accent-color for
+   the disclosure marker) so it inherits each theater's branding like the rest
+   of app.css. */
+.page-narrow {
+    max-width: 46rem;
+    margin: 0 auto;
+}
+
+.help-intro {
+    margin-top: -0.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.help-group {
+    margin-bottom: 2rem;
+}
+
+.help-group__heading {
+    font-size: 1.05rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 0.5rem;
+}
+
+.help-article {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.help-article__summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem 0.75rem;
+    padding: 0.85rem 0.25rem;
+    cursor: pointer;
+    list-style: none;
+}
+
+.help-article__summary::-webkit-details-marker {
+    display: none;
+}
+
+.help-article__summary::before {
+    content: "\203A"; /* › — rotates to ⌄ when open */
+    color: var(--accent-color);
+    font-weight: 700;
+    transition: transform 0.15s ease;
+    display: inline-block;
+}
+
+.help-article[open] > .help-article__summary::before {
+    transform: rotate(90deg);
+}
+
+.help-article__title {
+    font-weight: 600;
+}
+
+.help-article__teaser {
+    font-size: 0.9rem;
+}
+
+.help-article__badge {
+    text-transform: none;
+}
+
+.help-article__body {
+    padding: 0 0.25rem 1rem 1.1rem;
+    max-width: 42em;
+}
+
+.help-article__body p {
+    margin: 0 0 0.75rem;
+}
+
+.help-article__actions {
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.help-article__builtin-note {
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+}
+
+.dash-form__actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.help-contact {
+    margin-top: 2.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}

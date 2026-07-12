@@ -20,6 +20,7 @@ urlpatterns = [
     path("", include("payments.urls")),
     path("", include("dashboard.urls")),
     path("", include("scanning.urls")),
+    path("", include("helpcenter.urls")),
 ]
 
 if settings.DEBUG:

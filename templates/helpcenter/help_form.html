@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}{% if object %}Edit article{% else %}New article{% endif %} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_help_manage' %}">&larr; Manage help</a>
+<h1>{% if object %}Edit “{{ object.title }}”{% else %}New help article{% endif %}</h1>
+<form method="post" class="dash-form">
+    {% csrf_token %}
+    {% for field in form %}
+        <div class="field">
+            {{ field.label_tag }}
+            {{ field }}
+            {{ field.errors }}
+            {% if field.help_text %}<p class="muted">{{ field.help_text }}</p>{% endif %}
+        </div>
+    {% endfor %}
+    <div class="dash-form__actions">
+        <button type="submit" class="button">Save</button>
+        {% if object %}
+            <a class="back-link" href="{% url 'dashboard_help' %}">Preview on Help page</a>
+        {% endif %}
+    </div>
+</form>
+{% endblock %}

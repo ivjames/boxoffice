@@ -121,6 +121,26 @@ class LoginViewTests(StaffFixtureMixin, TestCase):
         )
         self.assertRedirects(resp, "/dashboard/", fetch_redirect_response=False)
 
+    def test_scanner_lands_on_scan_not_overview(self):
+        """A scanner has no overview -- with no explicit ?next=, login drops
+        them straight on the scan screen (mirrors the nav/overview gating)."""
+        scanner, password = self.make_staff(self.org, Membership.Role.SCANNER)
+        resp = self.client.post(
+            "/login/",
+            {"email": scanner.email, "password": password},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertRedirects(resp, reverse("scan_home"), fetch_redirect_response=False)
+
+    def test_box_office_lands_on_overview(self):
+        box_office, password = self.make_staff(self.org, Membership.Role.BOX_OFFICE)
+        resp = self.client.post(
+            "/login/",
+            {"email": box_office.email, "password": password},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertRedirects(resp, "/dashboard/", fetch_redirect_response=False)
+
 
 class LogoutViewTests(StaffFixtureMixin, TestCase):
     def setUp(self):
@@ -186,8 +206,13 @@ class CrossOrgSessionIsolationTests(StaffFixtureMixin, TestCase):
         )
         resp_a = self.client.get("/dashboard/", HTTP_HOST=host_for("org-a"))
         resp_b = self.client.get("/dashboard/", HTTP_HOST=host_for("org-b"))
+        # Owner in A reaches A's overview; scanner in B is a member too, so
+        # they're let into B's staff area -- as a scanner that's the scan
+        # screen, not the overview (a non-member would be 403'd, not
+        # redirected onward). Both prove the membership grants access.
         self.assertEqual(resp_a.status_code, 200)
-        self.assertEqual(resp_b.status_code, 200)
+        self.assertEqual(resp_b.status_code, 302)
+        self.assertEqual(resp_b.headers["Location"], reverse("scan_home"))
 
 
 class CreateStaffUserCommandTests(TestCase):

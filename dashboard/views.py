@@ -14,11 +14,17 @@ from django.views.generic import CreateView, DetailView, ListView, UpdateView
 
 from accounts.invites import MemberExistsError, add_member
 from accounts.models import Membership
-from accounts.permissions import BoxOfficeRequiredMixin, ManagerRequiredMixin, manager_required, tenant_staff_required
+from accounts.permissions import (
+    BoxOfficeRequiredMixin,
+    ManagerRequiredMixin,
+    box_office_required,
+    manager_required,
+    tenant_staff_required,
+)
 from events import zones as zone_services
 from events.models import Event, Performance, PriceTier, PricingZone, ZoneTemplate
 from events.zone_export import ZoneExportError, render_zone_map
-from orders.models import Order, Ticket
+from orders.models import Order, PerformanceSeatBlock, Ticket
 from orders.services import get_seating_chart, performance_seats
 from venues import generation
 from venues.models import Seat, SeatingChart, Section, Venue
@@ -31,11 +37,25 @@ from .forms import EventForm, InviteMemberForm, PerformanceForm, PriceTierForm, 
 
 @tenant_staff_required
 def overview(request):
-    """Any staff role can view the overview. Counts + reports are all scoped
+    """Box office and up get the overview. Counts + reports are all scoped
     to request.organization -- see accounts.permissions for how every
-    dashboard view gets there (login + Membership-in-this-org check)."""
+    dashboard view gets there (login + Membership-in-this-org check).
+
+    Scanners work the door only: they have no overview at all (the nav hides
+    it and login lands them on Scan), so a scanner who reaches this URL
+    directly is bounced to the scan screen rather than shown a page their
+    role isn't meant to see.
+
+    Revenue is a manager+ concern -- box office sells tickets and services
+    the door, it doesn't need the money reports -- so the gross-revenue tile,
+    the revenue-by-event table, and the per-performance revenue column are
+    only computed (and only rendered, see overview.html) for can_manage_events."""
+    if not request.membership.can_sell_tickets():
+        return redirect("scan_home")
+
     organization = request.organization
     now = timezone.now()
+    show_revenue = request.membership.can_manage_events()
 
     upcoming_performances = list(
         Performance.objects.filter(organization=organization, starts_at__gte=now)
@@ -50,29 +70,34 @@ def overview(request):
     # Revenue from paid orders, aggregated once per grouping rather than
     # per-row in the loops below. Keyed by performance / event id so the
     # per-performance table and the per-event table both read from a dict
-    # lookup instead of an N+1 of Sum() queries.
-    paid_orders = Order.objects.filter(organization=organization, status=Order.Status.PAID)
-    gross_revenue = paid_orders.aggregate(total=Sum("total"))["total"] or Decimal("0.00")
+    # lookup instead of an N+1 of Sum() queries. Skipped entirely for box
+    # office (show_revenue is False) -- no need to query money they can't see.
+    gross_revenue = Decimal("0.00")
+    revenue_by_performance = {}
+    event_revenue_rows = []
+    if show_revenue:
+        paid_orders = Order.objects.filter(organization=organization, status=Order.Status.PAID)
+        gross_revenue = paid_orders.aggregate(total=Sum("total"))["total"] or Decimal("0.00")
 
-    revenue_by_performance = {
-        row["performance"]: row["revenue"]
-        for row in paid_orders.values("performance").annotate(revenue=Sum("total"))
-    }
-
-    event_revenue_rows = [
-        {
-            "event_title": row["performance__event__title"],
-            "orders": row["orders"],
-            "revenue": row["revenue"],
+        revenue_by_performance = {
+            row["performance"]: row["revenue"]
+            for row in paid_orders.values("performance").annotate(revenue=Sum("total"))
         }
-        for row in (
-            # Group by event id (not title): two distinct events can share a
-            # title, and merging them would misreport per-event revenue.
-            paid_orders.values("performance__event", "performance__event__title")
-            .annotate(orders=Count("id"), revenue=Sum("total"))
-            .order_by("-revenue")
-        )
-    ]
+
+        event_revenue_rows = [
+            {
+                "event_title": row["performance__event__title"],
+                "orders": row["orders"],
+                "revenue": row["revenue"],
+            }
+            for row in (
+                # Group by event id (not title): two distinct events can share a
+                # title, and merging them would misreport per-event revenue.
+                paid_orders.values("performance__event", "performance__event__title")
+                .annotate(orders=Count("id"), revenue=Sum("total"))
+                .order_by("-revenue")
+            )
+        ]
 
     performance_rows = []
     for performance in (
@@ -102,11 +127,140 @@ def overview(request):
     context = {
         "upcoming_performances": upcoming_performances,
         "tickets_sold": tickets_sold,
+        "show_revenue": show_revenue,
         "gross_revenue": gross_revenue,
         "event_revenue_rows": event_revenue_rows,
         "performance_rows": performance_rows,
     }
     return render(request, "dashboard/overview.html", context)
+
+
+@box_office_required
+def performance_detail(request, pk):
+    """Box-office-facing detail for one performance (linked from the overview's
+    upcoming-shows list): a picture of the house (seating chart colored by
+    each seat's status for THIS performance), the ticket-sales summary, and a
+    guest lookup that finds a specific attendee's ticket by name / email /
+    code. Box office+ (managers/owners inherit it); scanners don't reach the
+    overview it's linked from, and this view is box_office-gated anyway.
+
+    Revenue stays a manager+ concern here too (mirrors the overview): box
+    office gets sold/capacity/checked-in counts, not the money."""
+    performance = get_object_or_404(
+        Performance.objects.filter(organization=request.organization).select_related(
+            "event", "venue", "seating_chart"
+        ),
+        pk=pk,
+    )
+    show_revenue = request.membership.can_manage_events()
+
+    tickets_qs = (
+        Ticket.objects.filter(organization=request.organization, performance=performance)
+        .select_related("seat", "seat__section", "order", "scanned_by")
+        .order_by("seat__section__ordering", "seat__row_label", "seat__number", "id")
+    )
+    live_tickets = list(tickets_qs.exclude(status=Ticket.Status.VOID))
+    sold = len(live_tickets)
+    checked_in = sum(1 for t in live_tickets if t.status == Ticket.Status.USED)
+
+    if performance.seating_mode == Performance.SeatingMode.GA:
+        allocation = getattr(performance, "ga_allocation", None)
+        capacity = allocation.capacity if allocation else None
+    else:
+        capacity = performance_seats(performance).count()
+
+    revenue = None
+    if show_revenue:
+        revenue = (
+            Order.objects.filter(
+                organization=request.organization,
+                performance=performance,
+                status=Order.Status.PAID,
+            ).aggregate(total=Sum("total"))["total"]
+            or Decimal("0.00")
+        )
+
+    # Guest / ticket lookup. Same fields the box office searches on the orders
+    # list (buyer name/email/code) plus the per-ticket holder name and code,
+    # scoped to THIS performance so a name search returns the seat/status the
+    # staffer actually needs at the window or door.
+    query = request.GET.get("q", "").strip()
+    search_results = None
+    if query:
+        search_results = list(
+            tickets_qs.filter(
+                Q(holder_name__icontains=query)
+                | Q(order__buyer_name__icontains=query)
+                | Q(order__buyer_email__icontains=query)
+                | Q(token=query)
+                | Q(order__token=query)
+            )
+        )
+
+    # Seat map. Reserved: a read-only map colored by each seat's status
+    # (sold / checked-in / blocked / available), with the holder's name in the
+    # tooltip. GA: the same inert "picture of the house" the storefront shows,
+    # since GA assigns no seats.
+    ga_seats_json = None
+    seats_json = None
+    if performance.seating_mode == Performance.SeatingMode.GA:
+        ga_seats_json = [
+            {
+                "id": seat.id,
+                "row": seat.row_label,
+                "number": seat.number,
+                "x": seat.x,
+                "y": seat.y,
+                "section": seat.section.name,
+            }
+            for seat in performance_seats(performance)
+        ]
+    else:
+        seat_ticket = {t.seat_id: t for t in live_tickets if t.seat_id is not None}
+        blocked = set(
+            PerformanceSeatBlock.objects.filter(performance=performance).values_list(
+                "seat_id", flat=True
+            )
+        )
+        seats_json = []
+        for seat in performance_seats(performance):
+            ticket = seat_ticket.get(seat.id)
+            if ticket is not None:
+                state = "used" if ticket.status == Ticket.Status.USED else "sold"
+                holder = ticket.holder_name or (
+                    ticket.order.buyer_name or ticket.order.buyer_email if ticket.order_id else ""
+                )
+            elif seat.id in blocked:
+                state, holder = "blocked", ""
+            else:
+                state, holder = "available", ""
+            seats_json.append(
+                {
+                    "id": seat.id,
+                    "row": seat.row_label,
+                    "number": seat.number,
+                    "x": seat.x,
+                    "y": seat.y,
+                    "section": seat.section.name,
+                    "state": state,
+                    "holder": holder,
+                }
+            )
+
+    context = {
+        "performance": performance,
+        "sold": sold,
+        "capacity": capacity,
+        "checked_in": checked_in,
+        "show_revenue": show_revenue,
+        "revenue": revenue,
+        "q": query,
+        "search_results": search_results,
+        "seating_mode": performance.seating_mode,
+        "ga_seats_json": ga_seats_json,
+        "seats_json": seats_json,
+    }
+    return render(request, "dashboard/performance_detail.html", context)
 
 
 # --- events / performances (manager+) -------------------------------------

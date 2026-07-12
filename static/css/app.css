@@ -1149,6 +1149,46 @@ textarea:focus-visible,
     pointer-events: none;
 }
 
+/* Read-only "picture of the house" on the dashboard show-detail page
+   (templates/dashboard/_seat_map_readonly.html): each seat is colored by its
+   status for that one performance -- sold, checked in, blocked, or available.
+   A display, not a control: no pointer, no focus. Fixed fills (not the
+   per-seat --accent tints the storefront picker uses) so the legend and the
+   contrast-safe label ink are constant. */
+.seat-btn--ro {
+    cursor: default;
+    pointer-events: none;
+}
+
+.seat-btn--ro-available {
+    background: #fff;
+    border-color: var(--accent-color);
+    color: var(--text-color);
+}
+
+.seat-btn--ro-sold {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+    color: #fff;
+}
+
+.seat-btn--ro-used {
+    background: #1e40af;
+    border-color: #1e40af;
+    color: #fff;
+}
+
+.seat-btn--ro-blocked {
+    background: #d1d5db;
+    border-color: #9ca3af;
+    color: #6b7280;
+}
+
+/* "Checked in" legend swatch for the read-only map (matches --ro-used). */
+.seat-swatch--used {
+    background: #1e40af;
+}
+
 /* Phase C: a zoned seat's border/background tints toward its PricingZone's
    color (set via the --zone-color custom property inline, per-seat --
    templates/orders/_seat_map.html's seatStyle()); a selected zoned seat

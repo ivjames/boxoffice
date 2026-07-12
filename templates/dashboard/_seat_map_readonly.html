@@ -1,0 +1,76 @@
+{% comment %}
+Read-only "picture of the house" for a RESERVED performance, shown on the
+dashboard show-detail page (templates/dashboard/performance_detail.html).
+Nothing here is clickable: each seat is a plain, non-focusable <span> colored
+by its status for THIS performance -- available, sold (a live valid ticket),
+used (checked in at the door), or blocked (a house kill / PerformanceSeatBlock).
+The holder's name rides in the seat's tooltip so a staffer can hover to see
+who's sitting where. Layout math is identical to orders/_seat_map.html
+(continuous world coordinates in a scaled, absolutely-positioned canvas); this
+just drops all selection / pricing / form wiring. seats_json is built
+server-side in dashboard.views.performance_detail.
+{% endcomment %}
+{{ seats_json|json_script:"ro-seats-data" }}
+
+<div x-data="readonlySeatMap()" class="seat-map seat-map--inert">
+    <ul class="seat-map__legend">
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--available"></i> Available</li>
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--selected"></i> Sold</li>
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--used"></i> Checked in</li>
+        <li class="seat-legend"><i class="seat-swatch seat-swatch--unavailable"></i> Blocked</li>
+    </ul>
+
+    <div class="seat-map__grid">
+        <div class="seat-map__canvas" :style="canvasStyle" role="img"
+             aria-label="Seat map showing sold, checked-in, blocked and available seats for this performance">
+            <template x-for="seat in seats" :key="seat.id">
+                <span class="seat-btn seat-btn--ro" :class="'seat-btn--ro-' + seat.state"
+                      :style="seatStyle(seat)"
+                      :title="seatTitle(seat)">
+                    <span x-text="seat.row + seat.number"></span>
+                </span>
+            </template>
+        </div>
+    </div>
+</div>
+
+<script>
+    function readonlySeatMap() {
+        const seats = JSON.parse(document.getElementById('ro-seats-data').textContent);
+
+        // Same layout math as the interactive map (orders/_seat_map.html):
+        // seat.x/y are continuous world coordinates laid out inside an
+        // absolutely-positioned canvas scaled px-per-world-unit.
+        const SCALE = 44; // px per world unit
+        const PAD = 0.6; // world units of breathing room around the block
+        const xs = seats.map((s) => s.x);
+        const ys = seats.map((s) => s.y);
+        const minX = xs.length ? Math.min(...xs) : 0;
+        const minY = ys.length ? Math.min(...ys) : 0;
+        const maxX = xs.length ? Math.max(...xs) : 0;
+        const maxY = ys.length ? Math.max(...ys) : 0;
+
+        const LABELS = { available: 'Available', sold: 'Sold', used: 'Checked in', blocked: 'Blocked' };
+
+        return {
+            seats: seats,
+            canvasStyle:
+                'width:' + ((maxX - minX + 2 * PAD) * SCALE) + 'px;' +
+                'height:' + ((maxY - minY + 2 * PAD) * SCALE) + 'px;',
+            seatStyle(seat) {
+                const left = (seat.x - minX + PAD) * SCALE;
+                const top = (seat.y - minY + PAD) * SCALE;
+                return (
+                    'position:absolute; left:' + left + 'px; top:' + top + 'px;' +
+                    ' transform:translate(-50%, -50%);'
+                );
+            },
+            seatTitle(seat) {
+                let title = seat.section + ' — ' + seat.row + seat.number;
+                title += ' — ' + (LABELS[seat.state] || seat.state);
+                if (seat.holder) title += ' (' + seat.holder + ')';
+                return title;
+            },
+        };
+    }
+</script>

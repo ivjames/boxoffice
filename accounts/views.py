@@ -14,12 +14,26 @@ from .forms import StaffLoginForm
 from .models import Membership, User
 
 
+def _default_landing(request):
+    """Where a just-logged-in staffer lands with no explicit ?next=. Scanners
+    work the door only -- they have no overview/reports -- so send a
+    scanner-only membership straight to the scan screen; everyone box office
+    and up starts on the dashboard overview. Mirrors the nav/overview gating
+    in dashboard.views + templates/dashboard/_nav.html."""
+    membership = Membership.objects.filter(
+        user=request.user, organization=request.organization
+    ).first()
+    if membership is not None and not membership.can_sell_tickets():
+        return reverse("scan_home")
+    return reverse("dashboard_overview")
+
+
 def _safe_next(request, next_url):
     if next_url and url_has_allowed_host_and_scheme(
         next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
     ):
         return next_url
-    return reverse("dashboard_overview")
+    return _default_landing(request)
 
 
 @require_tenant

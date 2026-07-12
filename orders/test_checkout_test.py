@@ -66,6 +66,27 @@ class GATestCheckoutTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["buyer@example.com"])
 
+    def test_ga_price_is_snapshotted_against_a_mid_checkout_tier_edit(self):
+        """Editing PriceTier.amount after the GA hold is created must not
+        change what the order totals to or records -- the price is frozen on
+        the hold (Hold.ga_unit_amount), mirroring reserved seats' snapshot.
+        (Audit BO-3.)"""
+        hold = self._create_hold(quantity=2)
+        self.assertEqual(hold.ga_unit_amount, Decimal("20.00"))
+
+        # Staff bump the tier price after the buyer already holds seats.
+        self.tier.amount = Decimal("99.00")
+        self.tier.save(update_fields=["amount"])
+
+        self.post_as(
+            "org-a", "/checkout/test/",
+            {"hold_id": hold.pk, "buyer_name": "Buyer", "buyer_email": "buyer@example.com"},
+        )
+        order = Order.objects.get()
+        self.assertEqual(order.total, Decimal("40.00"))  # 2 x $20 snapshot, NOT 2 x $99
+        self.assertEqual(Payment.objects.get(order=order).amount, Decimal("40.00"))
+        self.assertEqual(order.items.get().unit_amount, Decimal("20.00"))
+
     def test_reselling_same_hold_after_fulfillment_fails_cleanly(self):
         """The hold is deleted by the first fulfillment, so a resubmitted
         test-checkout POST for the same hold_id 404s (same lookup every

@@ -314,6 +314,10 @@ def set_ga_hold(*, organization, performance, session_key, user, price_tier, qua
         user=user,
         price_tier=price_tier,
         quantity=quantity,
+        # Snapshot the tier price now (mirrors HoldSeat.unit_amount for
+        # reserved seats) so a later PriceTier.amount edit can't change what
+        # this hold totals to or gets charged. See Hold.ga_unit_amount.
+        ga_unit_amount=price_tier.amount,
         expires_at=default_hold_expiry(),
     )
 
@@ -413,15 +417,27 @@ def cart_item_count(organization, session_key):
     return ga_qty + seat_qty
 
 
+def ga_unit_amount(hold):
+    """The GA per-ticket price for `hold`: its frozen snapshot
+    (Hold.ga_unit_amount) if set, else the live PriceTier.amount as a fallback
+    for a hold created before the snapshot column existed. The single place
+    the GA money paths (hold_total, the Stripe line item, _fulfill_ga) read
+    the GA unit price, so all three agree and stay immune to a tier edit made
+    after the hold was created."""
+    if hold.ga_unit_amount is not None:
+        return hold.ga_unit_amount
+    return hold.price_tier.amount
+
+
 def hold_total(hold):
-    """Dollar total for a Hold: quantity * tier for GA, sum of each
-    HoldSeat's own snapshotted unit_amount for reserved (Phase C -- a
-    reserved seat's price may have come from a PricingZone, which doesn't
-    have a PriceTier to read .amount off of; unit_amount is the one field
-    that's always populated regardless of source -- see HoldSeat's
-    docstring)."""
+    """Dollar total for a Hold: quantity * snapshotted GA unit price for GA
+    (see ga_unit_amount), sum of each HoldSeat's own snapshotted unit_amount
+    for reserved (Phase C -- a reserved seat's price may have come from a
+    PricingZone, which doesn't have a PriceTier to read .amount off of;
+    unit_amount is the one field that's always populated regardless of source
+    -- see HoldSeat's docstring)."""
     if hold.price_tier_id and hold.quantity:
-        return hold.price_tier.amount * hold.quantity
+        return ga_unit_amount(hold) * hold.quantity
     total = Decimal("0.00")
     for hold_seat in hold.hold_seats.all():
         total += hold_seat.unit_amount

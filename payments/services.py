@@ -293,7 +293,10 @@ def _line_items_for_hold(hold):
                 "quantity": hold.quantity,
                 "price_data": {
                     "currency": tier.currency.lower(),
-                    "unit_amount": _to_minor_units(tier.amount),
+                    # Charge the GA price the buyer saw, snapshotted onto the
+                    # hold -- not a live re-read of tier.amount (see
+                    # order_services.ga_unit_amount / Hold.ga_unit_amount).
+                    "unit_amount": _to_minor_units(order_services.ga_unit_amount(hold)),
                     "product_data": {
                         "name": f"{hold.performance.event.title} — {tier.name}",
                     },
@@ -525,7 +528,10 @@ def _fulfill_ga(organization, hold, order):
         price_tier=hold.price_tier,
         seat=None,
         quantity=hold.quantity,
-        unit_amount=hold.price_tier.amount,
+        # Record the snapshotted GA price (see order_services.ga_unit_amount),
+        # so the OrderItem matches both hold_total and the Stripe line item
+        # even if the tier was edited between hold creation and fulfillment.
+        unit_amount=order_services.ga_unit_amount(hold),
     )
     Ticket.objects.bulk_create(
         [

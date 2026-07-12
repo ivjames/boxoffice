@@ -75,6 +75,17 @@ class Hold(TenantScopedModel):
         PriceTier, on_delete=models.CASCADE, null=True, blank=True, related_name="holds"
     )
     quantity = models.PositiveIntegerField(null=True, blank=True)
+    # Snapshot of the GA tier price at hold-creation time -- the GA analogue
+    # of HoldSeat.unit_amount for reserved seats. Frozen here so hold_total(),
+    # the Stripe line item, and _fulfill_ga all charge/record the price the
+    # buyer saw, immune to a PriceTier.amount edit made between hold creation
+    # and payment. Nullable only so it can be added without a data migration;
+    # set_ga_hold always populates it on new GA holds, and the GA money paths
+    # fall back to the live tier amount when it's null (a hold in flight
+    # across the deploy that added this column). See orders.services.
+    ga_unit_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
 
     # Reserved-seat selection.
     seats = models.ManyToManyField(Seat, through="HoldSeat", related_name="holds", blank=True)

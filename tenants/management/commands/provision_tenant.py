@@ -4,7 +4,7 @@ certbot) is done by `bin/boxoffice add-tenant <sub>`, which shells out to this
 command for the DB step and then runs the lab980 provisioning tooling for the
 rest. Deliberately does NOT touch payments or branding — branding is set later
 in Django admin, and Stripe is connected by an owner from the theater dashboard
-via Stripe Connect onboarding (see docs/DEPLOY.md).
+via Stripe Connect onboarding (see DEPLOY.md).
 
     venv/bin/python manage.py provision_tenant roxy --name "The Roxy Theater"
 

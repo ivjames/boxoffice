@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}Pricing — {{ performance.event.title }} — {{ organization.name }}{% endblock %}
 
@@ -6,7 +7,7 @@
 {% include "dashboard/_nav.html" %}
 <a class="back-link" href="{% url 'dashboard_event_detail' performance.event.pk %}">&larr; {{ performance.event.title }}</a>
 <h1>Pricing — {{ performance.event.title }}</h1>
-<p class="muted">{{ performance.starts_at|date:"D, M j Y — g:i A" }} · {{ performance.get_seating_mode_display }}</p>
+<p class="muted">{% showtime performance.starts_at performance.venue.timezone "D, M j Y — g:i A" %} · {{ performance.get_seating_mode_display }}</p>
 
 {% if is_reserved %}
     {% if chart %}

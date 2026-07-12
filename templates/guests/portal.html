@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}My tickets — {{ organization.name }}{% endblock %}
 
@@ -21,7 +22,7 @@
                     <div class="order-list__main">
                         <h2>{{ row.order.performance.event.title }}</h2>
                         <p>
-                            {{ row.order.performance.starts_at|date:"D, M j Y — g:i A" }} ·
+                            {% showtime row.order.performance.starts_at row.order.performance.venue.timezone "D, M j Y — g:i A" %} ·
                             {{ row.order.performance.venue.name }}
                         </p>
                         <p class="muted">

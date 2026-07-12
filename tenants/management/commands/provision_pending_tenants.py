@@ -14,6 +14,12 @@ so only the infra half runs). Safe to run every minute: it's a no-op when
 nothing is PENDING, each row is claimed atomically so overlapping ticks can't
 double-provision, and add-tenant leaves any existing DNS/vhost/cert as-is.
 
+Provisions at most ONE tenant per run. certbot and DNS are slow and rate-
+limited, so a batch queued together (e.g. several tenants selected in the
+admin at once) drains one-per-minute across successive ticks rather than
+firing several certbot runs in a single tick. Reserved-subdomain rows are
+rejected without shelling out and don't consume the run's single slot.
+
 Must run under prod settings (DJANGO_SETTINGS_MODULE=config.settings.prod) so
 it reads the same DB the admin writes to, and as root so certbot/nginx/doctl
 can act. Both are set in deploy/boxoffice-provision.cron.
@@ -29,10 +35,34 @@ from tenants.models import Organization
 
 _MSG_LIMIT = 4000  # keep infra_message readable in the admin
 
+# Dirs add-tenant's tools live in: nginx (/usr/sbin), certbot (/usr/bin or,
+# snap-installed, /snap/bin), doctl + the boxoffice CLI (/usr/local/bin).
+# We force these onto the subprocess PATH so provisioning finds them no
+# matter how minimal a PATH cron hands us -- a bare cron PATH missing
+# /usr/sbin is what made add-tenant fail with "required command not found:
+# nginx".
+_TOOL_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/snap/bin")
+
 
 def _tail(text, limit=_MSG_LIMIT):
     text = (text or "").strip()
     return text[-limit:] if len(text) > limit else text
+
+
+def _subprocess_env():
+    """os.environ with _TOOL_DIRS guaranteed on PATH (prepended, de-duped),
+    so add-tenant's nginx/certbot/doctl lookups don't depend on the cron's
+    PATH being complete."""
+    env = dict(os.environ)
+    existing = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    seen = set()
+    parts = []
+    for p in (*_TOOL_DIRS, *existing):
+        if p not in seen:
+            seen.add(p)
+            parts.append(p)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
 
 
 class Command(BaseCommand):
@@ -45,7 +75,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         In = Organization.InfraStatus
 
-        pending = list(Organization.objects.filter(infra_status=In.PENDING))
+        # FIFO by insertion (pk), so a batch queued together drains oldest-
+        # first over successive ticks.
+        pending = list(Organization.objects.filter(infra_status=In.PENDING).order_by("pk"))
         if not pending:
             return  # nothing queued — the common every-minute case
 
@@ -87,19 +119,28 @@ class Command(BaseCommand):
                     capture_output=True,
                     text=True,
                     timeout=600,  # certbot can wait on DNS; generous ceiling
+                    env=_subprocess_env(),  # ensure nginx/certbot/doctl are on PATH
                 )
             except subprocess.TimeoutExpired:
                 self._finish(org, In.FAILED, "add-tenant timed out after 600s (DNS still propagating?). Re-queue to retry.")
-                continue
+                return
             except Exception as exc:  # pragma: no cover - unexpected spawn failure
                 self._finish(org, In.FAILED, f"failed to run add-tenant: {exc}")
-                continue
+                return
 
             output = _tail(f"{result.stdout}\n{result.stderr}")
             if result.returncode == 0:
                 self._finish(org, In.PROVISIONED, output or "Provisioned.")
             else:
                 self._finish(org, In.FAILED, output or f"add-tenant exited {result.returncode}.")
+
+            # One real provisioning job per run: certbot/DNS are slow and
+            # rate-limited, so we drain the queue one tenant per tick rather
+            # than firing several add-tenant/certbot runs in a single minute.
+            # A reserved-subdomain row above is cheap (no subprocess), so it
+            # doesn't consume this run's slot -- we keep scanning for the
+            # first tenant that actually needs provisioning.
+            return
 
     def _finish(self, org, status, message):
         Organization.objects.filter(pk=org.pk).update(

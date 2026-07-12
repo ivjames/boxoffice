@@ -37,10 +37,10 @@ from __future__ import annotations
 
 import io
 
-from django.utils import timezone
 from django.utils.dateformat import format as django_date_format
 
 from .pricing import zones_by_seat_id
+from .timezones import in_venue_tz
 from .seat_contrast import text_color_hex, text_color_rgb
 from .zones import zone_map_geometry
 
@@ -84,12 +84,10 @@ def _title_text(performance):
 
 
 def _subtitle_text(performance):
-    starts_at = performance.starts_at
-    if timezone.is_aware(starts_at):
-        starts_at = timezone.localtime(starts_at)
-    # Same format string templates/dashboard/zone_editor.html uses
-    # (`{{ performance.starts_at|date:"D, M j Y - g:i A" }}`) so the export
-    # header reads identically to what staff see on the editor page.
+    # Render in the venue's own zone, matching the zone_editor page's
+    # `{% showtime performance.starts_at performance.venue.timezone ... %}`,
+    # so the export header reads identically to what staff see there.
+    starts_at = in_venue_tz(performance.starts_at, performance.venue.timezone)
     when = django_date_format(starts_at, "D, M j Y - g:i A")
     return f"{when} - {performance.venue.name}"
 

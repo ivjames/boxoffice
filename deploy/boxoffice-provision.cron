@@ -10,12 +10,15 @@
 #   * DJANGO_SETTINGS_MODULE=config.settings.prod -- manage.py defaults to dev
 #     (a different DB), so without this the worker reads the wrong database and
 #     never sees the tenants the admin queued.
-#   * PATH including /usr/local/bin -- cron's default PATH is minimal; doctl,
-#     certbot, and the `boxoffice` operate CLI live there.
+#   * A full PATH -- cron's default PATH is minimal. add-tenant shells out to
+#     nginx (/usr/sbin), certbot, doctl, and the `boxoffice` operate CLI
+#     (/usr/local/bin), so /usr/sbin and /sbin MUST be included or the worker
+#     fails with "required command not found: nginx". (certbot installed via
+#     snap lives in /snap/bin -- add it too if that's how it's installed.)
 #
 # Install (root crontab):
 #   (crontab -l 2>/dev/null; grep -v '^#' deploy/boxoffice-provision.cron) | crontab -
 #
 # It's a no-op on every tick when nothing is queued, so once a minute is fine.
 
-* * * * * cd /var/www/boxoffice && DJANGO_SETTINGS_MODULE=config.settings.prod PATH=/usr/local/bin:/usr/bin:/bin venv/bin/python manage.py provision_pending_tenants >> data/provision_pending_tenants.log 2>&1
+* * * * * cd /var/www/boxoffice && DJANGO_SETTINGS_MODULE=config.settings.prod PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin venv/bin/python manage.py provision_pending_tenants >> data/provision_pending_tenants.log 2>&1

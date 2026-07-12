@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 {% load static %}
 
 {% block title %}Pricing zones — {{ performance.event.title }}{% endblock %}
@@ -7,7 +8,7 @@
 {% include "dashboard/_nav.html" %}
 <a class="back-link" href="{% url 'dashboard_event_detail' performance.event.pk %}">&larr; {{ performance.event.title }}</a>
 <h1>Pricing zones — {{ performance.event.title }}</h1>
-<p class="muted">{{ performance.starts_at|date:"D, M j Y — g:i A" }} · {{ performance.venue.name }}</p>
+<p class="muted">{% showtime performance.starts_at performance.venue.timezone "D, M j Y — g:i A" %} · {{ performance.venue.name }}</p>
 <p class="muted">
     Drag a rectangle to select a block of seats (marquee); shift-click to add/remove individual
     seats. Then apply a zone below. Seats already sold/held can still be zoned -- pricing is
@@ -122,7 +123,7 @@
                 <select id="clone-source" x-model="cloneSourceId">
                     <option value="">Choose one…</option>
                     {% for p in other_performances %}
-                        <option value="{{ p.pk }}">{{ p.event.title }} — {{ p.starts_at|date:"M j Y g:i A" }}</option>
+                        <option value="{{ p.pk }}">{{ p.event.title }} — {% showtime p.starts_at p.venue.timezone "M j Y g:i A" %}</option>
                     {% endfor %}
                 </select>
             </div>

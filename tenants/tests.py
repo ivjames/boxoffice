@@ -7,12 +7,15 @@ from zoneinfo import ZoneInfo
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
+from django.core.exceptions import ValidationError
 from django.core.management import CommandError, call_command
+from django.template import Context, Template
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from events.models import Event, GAAllocation, Performance, PriceTier
+from events.timezones import in_venue_tz
 from tenants.admin import OrganizationAdmin, OrganizationAdminForm
 from tenants.models import Organization
 from venues.models import Seat, SeatingChart, Section, Venue
@@ -51,6 +54,20 @@ class OrganizationAdminFormTests(TestCase):
         form = OrganizationAdminForm(instance=org)
         form.cleaned_data = {"stripe_secret_key": "sk_live_NEW"}
         self.assertEqual(form.clean_stripe_secret_key(), "sk_live_NEW")
+
+    # --- server-side validation of timezone/currency (not just a dropdown) ---
+
+    def test_timezone_field_rejects_values_outside_the_allowed_set(self):
+        field = OrganizationAdminForm().fields["timezone"]
+        self.assertEqual(field.clean("America/New_York"), "America/New_York")
+        with self.assertRaises(ValidationError):
+            field.clean("Amerca/New_York")  # typo — a bare Select would accept it
+
+    def test_currency_field_rejects_values_outside_the_allowed_set(self):
+        field = OrganizationAdminForm().fields["currency"]
+        self.assertEqual(field.clean("USD"), "USD")
+        with self.assertRaises(ValidationError):
+            field.clean("ZZZ")
 
     # --- rendered change form ---
 
@@ -204,6 +221,64 @@ class ProvisionPendingTenantsCommandTests(TestCase):
              mock.patch(f"{_CMD}.subprocess.run") as run:
             call_command("provision_pending_tenants")
         run.assert_not_called()
+
+    def test_subprocess_path_includes_nginx_and_certbot_dirs(self):
+        """add-tenant runs with a PATH that covers where nginx (/usr/sbin) and
+        a snap certbot (/snap/bin) live, regardless of the cron's PATH -- so a
+        minimal cron PATH can't cause 'required command not found: nginx'."""
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch.dict(f"{_CMD}.os.environ", {"PATH": "/usr/bin:/bin"}, clear=False), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(0, "ok")) as run:
+            call_command("provision_pending_tenants")
+        path = run.call_args.kwargs["env"]["PATH"].split(":")
+        self.assertIn("/usr/sbin", path)
+        self.assertIn("/snap/bin", path)
+
+    def test_provisions_one_per_run_and_drains_fifo(self):
+        """A batch queued together provisions ONE tenant per run (certbot is
+        slow/rate-limited), oldest-first, leaving the rest PENDING for the
+        next tick."""
+        second = Organization.objects.create(
+            name="Palace", slug="palace", subdomain="palace", contact_email="p@b.c",
+            infra_status=In.PENDING,
+        )
+        with mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(0, "ok")) as run:
+            call_command("provision_pending_tenants")  # tick 1
+            self.assertEqual(run.call_count, 1)
+            self.org.refresh_from_db(); second.refresh_from_db()
+            # Oldest queued (self.org, lower pk) goes first; the other waits.
+            self.assertEqual(self.org.infra_status, In.PROVISIONED)
+            self.assertEqual(second.infra_status, In.PENDING)
+
+            call_command("provision_pending_tenants")  # tick 2 drains the next
+            self.assertEqual(run.call_count, 2)
+            second.refresh_from_db()
+            self.assertEqual(second.infra_status, In.PROVISIONED)
+
+    def test_reserved_row_does_not_consume_the_run_slot(self):
+        """A reserved-subdomain row is rejected cheaply (no subprocess) and
+        does NOT use up the one-per-run slot -- a real tenant queued behind
+        it still gets provisioned in the same tick."""
+        self.org.subdomain = "admin"  # reserved; queued ahead of the real one
+        self.org.save(update_fields=["subdomain"])
+        real = Organization.objects.create(
+            name="Palace", slug="palace", subdomain="palace", contact_email="p@b.c",
+            infra_status=In.PENDING,
+        )
+        with override_settings(RESERVED_SUBDOMAINS={"www", "admin"}), \
+             mock.patch(f"{_CMD}.os.geteuid", return_value=0), \
+             mock.patch(f"{_CMD}.os.access", return_value=True), \
+             mock.patch(f"{_CMD}.subprocess.run", return_value=_completed(0, "ok")) as run:
+            call_command("provision_pending_tenants")
+
+        self.org.refresh_from_db(); real.refresh_from_db()
+        self.assertEqual(self.org.infra_status, In.FAILED)      # reserved -> failed
+        self.assertEqual(real.infra_status, In.PROVISIONED)     # provisioned same run
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0][2], "palace")
 
 
 class CreateDemoTenantCommandTests(TestCase):
@@ -513,11 +588,15 @@ class TenantTimezoneActivationTests(TestCase):
         # Roxy's zone (the middleware deactivates in a finally).
         self.assertEqual(timezone.get_current_timezone_name(), "UTC")
 
-    def test_storefront_renders_showtime_in_venue_timezone(self):
-        """End-to-end: the actual rendered showtime string is the venue-local
-        time, not UTC. 2027-01-15 02:00 UTC is 2027-01-14 21:00 in New York."""
-        org = make_org("roxy", timezone="America/New_York")
-        venue = Venue.objects.create(organization=org, name="Main Stage")
+    def test_storefront_renders_showtime_in_the_venue_zone_not_the_org_zone(self):
+        """End-to-end: a performance renders in its VENUE's timezone, even when
+        that differs from the org's. 2027-01-15 02:00 UTC is 2027-01-14 21:00
+        in New York (the venue) but 18:00 in LA (the org), so the page shows
+        9:00 PM — proving the venue zone wins over both the org zone and UTC."""
+        org = make_org("roxy", timezone="America/Los_Angeles")
+        venue = Venue.objects.create(
+            organization=org, name="Main Stage", timezone="America/New_York"
+        )
         event = Event.objects.create(
             organization=org,
             title="Midnight Matinee",
@@ -538,5 +617,34 @@ class TenantTimezoneActivationTests(TestCase):
         )
 
         resp = self.client.get("/", HTTP_HOST="roxy.localhost")
-        self.assertContains(resp, "Thu, Jan 14 2027 — 9:00 PM")  # ET, not 2:00 AM UTC
-        self.assertNotContains(resp, "2:00 AM")
+        self.assertContains(resp, "Thu, Jan 14 2027 — 9:00 PM")  # venue (NY)
+        self.assertNotContains(resp, "6:00 PM")  # not org zone (LA)
+        self.assertNotContains(resp, "2:00 AM")  # not UTC
+
+
+@override_settings(TIME_ZONE="UTC")
+class ShowtimeRenderingTests(TestCase):
+    """events.timezones.in_venue_tz and the {% showtime %} tag render a
+    datetime in a specified venue zone, independent of the active request
+    zone, so a performance always shows in its own venue's local time."""
+
+    DT = datetime(2027, 1, 15, 2, 0, tzinfo=ZoneInfo("UTC"))  # 21:00 prev day in NY
+
+    def test_in_venue_tz_converts_to_named_zone(self):
+        out = in_venue_tz(self.DT, "America/New_York")
+        self.assertEqual((out.year, out.month, out.day, out.hour), (2027, 1, 14, 21))
+
+    def test_in_venue_tz_falls_back_on_bad_zone(self):
+        # A typo'd zone must not crash a ticket page — fall back to active (UTC).
+        self.assertEqual(in_venue_tz(self.DT, "Amerca/New_York").hour, 2)
+
+    def test_in_venue_tz_handles_none(self):
+        self.assertIsNone(in_venue_tz(None, "America/New_York"))
+
+    def test_showtime_tag_formats_in_the_venue_zone(self):
+        tmpl = Template(
+            '{% load showtimes %}'
+            '{% showtime dt "America/New_York" "D, M j Y — g:i A" %}'
+        )
+        rendered = tmpl.render(Context({"dt": self.DT}))
+        self.assertEqual(rendered, "Thu, Jan 14 2027 — 9:00 PM")

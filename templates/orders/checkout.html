@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}Checkout — {{ organization.name }}{% endblock %}
 
@@ -10,7 +11,7 @@
         {% for item in items %}
             <div class="checkout-item">
                 <h2>{{ item.hold.performance.event.title }}</h2>
-                <p>{{ item.hold.performance.starts_at|date:"D, M j Y — g:i A" }} · {{ item.hold.performance.venue.name }}</p>
+                <p>{% showtime item.hold.performance.starts_at item.hold.performance.venue.timezone "D, M j Y — g:i A" %} · {{ item.hold.performance.venue.name }}</p>
 
                 {% if item.hold.quantity %}
                     <p>{{ item.hold.quantity }} × {{ item.hold.price_tier.name }} (${{ item.hold.price_tier.amount }} ea)</p>

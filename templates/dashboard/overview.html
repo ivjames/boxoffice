@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}Dashboard — {{ organization.name }}{% endblock %}
 
@@ -32,7 +33,7 @@
     {% for performance in upcoming_performances %}
         <tr>
             <td>{{ performance.event.title }}</td>
-            <td>{{ performance.starts_at|date:"D, M j Y — g:i A" }}</td>
+            <td>{% showtime performance.starts_at performance.venue.timezone "D, M j Y — g:i A" %}</td>
             <td>{{ performance.venue.name }}</td>
             <td>{{ performance.get_seating_mode_display }}</td>
         </tr>
@@ -70,7 +71,7 @@
     {% for row in performance_rows %}
         <tr>
             <td>{{ row.performance.event.title }}</td>
-            <td>{{ row.performance.starts_at|date:"M j Y g:i A" }}</td>
+            <td>{% showtime row.performance.starts_at row.performance.venue.timezone "M j Y g:i A" %}</td>
             <td>{{ row.sold }}</td>
             <td>{% if row.capacity is not None %}{{ row.capacity }}{% else %}—{% endif %}</td>
             <td>${{ row.revenue }}</td>

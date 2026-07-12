@@ -251,7 +251,7 @@ class CreateDemoTenantSeedsOwnerTests(TestCase):
 
         resp = self.client.post(
             "/login/",
-            {"email": membership.user.email, "password": "roxy-demo-owner-2024"},
+            {"email": membership.user.email, "password": "roxy-demo-owner-2026"},
             HTTP_HOST=host_for("roxy"),
         )
         self.assertRedirects(resp, "/dashboard/", fetch_redirect_response=False)

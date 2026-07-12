@@ -47,6 +47,9 @@ Commands:
   restart                        pm2 restart boxoffice
   logs [pm2-log-args...]         pm2 logs boxoffice [args passed through]
   migrate                        manage.py migrate
+  manage <command> [args...]     run any manage.py command under the app's real
+                                  env + DB (e.g. manage seed_showcase); avoids
+                                  manage.py's dev-settings fallback
   backup                         tarball data/+media/ (or pg_dump if DATABASE_URL
                                   is Postgres) into backups/, timestamped
   add-tenant <sub> [--name N]    no-wildcard tenant onboarding: Organization row +
@@ -212,6 +215,20 @@ cmd_migrate() {
   load_env
   cd "$APP_DIR"
   manage migrate
+}
+
+# ============================================================ manage ====
+# Run an arbitrary manage.py command under the app's real env (load_env
+# exports DJANGO_SETTINGS_MODULE=config.settings.prod and the rest of .env),
+# so one-off commands hit the SAME settings + DB the running app does.
+# Without this, `venv/bin/python manage.py <cmd>` falls back to manage.py's
+# built-in dev default and a different, unmigrated SQLite file — e.g.
+# `boxoffice-beta manage seed_showcase`.
+cmd_manage() {
+  [ $# -ge 1 ] || die "usage: boxoffice manage <command> [args...]"
+  load_env
+  cd "$APP_DIR"
+  manage "$@"
 }
 
 # ============================================================ backup ====
@@ -428,6 +445,7 @@ case "$cmd" in
   restart)        cmd_restart "$@";;
   logs)           cmd_logs "$@";;
   migrate)        cmd_migrate "$@";;
+  manage)         cmd_manage "$@";;
   backup)         cmd_backup "$@";;
   add-tenant)     cmd_add_tenant "$@";;
   remove-tenant)  cmd_remove_tenant "$@";;

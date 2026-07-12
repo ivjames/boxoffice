@@ -157,8 +157,9 @@ curl -s https://boxo.show/healthz   # {"status": "ok"}
 With no tenant Organization yet, `boxo.show` (the bare apex) serves the
 platform landing page — the platform-host path in `TenantMiddleware`, which a
 bare/absent subdomain always takes, so there's no reserved-subdomain caveat
-here anymore. `/admin/` is where you'll set up tenants' Stripe keys and
-branding once they're onboarded (next section).
+here anymore. `/admin/` is where you'll set up tenants' branding once they're
+onboarded; each theater connects its own payouts via Stripe Connect from its
+dashboard (next section).
 
 **Tenants live on their own subdomains.** The platform host (bare `boxo.show`
 / any reserved subdomain) always serves the marketing landing page and
@@ -215,24 +216,36 @@ propagates, or in an environment with no droplet/doctl at all — this is
 exactly what local verification of this tooling used, since there's no real
 droplet here).
 
-**Then, finish onboarding in `/admin`:** a freshly provisioned Organization
-has no Stripe keys and default (placeholder) branding — the storefront works
-but checkout will fail until you set:
+**Then, finish onboarding:** a freshly provisioned Organization has default
+(placeholder) branding and no connected Stripe account — the storefront works
+and checkout runs in **simulated stub mode** (no real charge) until:
 
-- `stripe_publishable_key`, `stripe_secret_key`, `stripe_webhook_secret`
-  (each theater connects its own Stripe account — see
-  `docs/ARCHITECTURE.md` "Checkout")
-- `logo`, `primary_color`, `accent_color` (branding)
-- `contact_email`, `timezone`, `currency` if the `provision_tenant`
-  defaults aren't right
+- **Branding** (`/admin`): `logo`, `primary_color`, `accent_color`;
+  `contact_email`, `timezone`, `currency` if the `provision_tenant` defaults
+  aren't right.
+- **Payments** (theater dashboard, owner-only): the theater's owner clicks
+  **Connect Stripe** on the dashboard Overview and completes Stripe's hosted
+  Express onboarding. Once Stripe reports the account `charges_enabled`, real
+  checkout switches on automatically (`stripe_charges_enabled` is cached from
+  the `account.updated` webhook). No keys are ever pasted into `/admin` — the
+  platform holds one set of Stripe keys in its env; the theater only ever holds
+  a connected account. See `docs/ARCHITECTURE.md` "Payments".
+
+The platform's own Stripe keys (`STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`,
+`STRIPE_WEBHOOK_SECRET`) and take-rate (`PLATFORM_FEE_PERCENT`,
+`PLATFORM_FEE_FIXED_CENTS`, default 0) are set once in the app-dir `.env` — see
+`.env.example`. Register the single Connect webhook endpoint at
+`https://boxo.show/webhooks/stripe/` (events: `checkout.session.completed`,
+`account.updated`).
 
 ### Onboarding from the admin (no SSH)
 
 The CLI above is the one-shot path. You can also do the whole thing from
 `/admin` without touching a shell — create the `Organization` (name +
-subdomain + branding + Stripe), then select it and run the **"Provision
+subdomain + branding), then select it and run the **"Provision
 infrastructure (DNS + nginx + TLS)"** action. That's the DB half (the row you
-just created) plus a *queued* infra half.
+just created) plus a *queued* infra half. (Payments aren't set here — the
+theater's owner connects Stripe from the dashboard afterward.)
 
 The split matters: the admin action only flips the tenant's `infra_status` to
 **Queued** — a plain DB write. It deliberately does **not** run

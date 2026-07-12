@@ -1,7 +1,8 @@
 """Tests for payments/services.py: Checkout Session creation (line items,
-minor-unit amounts, metadata, tenant URLs, per-org secret key) and webhook
-fulfillment (idempotency, hold re-validation, GA/reserved ticket creation).
-Every Stripe SDK call is monkeypatched -- these tests never hit the network.
+minor-unit amounts, metadata, tenant URLs, Connect direct charge + platform
+fee) and webhook fulfillment (idempotency, hold re-validation, GA/reserved
+ticket creation). Every Stripe SDK call is monkeypatched -- these tests never
+hit the network.
 """
 
 from datetime import timedelta
@@ -9,7 +10,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.db import IntegrityError, transaction
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
 from events.models import PricingZone, ZoneTemplate
@@ -19,9 +20,25 @@ from orders.tests import OrdersFixtureMixin
 from payments import services
 from venues.models import Seat
 
+# The platform key every Connect call authenticates with, and a stand-in
+# connected-account id for the test org. create_checkout_session passes the
+# platform key as `api_key` and the org's account as `stripe_account` (a direct
+# charge). Overridden into settings where the key value itself is asserted.
+PLATFORM_KEY = "sk_test_platform"
+TEST_ACCT = "acct_test_org_a"
+
 
 def host_for(subdomain):
     return f"{subdomain}.localhost"
+
+
+def enable_connect(org, account_id=TEST_ACCT):
+    """Put `org` in the "can take real payments" state: a connected account
+    with charges enabled. The equivalent of the theater having finished Stripe
+    Connect onboarding."""
+    org.stripe_account_id = account_id
+    org.stripe_charges_enabled = True
+    org.save(update_fields=["stripe_account_id", "stripe_charges_enabled"])
 
 
 class FakeStripeSession:
@@ -32,11 +49,11 @@ class FakeStripeSession:
         self.id = "cs_test_123"
 
 
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
 class CreateCheckoutSessionTests(OrdersFixtureMixin, TestCase):
     def setUp(self):
         self.build_ga_performance()
-        self.org.stripe_secret_key = "sk_test_org_a_secret"
-        self.org.save(update_fields=["stripe_secret_key"])
+        enable_connect(self.org)
         self.hold = order_services.set_ga_hold(
             organization=self.org,
             performance=self.performance,
@@ -48,18 +65,59 @@ class CreateCheckoutSessionTests(OrdersFixtureMixin, TestCase):
         self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
 
     @patch("payments.services.stripe.checkout.Session.create")
-    def test_ga_session_uses_org_secret_key_and_metadata(self, mock_create):
+    def test_ga_session_is_a_direct_charge_with_platform_key_and_metadata(self, mock_create):
         mock_create.return_value = FakeStripeSession()
 
         url = services.create_checkout_session(self.hold, self.request)
 
         self.assertEqual(url, "https://checkout.stripe.com/pay/cs_test_123")
         _, kwargs = mock_create.call_args
-        self.assertEqual(kwargs["api_key"], "sk_test_org_a_secret")
+        # Platform key authenticates; stripe_account selects the theater's
+        # connected account (the direct charge).
+        self.assertEqual(kwargs["api_key"], PLATFORM_KEY)
+        self.assertEqual(kwargs["stripe_account"], TEST_ACCT)
         self.assertEqual(kwargs["mode"], "payment")
         self.assertEqual(
             kwargs["metadata"], {"hold_id": str(self.hold.pk), "organization_id": str(self.org.pk)}
         )
+
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_no_application_fee_when_rate_is_zero(self, mock_create):
+        """The launch default (PLATFORM_FEE_PERCENT/FIXED_CENTS both 0) sends
+        NO application fee -- Stripe rejects an explicit fee of 0, and "no cut
+        yet" is intended. payment_intent_data is omitted entirely."""
+        mock_create.return_value = FakeStripeSession()
+
+        services.create_checkout_session(self.hold, self.request)
+
+        _, kwargs = mock_create.call_args
+        self.assertNotIn("payment_intent_data", kwargs)
+
+    @override_settings(PLATFORM_FEE_PERCENT=10, PLATFORM_FEE_FIXED_CENTS=0)
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_application_fee_from_global_percent(self, mock_create):
+        """10% of the 2 x $35 = $70 order -> $7.00 -> 700 minor units, set as
+        the application fee on the direct charge's PaymentIntent."""
+        mock_create.return_value = FakeStripeSession()
+
+        services.create_checkout_session(self.hold, self.request)
+
+        _, kwargs = mock_create.call_args
+        self.assertEqual(kwargs["payment_intent_data"]["application_fee_amount"], 700)
+
+    @override_settings(PLATFORM_FEE_PERCENT=10)
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_per_org_fee_override_wins_over_global(self, mock_create):
+        """A per-theater platform_fee_percent overrides the global default:
+        5% of $70 -> 350 minor units, not the global 10%'s 700."""
+        self.org.platform_fee_percent = Decimal("5")
+        self.org.save(update_fields=["platform_fee_percent"])
+        mock_create.return_value = FakeStripeSession()
+
+        services.create_checkout_session(self.hold, self.request)
+
+        _, kwargs = mock_create.call_args
+        self.assertEqual(kwargs["payment_intent_data"]["application_fee_amount"], 350)
 
     def test_ga_session_success_and_cancel_urls_are_on_tenant_subdomain(self):
         with patch("payments.services.stripe.checkout.Session.create") as mock_create:
@@ -96,13 +154,13 @@ class CreateCheckoutSessionTests(OrdersFixtureMixin, TestCase):
                 services.create_checkout_session(self.hold, self.request)
             mock_create.assert_not_called()
 
-    def test_no_stripe_key_returns_stub_url_without_calling_stripe(self):
-        """A tenant with no Stripe secret key can't authenticate a real
-        Stripe call -- calling Stripe anyway raises AuthenticationError and
-        500s "Proceed to payment". Instead create_checkout_session returns
-        the internal simulated-checkout stub URL and never touches Stripe."""
-        self.org.stripe_secret_key = ""
-        self.org.save(update_fields=["stripe_secret_key"])
+    def test_charges_not_enabled_returns_stub_url_without_calling_stripe(self):
+        """A tenant that hasn't finished Connect onboarding (charges not
+        enabled) can't take a real payment. create_checkout_session returns the
+        internal simulated-checkout stub URL and never touches Stripe, so the
+        browse -> buy -> ticket demo flow still works pre-launch."""
+        self.org.stripe_charges_enabled = False
+        self.org.save(update_fields=["stripe_charges_enabled"])
 
         with patch("payments.services.stripe.checkout.Session.create") as mock_create:
             url = services.create_checkout_session(self.hold, self.request)
@@ -120,8 +178,7 @@ class CreateCheckoutSessionReservedHoldTests(OrdersFixtureMixin, TestCase):
 
     def setUp(self):
         self.build_reserved_performance()
-        self.org.stripe_secret_key = "sk_test_org_a_secret"
-        self.org.save(update_fields=["stripe_secret_key"])
+        enable_connect(self.org)
         self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
 
     def test_reserved_hold_honors_a_per_performance_price_override(self):
@@ -504,8 +561,7 @@ class ZonePricingCheckoutAndFulfillmentTests(OrdersFixtureMixin, TestCase):
 
     def setUp(self):
         self.build_reserved_performance()  # section default tier: $65.00
-        self.org.stripe_secret_key = "sk_test_org_a_secret"
-        self.org.save(update_fields=["stripe_secret_key"])
+        enable_connect(self.org)
         self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
         self.template = ZoneTemplate.objects.create(
             organization=self.org, name="Premium", color="#c1121f"

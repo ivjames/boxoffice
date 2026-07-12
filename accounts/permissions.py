@@ -90,6 +90,7 @@ def _require_role(role_check):
 
 tenant_staff_required = _require_role(None)
 manager_required = _require_role(lambda m: m.can_manage_events())
+billing_required = _require_role(lambda m: m.can_manage_billing())
 box_office_required = _require_role(lambda m: m.can_sell_tickets())
 scanner_required = _require_role(lambda m: m.can_scan())
 

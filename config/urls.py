@@ -5,7 +5,7 @@ from django.urls import include, path
 
 # Brand Django's built-in admin so /admin/ reads as Boxo.show rather than the
 # default "Django administration". This is the platform (superuser) admin --
-# tenants, Stripe keys, branding -- not a tenant-facing surface.
+# tenants, payments/Connect status, branding -- not a tenant-facing surface.
 admin.site.site_header = "Boxo.show administration"
 admin.site.site_title = "Boxo.show admin"
 admin.site.index_title = "Platform administration"

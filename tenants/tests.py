@@ -30,30 +30,17 @@ def _completed(returncode=0, stdout="", stderr=""):
 
 
 class OrganizationAdminFormTests(TestCase):
-    """The admin form gives Organization sensible widgets: write-only Stripe
-    secrets, native color pickers, and validated dropdowns for timezone and
-    currency. The change form also carries a per-object provision button."""
+    """The admin form gives Organization sensible widgets: read-only Stripe
+    Connect status (account id + capability flags, set by onboarding/webhook,
+    not hand-edited), native color pickers, and validated dropdowns for
+    timezone and currency. The change form also carries a per-object provision
+    button."""
 
     def setUp(self):
         self.admin_user = get_user_model().objects.create_superuser(
             email="admin@boxo.show", password="pw"
         )
         self.client.force_login(self.admin_user)
-
-    # --- write-only secret handling (form-level) ---
-
-    def test_blank_secret_keeps_the_current_value(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
-        form = OrganizationAdminForm(instance=org)
-        form.cleaned_data = {"stripe_secret_key": ""}
-        # A blank submit must not wipe the live key.
-        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_EXISTING")
-
-    def test_new_secret_overwrites(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
-        form = OrganizationAdminForm(instance=org)
-        form.cleaned_data = {"stripe_secret_key": "sk_live_NEW"}
-        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_NEW")
 
     # --- server-side validation of timezone/currency (not just a dropdown) ---
 
@@ -74,12 +61,20 @@ class OrganizationAdminFormTests(TestCase):
     def _change_url(self, org):
         return reverse("admin:tenants_organization_change", args=[org.pk])
 
-    def test_stored_secret_never_reaches_the_html(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_TOPSECRET")
+    def test_connect_status_is_shown_read_only(self):
+        """The connected-account id and capability flags are driven by the
+        onboarding flow + account.updated webhook, so the admin surfaces them
+        read-only rather than as editable inputs a superuser could desync from
+        Stripe's real state."""
+        org = make_org("roxy")
+        org.stripe_account_id = "acct_readonly_check"
+        org.save(update_fields=["stripe_account_id"])
         resp = self.client.get(self._change_url(org))
-        self.assertNotContains(resp, "sk_live_TOPSECRET")
-        # Rendered as a password input, not a plain text field.
-        self.assertContains(resp, 'type="password"')
+        self.assertContains(resp, "Stripe Connect")
+        self.assertContains(resp, "acct_readonly_check")
+        # Read-only field: value is displayed, but there's no editable input
+        # named stripe_account_id to post a hand-typed acct_… through.
+        self.assertNotContains(resp, 'name="stripe_account_id"')
 
     def test_widgets_are_pickers_and_dropdowns(self):
         org = make_org("roxy")

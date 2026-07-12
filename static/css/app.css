@@ -488,6 +488,32 @@ textarea:focus-visible,
     color: #1e40af;
 }
 
+/* -- dashboard call-to-action banner (e.g. "connect Stripe") ------------- */
+/* Semantic status colors only (amber = attention), no tenant brand tokens,
+   so this stays neutral across every theater's storefront/dashboard. */
+.dash-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    padding: 0.875rem 1.125rem;
+    margin: 0 0 1.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border-color);
+    background: #f9fafb;
+}
+
+.dash-banner--warn {
+    border-color: #fcd34d;
+    background: #fffbeb;
+    color: #92400e;
+}
+
+.dash-banner form {
+    margin: 0;
+}
+
 /* -- hero / landing page ------------------------------------------------ */
 
 .hero--landing {

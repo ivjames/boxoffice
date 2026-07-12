@@ -9,6 +9,31 @@
     <h1>Overview</h1>
 </div>
 
+{% if not organization.stripe_charges_enabled %}
+<div class="dash-banner dash-banner--warn" role="status">
+    <div>
+        <strong>Payments aren’t live yet.</strong>
+        {% if request.membership.can_manage_billing %}
+            {% if organization.stripe_account_id %}
+                Your Stripe account is connected but still needs a few details before it can accept payments.
+            {% else %}
+                Connect a Stripe account to start taking real payments. Until then, checkout runs in simulated mode.
+            {% endif %}
+        {% else %}
+            An owner needs to finish connecting this theater’s Stripe account before you can sell tickets for real money.
+        {% endif %}
+    </div>
+    {% if request.membership.can_manage_billing %}
+    <form method="post" action="{% url 'connect_start' %}">
+        {% csrf_token %}
+        <button type="submit" class="button">
+            {% if organization.stripe_account_id %}Finish Stripe setup{% else %}Connect Stripe{% endif %}
+        </button>
+    </form>
+    {% endif %}
+</div>
+{% endif %}
+
 <div class="stat-row">
     <div class="stat-tile">
         <span class="stat-tile__value">{{ upcoming_performances|length }}</span>

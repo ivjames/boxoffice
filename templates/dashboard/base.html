@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% comment %}
+Base template for the INTERNAL staff area (dashboard, help center, scan
+result). It drops the public storefront site-header (`site_header` block left
+empty) so internal pages carry ONLY internal chrome: the dashboard section nav
+(templates/dashboard/_nav.html), which each internal page includes at the top
+of its content. That nav is where the single "View storefront" link lives —
+the one, explicit way back to the public/main site — so internal navigation
+stays internal and the consumer menu (Events / My tickets / Cart) never bleeds
+into the staff area.
+
+Public / buyer-facing pages (the storefront and /faq/) extend base.html
+directly and keep the storefront menu. The scanner screen (scan_home.html)
+overrides site_header with its own app bar and stays on base.html.
+{% endcomment %}
+{% block site_header %}{% endblock %}

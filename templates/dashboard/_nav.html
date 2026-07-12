@@ -1,5 +1,13 @@
 {% with url_name=request.resolver_match.url_name %}
 <nav class="dash-nav" aria-label="Dashboard section">
+    {# Venue identity for the staff area. Links to the dashboard home for those
+       who have it (box office+); scanners land on Scan, so it's plain text for
+       them rather than a link they can't follow. #}
+    {% if request.membership.can_sell_tickets %}
+        <a href="{% url 'dashboard_overview' %}" class="dash-nav__brand">{% if organization.logo %}<img src="{{ organization.logo.url }}" alt="" class="dash-nav__logo">{% endif %}{{ organization.name }}</a>
+    {% else %}
+        <span class="dash-nav__brand">{% if organization.logo %}<img src="{{ organization.logo.url }}" alt="" class="dash-nav__logo">{% endif %}{{ organization.name }}</span>
+    {% endif %}
     {% if request.membership.can_sell_tickets %}
         {# Scanners work the door only -- no overview/reports for them (they
            land on Scan). Overview starts at box office and up. #}

@@ -193,6 +193,14 @@ the `stripe_account` request option. See `payments/services.py` + `payments/view
 - Tenant isolation is non-negotiable: never query tenant data without the org filter.
 - Keep templates under each app's `templates/<app>/`; shared base in `templates/base.html`
   with branding via CSS variables from `request.organization`.
+- **Two chromes, kept separate.** Public/buyer pages (storefront, `/faq/`)
+  extend `base.html` and show the storefront menu. Internal staff pages
+  (dashboard, help center, scan result) extend `templates/dashboard/base.html`,
+  which drops that menu (`site_header` block emptied) so the consumer nav never
+  bleeds into the staff area; internal navigation is the dashboard section nav
+  (`templates/dashboard/_nav.html`), whose single "View storefront" link is the
+  one explicit way back to the main site. New staff pages extend
+  `dashboard/base.html`, not `base.html`.
 - Deployment: `bin/boxoffice` operate CLI (deploy/restart/logs/migrate/backup),
   gunicorn config, nginx sample, `DEPLOY.md`. Verify a CLEAN clone builds.
 

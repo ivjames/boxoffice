@@ -24,7 +24,11 @@
         <a href="{% url 'dashboard_team' %}"
            class="{% if url_name == 'dashboard_team' %}is-active{% endif %}">Team</a>
     {% endif %}
-    <a href="{% url 'home' %}" class="dash-nav__storefront">View storefront</a>
+    {% if request.membership.can_sell_tickets %}
+        {# Scanners work the door only -- previewing the public storefront isn't
+           part of that job, so the jump-to-storefront link starts at box office. #}
+        <a href="{% url 'home' %}" class="dash-nav__storefront">View storefront</a>
+    {% endif %}
     <span class="muted dash-nav__whoami">{{ request.user.email }} · {{ request.membership.get_role_display }}</span>
     <form method="post" action="{% url 'logout' %}" class="dash-nav__logout">
         {% csrf_token %}

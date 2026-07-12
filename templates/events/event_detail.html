@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}{{ event.title }} — {{ organization.name }}{% endblock %}
 
@@ -20,7 +21,7 @@
             {% for row in performance_rows %}
                 <li class="performance-list__item">
                     <div>
-                        <strong>{{ row.performance.starts_at|date:"D, M j Y — g:i A" }}</strong>
+                        <strong>{% showtime row.performance.starts_at row.performance.venue.timezone "D, M j Y — g:i A" %}</strong>
                         <span class="badge">{{ row.performance.get_seating_mode_display }}</span>
                         {% if row.available > 0 %}
                             <span class="badge badge--available">{{ row.available }} available</span>

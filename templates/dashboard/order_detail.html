@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}Order {{ order.token }} — {{ organization.name }}{% endblock %}
 
@@ -8,7 +9,7 @@
 <h1>Order {{ order.token }}</h1>
 <p><span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
 <p><strong>Buyer:</strong> {{ order.buyer_name }} — {{ order.buyer_email }}</p>
-<p><strong>Performance:</strong> {{ order.performance.event.title }} — {{ order.performance.starts_at|date:"D, M j Y — g:i A" }} ({{ order.performance.venue.name }})</p>
+<p><strong>Performance:</strong> {{ order.performance.event.title }} — {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ({{ order.performance.venue.name }})</p>
 <p><strong>Total:</strong> ${{ order.total }}</p>
 <p class="muted">Placed {{ order.created_at|date:"M j Y g:i A" }}</p>
 

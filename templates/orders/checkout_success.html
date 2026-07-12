@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}Order confirmation — {{ organization.name }}{% endblock %}
 
@@ -17,7 +18,7 @@
             <strong>{{ order.performance.event.title }}</strong> are ready.
         </p>
         <p>
-            {{ order.performance.starts_at|date:"D, M j Y — g:i A" }} ·
+            {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ·
             {{ order.performance.venue.name }}
         </p>
         <p><a class="button" href="{% url 'ticket_detail' order.token %}">View your tickets</a></p>

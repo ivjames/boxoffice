@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}{{ organization.name }}{% endblock %}
 
@@ -20,7 +21,7 @@
                     <div class="event-card__body">
                         <h2>{{ row.event.title }}</h2>
                         {% if row.event.category %}<p class="event-card__category">{{ row.event.category }}</p>{% endif %}
-                        <p class="event-card__next">Next: {{ row.performances.0.starts_at|date:"D, M j Y — g:i A" }}</p>
+                        <p class="event-card__next">Next: {% showtime row.performances.0.starts_at row.performances.0.venue.timezone "D, M j Y — g:i A" %}</p>
                         <div class="event-card__meta">
                             {% if row.min_price is not None %}
                                 <span class="event-card__price">from ${{ row.min_price }}</span>

@@ -82,8 +82,25 @@ Shared-schema, row-level tenancy (NOT schema-per-tenant). Simpler ops, fine for 
 - `orders` — `Cart`/`Hold`, `Order`, `OrderItem`, `Ticket`, `Payment`.
 - `payments` — Stripe checkout session creation + webhook handling (per tenant).
 - `scanning` — ticket validation + redemption endpoint and staff scan UI.
+- `helpcenter` — tenant-authored knowledge base + built-in FAQ, surfaced to
+  staff (role-filtered, in the dashboard) and buyers (public storefront FAQ).
+  See `docs/HELP.md`.
 
 ## Key data & flows
+
+### Help center
+
+- `HelpArticle` (tenant-scoped) is a manager-authored article — house rules,
+  show info, policies, how-tos. Its `visibility` maps onto the `accounts`
+  role hierarchy: `public` > `staff` > `box_office` > `manager` > `owner`,
+  cumulative in the same direction roles are. `public` articles also appear on
+  the storefront FAQ.
+- `HelpArticle.objects.readable_by(org, membership)` (staff) and `.public(org)`
+  (storefront) are the ONLY places visibility → queryset filtering happens.
+- A small set of read-only **built-in** articles (`helpcenter/builtins.py`)
+  ships as a fallback so Help/FAQ is useful before a manager writes anything;
+  built-ins are filtered by the same visibility rules and merged into the same
+  category groups as authored content. Full detail in `docs/HELP.md`.
 
 ### Seating
 
@@ -157,7 +174,10 @@ the `stripe_account` request option. See `payments/services.py` + `payments/view
 - `/performances/<id>/` seat/qty selection
 - `/cart/`, `/checkout/`, `/checkout/success/`, `/checkout/cancel/`
 - `/tickets/<order-token>/` order confirmation + tickets
+- `/faq/` public storefront help/FAQ (public articles + built-ins)
 - `/dashboard/` staff area (events CRUD, orders, reports)
+- `/dashboard/help/` staff help (role-filtered); `/dashboard/help/manage/`,
+  `/dashboard/help/new/`, `/dashboard/help/<id>/edit/`, `.../delete/` (manager+)
 - `/scan/` scanner UI, `/S/<token>/<sig>/` (internal redeem endpoint; the QR
   encodes a bare `<token>.<sig>` code, not this URL)
 - `/webhooks/stripe/` tenant Stripe webhook

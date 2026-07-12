@@ -1,0 +1,50 @@
+/* BOXO.SHOW — Design Tokens
+   From the design handoff (boxo-design-tokens.css). Loaded only on the
+   platform marketing landing page (templates/tenants/platform_landing.html),
+   never on tenant storefronts or the dashboard, so these theatrical
+   defaults never collide with per-tenant --primary-color/--accent-color
+   branding. All --boxo-* names are namespaced for the same reason. */
+
+:root {
+  /* Color */
+  --boxo-ink: #0D0D0D;          /* page background */
+  --boxo-oxblood: #7C1C2B;      /* card depth, gradients */
+  --boxo-oxblood-dark: #57121D;
+  --boxo-gold: #C9A24B;         /* primary accent, CTAs, borders */
+  --boxo-gold-bright: #E4C670;  /* headlines, hover, focus ring */
+  --boxo-cream: #F3E9D6;        /* body text base (use with alpha) */
+  --boxo-teal: #0F4C4A;         /* reserved secondary accent */
+  --boxo-line: rgba(201, 162, 75, 0.3); /* hairline borders/dividers */
+
+  /* Text opacity scale — apply to --boxo-cream for body copy.
+     All values verified >=7:1 contrast against --boxo-ink (WCAG AAA). */
+  --boxo-text-primary: rgba(243, 233, 214, 0.94);
+  --boxo-text-secondary: rgba(243, 233, 214, 0.88);
+  --boxo-text-muted: rgba(243, 233, 214, 0.8);
+
+  /* Typography */
+  --boxo-font-display: 'Abril Fatface', serif;       /* hero + closing CTA headline only */
+  --boxo-font-body: 'Josefin Sans', sans-serif;       /* everything else, incl. the wordmark */
+  --boxo-weight-body: 400;   /* minimum weight for any readable text */
+  --boxo-weight-heading: 700;
+
+  /* Spacing (post "crush the vertical spacing" pass — keep tight) */
+  --boxo-section-padding: 44px;
+  --boxo-section-padding-mobile: 32px;
+  --boxo-hero-padding: 64px 32px 52px;
+  --boxo-hero-padding-mobile: 48px 20px 40px;
+
+  /* Radius */
+  --boxo-radius-sm: 2px;   /* buttons, cards, chips */
+  --boxo-radius-md: 4px;   /* preview frame */
+
+  /* Motion */
+  --boxo-transition-fast: 0.2s ease;
+  --boxo-transition-swap: 0.3s ease;   /* preview text/color cross-fade */
+  --boxo-rotation-interval: 5000ms;    /* auto-rotating example carousel */
+
+  /* Breakpoints (reference values — use in your build's media queries) */
+  --boxo-bp-tablet: 1024px;
+  --boxo-bp-mobile: 767px;
+  --boxo-bp-mobile-sm: 480px;
+}

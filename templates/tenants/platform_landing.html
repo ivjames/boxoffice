@@ -1,6 +1,17 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}Boxo.show — white-label box office software for theaters{% endblock %}
+
+{% block body_class %}platform-landing{% endblock %}
+
+{% block extra_head %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Josefin+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'css/boxo-tokens.css' %}">
+    <link rel="stylesheet" href="{% static 'css/boxo-landing.css' %}">
+{% endblock %}
 
 {% block content %}
     <section class="hero hero--landing">
@@ -17,115 +28,118 @@
             <a class="button button--secondary" href="#how">See how it works</a>
         </div>
         <p class="hero__note">One deployment, many venues — each with its own brand, catalog, and staff.</p>
+        <div class="marquee-strip" aria-hidden="true">
+            <div class="bulbs">
+                <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+        </div>
     </section>
 
     <section class="landing-section" id="features">
-        <p class="landing-section__eyebrow">Everything in one place</p>
-        <h2 class="landing-section__title">A box office that does the whole job</h2>
-        <div class="landing-grid">
-            <div class="landing-card">
-                <span class="landing-card__icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7M3 7l2-3h14l2 3M8 12h8"/></svg>
-                </span>
-                <h3>Browse &amp; buy</h3>
-                <p>General-admission or reserved-seat performances, live availability, a held cart with a countdown timer, and Stripe Checkout.</p>
+        <div class="boxo-wrap">
+            <div class="landing-section__head">
+                <p class="landing-section__eyebrow">Everything in one place</p>
+                <h2 class="landing-section__title">A box office that does the whole job</h2>
             </div>
-            <div class="landing-card">
-                <span class="landing-card__icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13 13h3v3M20 20v.01M16 20h.01M20 16h.01"/></svg>
-                </span>
-                <h3>Tickets that scan</h3>
-                <p>Every paid order is emailed QR tickets automatically. Door staff scan and redeem them from the dashboard — no separate app to install.</p>
-            </div>
-            <div class="landing-card">
-                <span class="landing-card__icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 13h4M7 16h6"/></svg>
-                </span>
-                <h3>A staff dashboard</h3>
-                <p>Role-gated event and performance management, pricing tiers, order lookup, and sales reporting — everything your team needs behind one login.</p>
-            </div>
-            <div class="landing-card">
-                <span class="landing-card__icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h2v2H7zM11 8h2v2h-2zM15 8h2v2h-2zM7 12h2v2H7zM11 12h6v2h-6z"/></svg>
-                </span>
-                <h3>Seating charts</h3>
-                <p>Draw reserved-seat maps with sections and zones, or keep it simple with general admission. Buyers pick real seats; you keep control of the house.</p>
-            </div>
-            <div class="landing-card">
-                <span class="landing-card__icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg>
-                </span>
-                <h3>Scan at the door</h3>
-                <p>A camera-based scanner runs right in the browser on any phone or tablet. Valid, already-used, and unknown tickets are called out instantly.</p>
-            </div>
-            <div class="landing-card">
-                <span class="landing-card__icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
-                </span>
-                <h3>Sales you can see</h3>
-                <p>Track orders and revenue per event and performance, so you know how a run is selling while there's still time to do something about it.</p>
+            <div class="landing-grid">
+                <div class="landing-card">
+                    <h3>Browse &amp; buy</h3>
+                    <p>General-admission or reserved-seat performances, live availability, a held cart with a countdown timer, and Stripe Checkout.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>Tickets that scan</h3>
+                    <p>Every paid order is emailed QR tickets automatically. Door staff scan and redeem them from the dashboard — no separate app to install.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>A staff dashboard</h3>
+                    <p>Role-gated event and performance management, pricing tiers, order lookup, and sales reporting — everything your team needs behind one login.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>Seating charts</h3>
+                    <p>Draw reserved-seat maps with sections and zones, or keep it simple with general admission. Buyers pick real seats; you keep control of the house.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>Scan at the door</h3>
+                    <p>A camera-based scanner runs right in the browser on any phone or tablet. Valid, already-used, and unknown tickets are called out instantly.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>Sales you can see</h3>
+                    <p>Track orders and revenue per event and performance, so you know how a run is selling while there's still time to do something about it.</p>
+                </div>
             </div>
         </div>
     </section>
 
     <section class="landing-section" id="how">
-        <p class="landing-section__eyebrow">How it works</p>
-        <h2 class="landing-section__title">Live in three steps</h2>
-        <ol class="landing-steps">
-            <li class="landing-step">
-                <span class="landing-step__num">1</span>
-                <div>
+        <div class="boxo-wrap">
+            <div class="landing-section__head">
+                <p class="landing-section__eyebrow">How it works</p>
+                <h2 class="landing-section__title">Live in three steps</h2>
+            </div>
+            <ol class="landing-steps">
+                <li class="landing-step">
                     <h3>Set up your venue</h3>
                     <p>We spin up your branded storefront on your own subdomain, with your colors and logo. Add your team and their roles.</p>
-                </div>
-            </li>
-            <li class="landing-step">
-                <span class="landing-step__num">2</span>
-                <div>
+                </li>
+                <li class="landing-step">
                     <h3>Publish your events</h3>
                     <p>Create events and performances, draw your seating chart or set general admission, and price your tiers. Publish when you're ready.</p>
-                </div>
-            </li>
-            <li class="landing-step">
-                <span class="landing-step__num">3</span>
-                <div>
+                </li>
+                <li class="landing-step">
                     <h3>Sell &amp; scan</h3>
                     <p>Buyers check out through Stripe and get QR tickets by email. On show night, your staff scans them at the door from any phone.</p>
-                </div>
-            </li>
-        </ol>
+                </li>
+            </ol>
+        </div>
     </section>
 
-    <section class="landing-section landing-split" id="white-label">
-        <div class="landing-split__text">
-            <p class="landing-section__eyebrow">Your brand, not ours</p>
-            <h2 class="landing-section__title">It looks like your box office, because it is</h2>
-            <p class="landing-split__lede">
-                Boxo.show runs quietly in the background. Ticket buyers see your name,
-                your colors, and your domain — from the first browse to the ticket in
-                their inbox.
-            </p>
-            <ul class="landing-checklist">
-                <li>Your own subdomain and branding on every page</li>
-                <li>Your logo and palette carried through to emailed tickets</li>
-                <li>Isolated per venue — one theater never sees another's catalog or orders</li>
-                <li>Run one venue or many from a single, shared deployment</li>
-            </ul>
-        </div>
-        <aside class="landing-split__panel" aria-hidden="true">
-            <div class="brand-preview">
-                <div class="brand-preview__bar">
-                    <span class="brand-preview__dot"></span>
-                    <span class="brand-preview__url">yourtheater.boxo.show</span>
+    <section class="landing-section" id="white-label">
+        <div class="boxo-wrap landing-split">
+            <div class="landing-split__text">
+                <p class="landing-section__eyebrow">Your brand, not ours</p>
+                <h2 class="landing-section__title">It looks like your box office, because it is</h2>
+                <p class="landing-split__lede">
+                    Boxo.show runs quietly in the background. Ticket buyers see your name,
+                    your colors, and your domain — from the first browse to the ticket in
+                    their inbox.
+                </p>
+                <ul class="landing-checklist">
+                    <li>Your own subdomain and branding on every page</li>
+                    <li>Your logo and palette carried through to emailed tickets</li>
+                    <li>Isolated per venue — one theater never sees another's catalog or orders</li>
+                    <li>Run one venue or many from a single, shared deployment</li>
+                </ul>
+            </div>
+            <div class="landing-split__panel">
+                <div class="example-label">
+                    <span>Live on <span class="venue-name" id="boxo-preview-venue-name">The Regal Theatre</span></span>
+                    <div class="example-progress" aria-hidden="true">
+                        <span class="active" data-i="0"></span>
+                        <span data-i="1"></span>
+                        <span data-i="2"></span>
+                    </div>
                 </div>
-                <div class="brand-preview__body">
-                    <p class="brand-preview__kicker">Now playing</p>
-                    <p class="brand-preview__title">A Midsummer Night's Dream</p>
-                    <p class="brand-preview__meta">Fri &amp; Sat · 7:30 PM · from $24</p>
-                    <span class="brand-preview__cta">Buy tickets</span>
+                <div class="preview-frame" id="boxo-preview-panel" data-theme="regal"
+                     role="group" aria-label="Rotating example storefront: The Regal Theatre" aria-live="polite">
+                    <div class="preview-chrome">
+                        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+                        <span id="boxo-preview-subdomain" style="margin-left:10px;">regaltheatre.boxo.show</span>
+                    </div>
+                    <div class="ticket-card">
+                        <div class="art"></div>
+                        <div class="body">
+                            <div class="eyebrow">Now playing</div>
+                            <h3 class="show-title" id="boxo-preview-show">Hamlet</h3>
+                            <div class="venue" id="boxo-preview-venue">Fri &amp; Sat · 7:30 PM · from $24</div>
+                            <div class="row">
+                                <span class="price" id="boxo-preview-price">From $24</span>
+                                <button type="button" class="button button--secondary button--sm">Buy tickets</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </aside>
+        </div>
     </section>
 
     <section class="landing-cta">
@@ -133,4 +147,8 @@
         <p>Tell us about your venue and we'll get you set up.</p>
         <a class="button" href="mailto:hello@boxo.show?subject=Boxo.show%20for%20my%20venue">Get in touch</a>
     </section>
+{% endblock %}
+
+{% block extra_scripts %}
+    <script src="{% static 'js/boxo-landing.js' %}" defer></script>
 {% endblock %}

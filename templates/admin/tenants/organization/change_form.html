@@ -1,0 +1,25 @@
+{% extends "admin/change_form.html" %}
+{% load i18n %}
+
+{% comment %}
+Adds a "Provision infrastructure" button to the change form's object-tools
+row, next to History / View on site. It POSTs to the admin
+`tenants_organization_provision` route (get_urls in tenants/admin.py), which
+reuses the bulk action's queueing logic for just this tenant. POST (not a
+plain link) because it mutates infra_status.
+{% endcomment %}
+
+{% block object-tools-items %}
+    {% if original %}
+        <li>
+            <form method="post"
+                  action="{% url 'admin:tenants_organization_provision' original.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="historylink">
+                    {% translate "Provision infrastructure" %}
+                </button>
+            </form>
+        </li>
+    {% endif %}
+    {{ block.super }}
+{% endblock %}

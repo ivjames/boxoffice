@@ -160,6 +160,28 @@ RESERVED_SUBDOMAINS = set(
 # this suffix off the Host header to find the subdomain.
 BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
 
+# --- Stripe Connect (platform account) -----------------------------------
+# boxo.show is the platform Stripe account; each theater is a connected
+# (Express) account onboarded through it. Unlike the old bring-your-own-key
+# model, these are PLATFORM-wide credentials set once here (via env), not
+# per-tenant rows: the one secret key authenticates every call (with
+# `stripe_account=<acct_id>` selecting the theater for a direct charge), and
+# the one webhook secret verifies the single Connect endpoint that receives
+# every theater's events. See payments/services.py + payments/views.py.
+STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
+STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
+STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
+
+# Platform take rate applied to each order as a Stripe application fee on the
+# direct charge (payments.services.application_fee_amount): PLATFORM_FEE_PERCENT
+# percent of the order total plus PLATFORM_FEE_FIXED_CENTS flat. BOTH DEFAULT
+# TO 0 -- i.e. no cut -- which is deliberate: the fee MECHANISM ships now, but
+# the actual rate is set later, per the launch plan. A per-theater override
+# lives on Organization.platform_fee_percent. With a 0 rate no application fee
+# is sent at all (Stripe rejects an explicit fee of 0).
+PLATFORM_FEE_PERCENT = env.int("PLATFORM_FEE_PERCENT", default=0)
+PLATFORM_FEE_FIXED_CENTS = env.int("PLATFORM_FEE_FIXED_CENTS", default=0)
+
 # --- TEST CHECKOUT (env-gated fake-payment path) -------------------------
 # When True, orders/views.py's checkout_test view (and the "Pay (TEST -- no
 # real charge)" button it powers, see templates/orders/checkout.html +

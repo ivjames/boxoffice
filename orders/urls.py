@@ -9,8 +9,8 @@ urlpatterns = [
     path("cart/release/", views.cart_release, name="cart_release"),
     path("checkout/", views.checkout_view, name="checkout"),
     # STUB CHECKOUT: the simulated hosted-payment page create_checkout_session
-    # redirects to when a tenant has no Stripe keys -- see checkout_stub's
-    # docstring.
+    # redirects to when a tenant hasn't finished Stripe Connect onboarding
+    # (charges not enabled) -- see checkout_stub's docstring.
     path("checkout/stub/", views.checkout_stub, name="checkout_stub"),
     # TEST CHECKOUT: always routed, but 404s per-request unless
     # settings.ENABLE_TEST_CHECKOUT is True -- see checkout_test's docstring.

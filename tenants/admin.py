@@ -28,16 +28,17 @@ _CURRENCY_CHOICES = [
 class OrganizationAdminForm(forms.ModelForm):
     """Admin form for Organization with sensible widgets:
 
-    - Stripe secret + webhook secret are WRITE-ONLY: rendered as empty password
-      inputs (render_value=False so the stored secret never reaches the HTML),
-      and a blank submit KEEPS the current value instead of wiping it. Only
-      typing a new value overwrites it. The publishable key (pk_…) is public,
-      so it stays a normal text field.
     - Colors use a native color picker (<input type="color">).
     - Timezone and currency are ChoiceFields, so the value is validated
       server-side against the allowed set — not just rendered as a dropdown.
       (A bare Select widget only styles the input; the underlying CharField
       would still accept an arbitrary posted value like `Amerca/New_York`.)
+
+    Stripe Connect fields (account id + capability flags) aren't declared here:
+    they're driven by the onboarding flow and the `account.updated` webhook
+    (see payments/services.py), so the admin renders them read-only rather than
+    as editable inputs — a hand-typed acct_… or a flipped flag would just be
+    overwritten by the next webhook, or worse, mask the real Stripe state.
     """
 
     # Declared as fields (not just widgets) so `full_clean` rejects any value
@@ -50,28 +51,9 @@ class OrganizationAdminForm(forms.ModelForm):
         model = Organization
         fields = "__all__"
         widgets = {
-            "stripe_secret_key": forms.PasswordInput(render_value=False),
-            "stripe_webhook_secret": forms.PasswordInput(render_value=False),
             "primary_color": forms.TextInput(attrs={"type": "color"}),
             "accent_color": forms.TextInput(attrs={"type": "color"}),
         }
-        help_texts = {
-            "stripe_secret_key": "Write-only. Leave blank to keep the current secret.",
-            "stripe_webhook_secret": "Write-only. Leave blank to keep the current secret.",
-        }
-
-    def _keep_current_if_blank(self, field):
-        # A blank secret field means "unchanged" (the value is never rendered
-        # back into the form), so preserve whatever is already stored rather
-        # than overwriting a live key with "".
-        submitted = self.cleaned_data.get(field)
-        return submitted if submitted else getattr(self.instance, field, "")
-
-    def clean_stripe_secret_key(self):
-        return self._keep_current_if_blank("stripe_secret_key")
-
-    def clean_stripe_webhook_secret(self):
-        return self._keep_current_if_blank("stripe_webhook_secret")
 
 
 @admin.register(Organization)
@@ -83,7 +65,15 @@ class OrganizationAdmin(admin.ModelAdmin):
     list_filter = ("is_active", "infra_status")
     search_fields = ("name", "slug", "subdomain", "contact_email")
     prepopulated_fields = {"slug": ("name",)}
-    readonly_fields = ("infra_status", "infra_message", "created_at", "updated_at")
+    readonly_fields = (
+        "stripe_account_id",
+        "stripe_charges_enabled",
+        "stripe_details_submitted",
+        "infra_status",
+        "infra_message",
+        "created_at",
+        "updated_at",
+    )
     actions = ("provision_infrastructure",)
 
     fieldsets = (
@@ -91,16 +81,20 @@ class OrganizationAdmin(admin.ModelAdmin):
         ("Branding", {"fields": ("logo", "primary_color", "accent_color")}),
         ("Localization", {"fields": ("timezone", "currency")}),
         (
-            "Stripe",
+            "Stripe Connect",
             {
                 "fields": (
-                    "stripe_publishable_key",
-                    "stripe_secret_key",
-                    "stripe_webhook_secret",
+                    "stripe_account_id",
+                    "stripe_charges_enabled",
+                    "stripe_details_submitted",
+                    "platform_fee_percent",
                 ),
                 "description": (
-                    "Per-tenant Stripe credentials. Secret fields are write-only — "
-                    "leave blank to keep the current value."
+                    "This theater's Stripe Connect (Express) status. The account id "
+                    "and capability flags are read-only — they're set when the theater "
+                    "completes onboarding and kept current by the account.updated "
+                    "webhook. Set a Platform fee % only to override the global default "
+                    "for this theater."
                 ),
             },
         ),

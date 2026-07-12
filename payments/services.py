@@ -1,21 +1,26 @@
-"""Stripe integration: Checkout Session creation and the
-checkout.session.completed webhook's fulfillment logic (order/ticket
-creation). See docs/ARCHITECTURE.md "Checkout" for the end-to-end flow this
-implements.
+"""Stripe integration: Connect (Express) onboarding, Checkout Session
+creation, and the checkout.session.completed webhook's fulfillment logic
+(order/ticket creation). See docs/ARCHITECTURE.md "Checkout" for the
+end-to-end flow this implements.
 
-Per-tenant Stripe accounts (white label): every Stripe SDK call below takes
-an explicit `api_key=` / verifies against an explicit webhook secret pulled
-from the Organization row involved in *that* call, instead of setting
-`stripe.api_key` globally. stripe-python supports this natively -- `api_key`
-is one of the "request options" `CreateableAPIResource.create()` strips out
-of `**params` before making the HTTP call (see
-`stripe._api_resource.APIResource._static_request` /
-`extract_options_from_dict` in the installed SDK). That per-request key is
-what makes it safe for two tenants' checkouts to be created concurrently in
-the same gunicorn worker without ever racing on a shared global -- there is
-no shared global. Confirmed against the Stripe Python SDK docs via the
-Stripe MCP (stripe-python is currently in its v15.x line; requirements.txt
-pins a wide `stripe>=11,<16` range).
+Stripe Connect (Express), direct charges: boxo.show is the platform Stripe
+account (settings.STRIPE_SECRET_KEY); every theater is a CONNECTED account
+(Organization.stripe_account_id, an `acct_…`). There are no per-tenant secret
+keys. Every SDK call uses the ONE platform key and selects the theater with
+the request option `stripe_account=<acct_id>` (the `Stripe-Account` header).
+Checkout Sessions are created *on the connected account* (a direct charge),
+so the theater is merchant of record — its name is on the buyer's statement,
+it bears its own Stripe fees and disputes — and the platform's cut rides
+along as `payment_intent_data.application_fee_amount` (see
+application_fee_amount() below). `stripe_account`, like `api_key`, is a
+stripe-python "request option" stripped out of `**params` before the HTTP
+call, so passing it per-call (rather than a shared global) is what keeps two
+theaters' checkouts safe to create concurrently in one gunicorn worker.
+
+Webhooks are a SINGLE platform Connect endpoint verified against
+settings.STRIPE_WEBHOOK_SECRET; the connected account each event belongs to
+arrives in the event's top-level `account` field (see payments/views.py),
+not the Host header. There is no per-tenant webhook secret anymore.
 
 Idempotency: `fulfill_checkout_session` is keyed on
 `Order.stripe_checkout_session_id`. Stripe retries webhook delivery (e.g. on
@@ -33,7 +38,9 @@ buyer_name/payment_ref come from.
 """
 
 import logging
+from decimal import ROUND_HALF_UP, Decimal
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.urls import reverse
 from django.utils import timezone
@@ -76,11 +83,132 @@ class AvailabilityChangedError(FulfillmentError):
 
 class TenantMismatchError(FulfillmentError):
     """The session's metadata.organization_id doesn't match the organization
-    whose webhook secret verified it. Shouldn't be reachable in practice
-    (each org's Stripe webhook endpoint is configured with that org's own
-    signing secret, so a payload that verifies against org A's secret was,
-    by construction, sent to org A's endpoint about an org A session) --
-    kept as defense-in-depth against a misconfigured webhook endpoint."""
+    resolved from the event's connected account (`event.account` ->
+    Organization.stripe_account_id). Shouldn't be reachable in practice — the
+    same code set both when the session was created — but re-checked as
+    defense-in-depth against a metadata/account mismatch before we hand out
+    tickets against the wrong tenant."""
+
+
+# --- Connect (Express) onboarding ----------------------------------------
+
+
+class ConnectError(Exception):
+    """Raised by the onboarding helpers when Stripe can't create/refresh a
+    connected account. Message is logged; a generic version is flashed to the
+    staff member (it may carry Stripe API detail not meant for the buyer)."""
+
+
+def create_onboarding_link(organization, *, return_url, refresh_url):
+    """Ensure `organization` has a Stripe Connect (Express) account and return
+    a one-time Account Link URL to send the theater to Stripe's hosted
+    onboarding. Creates the connected account on first call (storing its
+    `acct_…` on the org) and reuses it thereafter, so a theater that abandons
+    onboarding and comes back resumes the same account rather than spawning a
+    new one. The platform key (settings.STRIPE_SECRET_KEY) authenticates all
+    of this; the theater never sees or holds a key.
+
+    Account Links are single-use and short-lived — this is why onboarding is a
+    redirect generated fresh each time, not a stored URL. `refresh_url` is
+    where Stripe bounces the user if the link is reused/expired (loop them
+    back through here); `return_url` is where Stripe sends them when they
+    finish (the return view then calls refresh_account_status)."""
+    try:
+        if not organization.stripe_account_id:
+            account = stripe.Account.create(
+                type="express",
+                email=organization.contact_email or None,
+                business_profile={"name": organization.name},
+                metadata={"organization_id": str(organization.pk)},
+                api_key=settings.STRIPE_SECRET_KEY,
+            )
+            organization.stripe_account_id = account.id
+            organization.save(update_fields=["stripe_account_id"])
+
+        link = stripe.AccountLink.create(
+            account=organization.stripe_account_id,
+            type="account_onboarding",
+            return_url=return_url,
+            refresh_url=refresh_url,
+            api_key=settings.STRIPE_SECRET_KEY,
+        )
+    except stripe.error.StripeError as exc:
+        logger.exception("Stripe Connect onboarding link failed for org %s", organization.pk)
+        raise ConnectError(str(exc)) from exc
+    return link.url
+
+
+def refresh_account_status(organization):
+    """Re-read the connected account from Stripe and cache its two capability
+    flags (`charges_enabled`, `details_submitted`) onto the Organization.
+    Called both from the onboarding return view (so the dashboard reflects
+    completion immediately) and the `account.updated` webhook (so a theater
+    that finishes/loses a requirement later stays current without staff
+    action). No-op returning False if the org has no connected account yet."""
+    if not organization.stripe_account_id:
+        return False
+    try:
+        account = stripe.Account.retrieve(
+            organization.stripe_account_id, api_key=settings.STRIPE_SECRET_KEY
+        )
+    except stripe.error.StripeError:
+        logger.exception("Could not retrieve Stripe account for org %s", organization.pk)
+        return False
+    return apply_account_status(organization, account)
+
+
+def apply_account_status(organization, account):
+    """Persist the capability flags off a Stripe Account object (from a
+    retrieve OR an account.updated webhook payload — both expose the same
+    fields, dict- or attr-accessed). Writes only when something changed, so a
+    stream of unrelated account.updated events doesn't churn the row."""
+    charges_enabled = bool(_account_field(account, "charges_enabled"))
+    details_submitted = bool(_account_field(account, "details_submitted"))
+    if (
+        organization.stripe_charges_enabled == charges_enabled
+        and organization.stripe_details_submitted == details_submitted
+    ):
+        return charges_enabled
+    organization.stripe_charges_enabled = charges_enabled
+    organization.stripe_details_submitted = details_submitted
+    organization.save(update_fields=["stripe_charges_enabled", "stripe_details_submitted"])
+    return charges_enabled
+
+
+def _account_field(account, name):
+    # Stripe objects support attribute access; a raw webhook `data.object`
+    # dict does not. Accept either so callers don't have to normalize first.
+    if isinstance(account, dict):
+        return account.get(name)
+    return getattr(account, name, None)
+
+
+# --- Platform fee --------------------------------------------------------
+
+
+def application_fee_amount(organization, total):
+    """The platform's cut for an order whose total is `total` (Decimal
+    dollars), as integer minor units for Stripe's `application_fee_amount`,
+    or None when there is no fee to charge.
+
+    Rate = the org's `platform_fee_percent` override if set, else the global
+    settings.PLATFORM_FEE_PERCENT, plus a flat settings.PLATFORM_FEE_FIXED_CENTS
+    per order. Both default to 0 (see settings/base.py), so until a real rate
+    is chosen this returns None and the Checkout Session is created WITHOUT an
+    application fee — Stripe rejects an explicit fee of 0, and "no cut yet" is
+    the intended launch behavior. Returning None (not 0) is what lets the
+    caller omit the parameter entirely."""
+    percent = organization.platform_fee_percent
+    if percent is None:
+        percent = settings.PLATFORM_FEE_PERCENT
+    percent = Decimal(percent)
+    fixed_cents = int(settings.PLATFORM_FEE_FIXED_CENTS)
+
+    pct_cents = (total * percent).quantize(Decimal("1"), rounding=ROUND_HALF_UP)  # percent → cents
+    fee_cents = int(pct_cents) + fixed_cents
+    if fee_cents <= 0:
+        return None
+    return fee_cents
 
 
 # --- Checkout Session creation ------------------------------------------
@@ -94,15 +222,19 @@ def create_checkout_session(hold, request):
     host (for success/cancel URLs) and nothing else; it is never sent to
     Stripe.
 
-    STUB MODE: if this tenant hasn't connected a Stripe account yet
-    (Organization.stripe_secret_key is blank), there is no key to
-    authenticate a real Stripe call -- calling Stripe anyway just raises
-    stripe.error.AuthenticationError and 500s the "Proceed to payment" POST.
-    Instead we SIMULATE the hosted checkout: return the URL of an internal
-    stub payment page (orders/views.py's checkout_stub) that fulfills the
-    hold with a simulated payment (no money moves, no Stripe call of any
-    kind). This keeps the browse -> buy -> ticket flow working end to end on
-    a tenant with no Stripe keys, which is the whole point of the demo/
+    Direct charge: the session is created ON this theater's connected account
+    (`stripe_account=org.stripe_account_id`) with the platform key, and the
+    platform's cut is attached as `application_fee_amount` (omitted entirely
+    when application_fee_amount() returns None — the launch default of no cut).
+
+    STUB MODE: if this tenant can't take real payments yet — it hasn't
+    finished Connect onboarding, so `stripe_charges_enabled` is False (no
+    connected account, or one still in requirements) — a real Stripe call
+    would fail. Instead we SIMULATE the hosted checkout: return the URL of an
+    internal stub payment page (orders/views.py's checkout_stub) that fulfills
+    the hold with a simulated payment (no money moves, no Stripe call of any
+    kind). This keeps the browse -> buy -> ticket flow working end to end on a
+    tenant that hasn't connected Stripe, which is the whole point of the demo/
     pre-launch setup. See checkout_stub for the "simulated payment" half.
     """
     if hold.expires_at <= timezone.now():
@@ -114,10 +246,11 @@ def create_checkout_session(hold, request):
 
     organization = hold.organization
 
-    if not organization.stripe_secret_key:
+    if not organization.stripe_charges_enabled:
         logger.info(
-            "Organization %s has no Stripe secret key; using the simulated "
-            "checkout stub for hold %s instead of calling Stripe.",
+            "Organization %s can't take payments yet (Connect charges not "
+            "enabled); using the simulated checkout stub for hold %s instead "
+            "of calling Stripe.",
             organization.pk,
             hold.pk,
         )
@@ -126,13 +259,23 @@ def create_checkout_session(hold, request):
     success_url = request.build_absolute_uri(reverse("checkout_success")) + "?session_id={CHECKOUT_SESSION_ID}"
     cancel_url = request.build_absolute_uri(reverse("checkout_cancel"))
 
+    params = {
+        "mode": "payment",
+        "line_items": line_items,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "metadata": {"hold_id": str(hold.pk), "organization_id": str(organization.pk)},
+    }
+    fee = application_fee_amount(organization, order_services.hold_total(hold))
+    if fee is not None:
+        # On a direct charge, the application fee is set on the underlying
+        # PaymentIntent the Checkout Session creates.
+        params["payment_intent_data"] = {"application_fee_amount": fee}
+
     session = stripe.checkout.Session.create(
-        mode="payment",
-        line_items=line_items,
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={"hold_id": str(hold.pk), "organization_id": str(organization.pk)},
-        api_key=organization.stripe_secret_key,
+        **params,
+        api_key=settings.STRIPE_SECRET_KEY,
+        stripe_account=organization.stripe_account_id,
     )
     return session.url
 
@@ -320,7 +463,7 @@ def fulfill_checkout_session(organization, session):
     if session_org_id and str(session_org_id) != str(organization.pk):
         raise TenantMismatchError(
             f"Session {session_id} metadata organization_id={session_org_id} does not match "
-            f"the organization ({organization.pk}) whose webhook secret verified it."
+            f"the organization ({organization.pk}) resolved from the event's connected account."
         )
 
     hold = (

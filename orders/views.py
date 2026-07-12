@@ -362,8 +362,9 @@ def checkout_test(request):
 
 @require_tenant
 def checkout_stub(request):
-    """SIMULATED hosted-checkout page, used when a tenant has no Stripe keys
-    (Organization.stripe_secret_key is blank). create_checkout_session
+    """SIMULATED hosted-checkout page, used when a tenant can't take real
+    payments yet (Connect onboarding unfinished — Organization.
+    stripe_charges_enabled is False). create_checkout_session
     (payments/services.py) redirects the browser here INSTEAD of to Stripe's
     hosted payment page, so "Proceed to payment" works end to end without any
     Stripe account -- this view stands in for Stripe's page. No Stripe call

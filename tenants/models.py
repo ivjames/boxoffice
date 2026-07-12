@@ -34,12 +34,30 @@ class Organization(models.Model):
     timezone = models.CharField(max_length=63, default="UTC")
     currency = models.CharField(max_length=3, default="USD")
 
-    # Per-tenant Stripe Connect-style credentials. Each theater brings its own
-    # Stripe account; these are used (in a later phase) to create Checkout
-    # Sessions and verify webhook signatures for that tenant only.
-    stripe_publishable_key = models.CharField(max_length=255, blank=True)
-    stripe_secret_key = models.CharField(max_length=255, blank=True)
-    stripe_webhook_secret = models.CharField(max_length=255, blank=True)
+    # Stripe Connect (Express) — the platform (boxo.show) is the Stripe
+    # account of record; each theater is a CONNECTED account it onboards.
+    # We store only the connected account id (acct_…) plus a cached copy of
+    # the two capability flags Stripe reports for it; there are no per-tenant
+    # secret keys anymore (the platform key in settings.STRIPE_SECRET_KEY is
+    # used for every call, with `stripe_account=<this id>` selecting the
+    # connected account for direct charges). `charges_enabled` gates whether
+    # this theater can actually sell yet — kept fresh by the `account.updated`
+    # Connect webhook and by the onboarding return view. See payments/services.py.
+    stripe_account_id = models.CharField(max_length=255, blank=True)
+    stripe_charges_enabled = models.BooleanField(default=False, db_default=False)
+    stripe_details_submitted = models.BooleanField(default=False, db_default=False)
+
+    # Optional per-org override of the platform take rate (percent of order
+    # total). NULL falls back to settings.PLATFORM_FEE_PERCENT — the global
+    # default. Lets a negotiated theater run a different rate without a code
+    # change. See payments.services.application_fee_amount.
+    platform_fee_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Override platform fee % for this theater. Blank = use the global default.",
+    )
 
     contact_email = models.EmailField()
     is_active = models.BooleanField(default=True)

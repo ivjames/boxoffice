@@ -225,11 +225,12 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
 
         from orders.models import Order
 
-        # This org HAS Stripe configured, so create_checkout_session takes the
-        # real (mocked) Stripe path rather than the no-keys stub (which is
-        # covered separately below).
-        self.org.stripe_secret_key = "sk_test_org_a_secret"
-        self.org.save(update_fields=["stripe_secret_key"])
+        # This org has finished Connect onboarding (charges enabled), so
+        # create_checkout_session takes the real (mocked) Stripe path rather
+        # than the not-connected stub (which is covered separately below).
+        self.org.stripe_account_id = "acct_org_a"
+        self.org.stripe_charges_enabled = True
+        self.org.save(update_fields=["stripe_account_id", "stripe_charges_enabled"])
 
         self.post_as(
             "org-a",
@@ -268,16 +269,16 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         self.assertEqual(resp.status_code, 404)  # expired hold no longer matches the lookup
         self.assertEqual(Order.objects.count(), 0)
 
-    def test_checkout_post_without_stripe_keys_redirects_to_stub_not_500(self):
-        """With no Stripe keys on the org (the demo/pre-launch state),
-        "Proceed to payment" must NOT 500 on a Stripe auth error -- it
+    def test_checkout_post_without_stripe_connected_redirects_to_stub_not_500(self):
+        """With Connect not finished on the org (the demo/pre-launch state,
+        charges not enabled), "Proceed to payment" must NOT 500 -- it
         redirects to the simulated checkout stub instead, and never touches
         Stripe."""
         from unittest.mock import patch
 
         from orders.models import Order
 
-        self.assertEqual(self.org.stripe_secret_key, "")  # no Stripe configured
+        self.assertFalse(self.org.stripe_charges_enabled)  # not connected yet
         self.post_as(
             "org-a",
             f"/performances/{self.performance.pk}/hold/",

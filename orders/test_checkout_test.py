@@ -66,6 +66,27 @@ class GATestCheckoutTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["buyer@example.com"])
 
+    def test_ga_price_is_snapshotted_against_a_mid_checkout_tier_edit(self):
+        """Editing PriceTier.amount after the GA hold is created must not
+        change what the order totals to or records -- the price is frozen on
+        the hold (Hold.ga_unit_amount), mirroring reserved seats' snapshot.
+        (Audit BO-3.)"""
+        hold = self._create_hold(quantity=2)
+        self.assertEqual(hold.ga_unit_amount, Decimal("20.00"))
+
+        # Staff bump the tier price after the buyer already holds seats.
+        self.tier.amount = Decimal("99.00")
+        self.tier.save(update_fields=["amount"])
+
+        self.post_as(
+            "org-a", "/checkout/test/",
+            {"hold_id": hold.pk, "buyer_name": "Buyer", "buyer_email": "buyer@example.com"},
+        )
+        order = Order.objects.get()
+        self.assertEqual(order.total, Decimal("40.00"))  # 2 x $20 snapshot, NOT 2 x $99
+        self.assertEqual(Payment.objects.get(order=order).amount, Decimal("40.00"))
+        self.assertEqual(order.items.get().unit_amount, Decimal("20.00"))
+
     def test_reselling_same_hold_after_fulfillment_fails_cleanly(self):
         """The hold is deleted by the first fulfillment, so a resubmitted
         test-checkout POST for the same hold_id 404s (same lookup every
@@ -265,6 +286,63 @@ class TestCheckoutDisabledByDefaultTests(TenantClientMixin, StorefrontFixtureMix
     def test_no_test_mode_banner(self):
         resp = self.get_as("org-a", "/")
         self.assertNotContains(resp, "TEST MODE")
+
+
+class StubCheckoutGateTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """The simulated stub checkout (orders/views.py's checkout_stub) hands
+    out real tickets for free, so it must be reachable ONLY while a tenant
+    can't take real payments (stripe_charges_enabled False). Once Connect
+    onboarding is done, a buyer must not be able to POST straight to
+    /checkout/stub/ and mint free tickets."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue, capacity=5)
+
+    def _create_hold(self, quantity=1):
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": quantity},
+        )
+        return Hold.objects.get(performance=self.performance)
+
+    def test_stub_fulfills_when_charges_not_enabled(self):
+        # Default org is not Connect-onboarded -> stub is the intended path.
+        self.assertFalse(self.org.stripe_charges_enabled)
+        hold = self._create_hold()
+        resp = self.post_as(
+            "org-a", "/checkout/stub/",
+            {"hold_id": hold.pk, "buyer_name": "Buyer", "buyer_email": "buyer@example.com"},
+        )
+        order = Order.objects.get()
+        self.assertRedirects(resp, f"/tickets/{order.token}/", fetch_redirect_response=False)
+        self.assertEqual(Payment.objects.get(order=order).provider, "stub")
+
+    def test_stub_404s_once_charges_enabled_post(self):
+        """A live tenant (charges enabled): POSTing the stub with a valid,
+        session-owned hold must 404 and mint nothing -- the free-ticket
+        bypass the audit flagged."""
+        hold = self._create_hold()
+        self.org.stripe_charges_enabled = True
+        self.org.save(update_fields=["stripe_charges_enabled"])
+
+        resp = self.post_as(
+            "org-a", "/checkout/stub/",
+            {"hold_id": hold.pk, "buyer_name": "Freeloader", "buyer_email": "free@example.com"},
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_stub_404s_once_charges_enabled_get(self):
+        hold = self._create_hold()
+        self.org.stripe_charges_enabled = True
+        self.org.save(update_fields=["stripe_charges_enabled"])
+
+        resp = self.get_as("org-a", f"/checkout/stub/?hold_id={hold.pk}")
+        self.assertEqual(resp.status_code, 404)
 
 
 @override_settings(ENABLE_TEST_CHECKOUT=True)

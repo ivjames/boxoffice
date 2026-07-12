@@ -1,5 +1,7 @@
-from django.http import JsonResponse
-from django.shortcuts import render
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import redirect, render
+from django.templatetags.static import static as static_url
+from django.urls import reverse
 from django.utils import timezone
 
 from events.models import Event, Performance
@@ -8,6 +10,73 @@ from orders import services
 
 def healthz(request):
     return JsonResponse({"status": "ok"})
+
+
+def robots_txt(request):
+    """Crawler policy, served on every host. Public storefront pages are
+    crawlable; staff/transactional surfaces (dashboard, scanner + redeem,
+    cart/checkout, the guest portal, admin, login) are disallowed -- they're
+    private or per-session and have no business in an index. Points crawlers
+    at the per-host sitemap."""
+    lines = [
+        "User-agent: *",
+        "Disallow: /dashboard/",
+        "Disallow: /scan/",
+        "Disallow: /S/",
+        "Disallow: /cart/",
+        "Disallow: /checkout/",
+        "Disallow: /account/",
+        "Disallow: /admin/",
+        "Disallow: /login/",
+        f"Sitemap: {request.build_absolute_uri(reverse('sitemap_xml'))}",
+    ]
+    return HttpResponse("\n".join(lines) + "\n", content_type="text/plain")
+
+
+def _published_upcoming_events(organization):
+    """Published events for `organization` that have at least one published,
+    still-upcoming performance -- the same visibility rule the storefront home
+    uses, reused for the sitemap so it never lists a draft or past-only show."""
+    now = timezone.now()
+    events = (
+        Event.objects.for_organization(organization)
+        .filter(status=Event.Status.PUBLISHED)
+        .prefetch_related("performances")
+    )
+    result = []
+    for event in events:
+        if any(
+            p.status == p.Status.PUBLISHED and p.starts_at >= now
+            for p in event.performances.all()
+        ):
+            result.append(event)
+    return result
+
+
+def sitemap_xml(request):
+    """Per-host sitemap. On a tenant subdomain: the storefront home, the public
+    FAQ, and each published upcoming event. On the platform host (no tenant):
+    just the landing page -- and NEVER any tenant's catalog, mirroring home()'s
+    isolation. Built directly (not via django.contrib.sitemaps) so host-based
+    tenant scoping stays explicit."""
+    urls = [request.build_absolute_uri("/")]
+    if request.organization is not None:
+        urls.append(request.build_absolute_uri(reverse("faq")))
+        for event in _published_upcoming_events(request.organization):
+            urls.append(request.build_absolute_uri(reverse("event_detail", args=[event.slug])))
+
+    body = ['<?xml version="1.0" encoding="UTF-8"?>']
+    body.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
+    for url in urls:
+        body.append(f"  <url><loc>{url}</loc></url>")
+    body.append("</urlset>")
+    return HttpResponse("\n".join(body) + "\n", content_type="application/xml")
+
+
+def favicon(request):
+    """Redirect /favicon.ico (which browsers/crawlers request at the root
+    regardless of markup) to the committed static SVG favicon."""
+    return redirect(static_url("favicon.svg"), permanent=True)
 
 
 def _card_pricing_and_availability(performance):

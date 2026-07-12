@@ -13,6 +13,27 @@
 <p><strong>Total:</strong> ${{ order.total }}</p>
 <p class="muted">Placed {{ order.created_at|date:"M j Y g:i A" }}</p>
 
+<div class="order-actions">
+    <form method="post" action="{% url 'dashboard_order_resend' order.token %}">
+        {% csrf_token %}
+        <button type="submit" class="button button--secondary button--sm">Resend tickets</button>
+    </form>
+    {% if order.status == 'paid' %}
+    <form method="post" action="{% url 'dashboard_order_refund' order.token %}"
+          onsubmit="return confirm('Refund this order in full and void its tickets? This cannot be undone.');">
+        {% csrf_token %}
+        <button type="submit" class="button button--secondary button--sm">Refund order</button>
+    </form>
+    {% endif %}
+    {% if order.status != 'cancelled' and order.status != 'refunded' %}
+    <form method="post" action="{% url 'dashboard_order_cancel' order.token %}"
+          onsubmit="return confirm('Cancel this order and release its tickets back to inventory?');">
+        {% csrf_token %}
+        <button type="submit" class="button button--secondary button--sm">Cancel order</button>
+    </form>
+    {% endif %}
+</div>
+
 <h2>Tickets</h2>
 <div class="dash-table-wrap">
 <table class="dash-table">

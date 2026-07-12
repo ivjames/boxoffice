@@ -81,6 +81,12 @@ class AvailabilityChangedError(FulfillmentError):
     docs/ARCHITECTURE.md's "re-validate the hold" instruction."""
 
 
+class RefundError(Exception):
+    """Raised by refund_order when Stripe won't process the refund. The
+    message may carry Stripe API detail, so views flash a generic version and
+    log this one."""
+
+
 class TenantMismatchError(FulfillmentError):
     """The session's metadata.organization_id doesn't match the organization
     resolved from the event's connected account (`event.account` ->
@@ -186,10 +192,10 @@ def _account_field(account, name):
 # --- Platform fee --------------------------------------------------------
 
 
-def application_fee_amount(organization, total):
-    """The platform's cut for an order whose total is `total` (Decimal
-    dollars), as integer minor units for Stripe's `application_fee_amount`,
-    or None when there is no fee to charge.
+def application_fee_amount(organization, total, currency=None):
+    """The platform's cut for an order whose total is `total` (Decimal major
+    units), as integer minor units for Stripe's `application_fee_amount`, or
+    None when there is no fee to charge.
 
     Rate = the org's `platform_fee_percent` override if set, else the global
     settings.PLATFORM_FEE_PERCENT, plus a flat settings.PLATFORM_FEE_FIXED_CENTS
@@ -197,18 +203,33 @@ def application_fee_amount(organization, total):
     is chosen this returns None and the Checkout Session is created WITHOUT an
     application fee — Stripe rejects an explicit fee of 0, and "no cut yet" is
     the intended launch behavior. Returning None (not 0) is what lets the
-    caller omit the parameter entirely."""
+    caller omit the parameter entirely.
+
+    `currency` (the charge currency, defaulting to the org's) picks the minor-
+    unit exponent so the fee matches the charge: Stripe requires
+    application_fee_amount in the SAME currency/unit as the PaymentIntent, so
+    a JPY charge must not carry a cents-scaled (100x) fee. The fixed component
+    is already in minor units and added as-is."""
     percent = organization.platform_fee_percent
     if percent is None:
         percent = settings.PLATFORM_FEE_PERCENT
     percent = Decimal(percent)
-    fixed_cents = int(settings.PLATFORM_FEE_FIXED_CENTS)
+    fixed_minor = int(settings.PLATFORM_FEE_FIXED_CENTS)
+    code = (currency or organization.currency or "").upper()
 
-    pct_cents = (total * percent).quantize(Decimal("1"), rounding=ROUND_HALF_UP)  # percent → cents
-    fee_cents = int(pct_cents) + fixed_cents
-    if fee_cents <= 0:
+    fee_major = total * percent / Decimal(100)  # percentage fee, in major units
+    if code in _ZERO_DECIMAL_CURRENCIES:
+        pct_minor = int(fee_major.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    elif code in _THREE_DECIMAL_CURRENCIES:
+        pct_minor = int((fee_major * 1000).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        pct_minor = (pct_minor // 10) * 10  # Stripe requires a multiple of 10 here.
+    else:
+        pct_minor = int((fee_major * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    fee_minor = pct_minor + fixed_minor
+    if fee_minor <= 0:
         return None
-    return fee_cents
+    return fee_minor
 
 
 # --- Checkout Session creation ------------------------------------------
@@ -266,7 +287,9 @@ def create_checkout_session(hold, request):
         "cancel_url": cancel_url,
         "metadata": {"hold_id": str(hold.pk), "organization_id": str(organization.pk)},
     }
-    fee = application_fee_amount(organization, order_services.hold_total(hold))
+    fee = application_fee_amount(
+        organization, order_services.hold_total(hold), currency=_hold_currency(hold)
+    )
     if fee is not None:
         # On a direct charge, the application fee is set on the underlying
         # PaymentIntent the Checkout Session creates.
@@ -278,6 +301,19 @@ def create_checkout_session(hold, request):
         stripe_account=organization.stripe_account_id,
     )
     return session.url
+
+
+def _hold_currency(hold):
+    """The single charge currency for `hold` (a Stripe session is one
+    currency). GA reads the tier's currency; reserved reads the first
+    hold_seat's tier currency, falling back to the org's currency for a
+    zone-priced seat (zones carry no currency -- see _line_items_for_hold)."""
+    if hold.price_tier_id:
+        return hold.price_tier.currency
+    first = hold.hold_seats.select_related("price_tier").first()
+    if first is not None and first.price_tier_id:
+        return first.price_tier.currency
+    return hold.organization.currency
 
 
 def _line_items_for_hold(hold):
@@ -293,7 +329,10 @@ def _line_items_for_hold(hold):
                 "quantity": hold.quantity,
                 "price_data": {
                     "currency": tier.currency.lower(),
-                    "unit_amount": _to_minor_units(tier.amount),
+                    # Charge the GA price the buyer saw, snapshotted onto the
+                    # hold -- not a live re-read of tier.amount (see
+                    # order_services.ga_unit_amount / Hold.ga_unit_amount).
+                    "unit_amount": _to_minor_units(order_services.ga_unit_amount(hold), tier.currency),
                     "product_data": {
                         "name": f"{hold.performance.event.title} — {tier.name}",
                     },
@@ -314,7 +353,7 @@ def _line_items_for_hold(hold):
                 "quantity": 1,
                 "price_data": {
                     "currency": currency.lower(),
-                    "unit_amount": _to_minor_units(hold_seat.unit_amount),
+                    "unit_amount": _to_minor_units(hold_seat.unit_amount, currency),
                     "product_data": {
                         "name": (
                             f"{hold.performance.event.title} — {seat.section.name} "
@@ -327,10 +366,36 @@ def _line_items_for_hold(hold):
     return line_items
 
 
-def _to_minor_units(amount):
-    """Decimal dollars -> integer minor units (e.g. cents). Exact: every
-    PriceTier.amount has exactly 2 decimal places, so amount * 100 is always
-    an integral Decimal -- no float rounding involved."""
+# Currencies Stripe expects in whole units, NOT cents (amount * 1, no minor
+# unit). Passing e.g. a ¥500 charge as 50000 would overcharge 100x. Source:
+# Stripe "zero-decimal currencies" list.
+_ZERO_DECIMAL_CURRENCIES = frozenset(
+    {
+        "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF",
+        "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
+    }
+)
+# Currencies Stripe expects in thousandths, and which must be a multiple of 10
+# minor units (it drops the last digit). Source: Stripe "three-decimal
+# currencies" list.
+_THREE_DECIMAL_CURRENCIES = frozenset({"BHD", "JOD", "KWD", "OMR", "TND"})
+
+
+def _to_minor_units(amount, currency):
+    """Decimal major units (e.g. dollars) -> integer minor units for Stripe,
+    for the given ISO currency code. Most currencies are 2-decimal (cents),
+    but zero-decimal currencies (JPY, KRW, ...) charge in whole units and
+    three-decimal currencies (KWD, BHD, ...) in thousandths rounded to a
+    multiple of 10 -- getting this wrong mis-charges the buyer by 100x, so the
+    exponent is chosen by currency, not assumed. PriceTier.amount stores 2
+    decimal places regardless, so `to_integral_value` truncates the sub-unit
+    tail for a zero-decimal currency (a ¥500.00 tier -> 500)."""
+    code = (currency or "").upper()
+    if code in _ZERO_DECIMAL_CURRENCIES:
+        return int(amount.to_integral_value())
+    if code in _THREE_DECIMAL_CURRENCIES:
+        minor = int((amount * 1000).to_integral_value())
+        return (minor // 10) * 10  # Stripe requires a multiple of 10 here.
     return int((amount * 100).to_integral_value())
 
 
@@ -500,15 +565,94 @@ def fulfill_checkout_session(organization, session):
             provider="stripe",
             stripe_checkout_session_id=session_id,
         )
-    except IntegrityError:
+    except IntegrityError as exc:
         winner = Order.objects.filter(
             organization=organization, stripe_checkout_session_id=session_id
         ).first()
         if winner is not None:
+            # The concurrent-duplicate-session race: the other delivery
+            # committed the Order first and won the unique_stripe_checkout_
+            # session_per_org constraint. Fall back to its Order.
             return winner, False
-        raise
+        # No committed winner, so this wasn't the dup-session race. The only
+        # other IntegrityError fulfill_hold can raise is
+        # unique_live_ticket_per_performance_seat firing because a seat got
+        # ticketed concurrently after _fulfill_reserved's lock/recheck (very
+        # narrow, but possible). Re-raise as the availability failure it is --
+        # a FulfillmentError the webhook view acks with 200 -- rather than a
+        # bare IntegrityError that 500s into a 3-day Stripe retry loop that
+        # can never succeed. Chained so the original constraint error is still
+        # in the logged traceback.
+        raise AvailabilityChangedError(
+            f"Fulfilling session {session_id} hit a database integrity conflict "
+            f"(a seat was most likely ticketed concurrently); not retrying."
+        ) from exc
 
     return order, True
+
+
+# --- Refunds (staff-facing) ----------------------------------------------
+
+
+@transaction.atomic
+def refund_order(order):
+    """Refund a PAID order in full, void its tickets, and mark it REFUNDED.
+
+    Idempotent: an order that isn't currently PAID (already refunded,
+    cancelled, or pending) is a no-op returning False, so a double-click or a
+    retried request can't refund twice. For a real Stripe order, issues a
+    Stripe Refund on the theater's connected account against the charge's
+    PaymentIntent; for a stub/test order (provider != "stripe", no real
+    charge) it records the reversal without calling Stripe. Voids every live
+    ticket via order_services.void_order so a refunded ticket can't be
+    admitted and its inventory is freed, then records a Payment row
+    (status="refunded") for the audit trail. Returns True when a refund was
+    performed.
+
+    Raises RefundError (rolling back the whole transaction, so the order stays
+    PAID and nothing is voided) if Stripe rejects the refund.
+    """
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    if order.status != Order.Status.PAID:
+        return False
+
+    payment = order.payments.filter(status="succeeded").order_by("id").first()
+    provider = payment.provider if payment is not None else "stripe"
+    refund_ref = ""
+
+    if provider == "stripe":
+        payment_intent = payment.provider_ref if payment is not None else ""
+        if not payment_intent.startswith("pi_"):
+            # provider_ref falls back to the session id when a session carried
+            # no payment_intent (rare); a Refund needs the PaymentIntent, so
+            # send staff to the Stripe dashboard rather than guessing.
+            raise RefundError(
+                "This order has no Stripe PaymentIntent on file; refund it from the "
+                "Stripe dashboard."
+            )
+        try:
+            refund = stripe.Refund.create(
+                payment_intent=payment_intent,
+                api_key=settings.STRIPE_SECRET_KEY,
+                stripe_account=order.organization.stripe_account_id,
+            )
+        except stripe.error.StripeError as exc:
+            logger.exception("Stripe refund failed for order %s", order.pk)
+            raise RefundError(str(exc)) from exc
+        refund_ref = refund.id
+
+    order_services.void_order(order)
+    order.status = Order.Status.REFUNDED
+    order.save(update_fields=["status"])
+    Payment.objects.create(
+        organization=order.organization,
+        order=order,
+        provider=provider,
+        amount=order.total,
+        status="refunded",
+        provider_ref=refund_ref,
+    )
+    return True
 
 
 def _fulfill_ga(organization, hold, order):
@@ -525,7 +669,10 @@ def _fulfill_ga(organization, hold, order):
         price_tier=hold.price_tier,
         seat=None,
         quantity=hold.quantity,
-        unit_amount=hold.price_tier.amount,
+        # Record the snapshotted GA price (see order_services.ga_unit_amount),
+        # so the OrderItem matches both hold_total and the Stripe line item
+        # even if the tier was edited between hold creation and fulfillment.
+        unit_amount=order_services.ga_unit_amount(hold),
     )
     Ticket.objects.bulk_create(
         [

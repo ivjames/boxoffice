@@ -1496,6 +1496,18 @@ textarea:focus-visible,
     margin-bottom: 1.5rem;
 }
 
+/* Row of order-management actions (resend / refund / cancel) on the staff
+   order detail page. Each action is its own POST form, laid out inline. */
+.order-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 1rem 0 1.5rem;
+}
+.order-actions form {
+    margin: 0;
+}
+
 table.dash-table {
     width: 100%;
     min-width: 480px;

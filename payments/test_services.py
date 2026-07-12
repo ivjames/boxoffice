@@ -7,6 +7,7 @@ hit the network.
 
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.db import IntegrityError, transaction
@@ -412,6 +413,65 @@ class FulfillCheckoutSessionTests(OrdersFixtureMixin, TestCase):
         with self.assertRaises(services.AvailabilityChangedError):
             services.fulfill_checkout_session(self.org, session)
         self.assertEqual(Order.objects.filter(stripe_checkout_session_id="cs_test_conflict").count(), 0)
+
+
+class MinorUnitsCurrencyTests(TestCase):
+    """_to_minor_units and application_fee_amount must pick the minor-unit
+    exponent by currency (BO-6), so a zero-decimal currency (JPY) isn't
+    charged/fee'd 100x too much."""
+
+    def test_two_decimal_currency_uses_cents(self):
+        self.assertEqual(services._to_minor_units(Decimal("35.00"), "USD"), 3500)
+
+    def test_zero_decimal_currency_uses_whole_units(self):
+        self.assertEqual(services._to_minor_units(Decimal("500.00"), "JPY"), 500)
+
+    def test_three_decimal_currency_rounds_to_multiple_of_ten(self):
+        # 12.345 KWD -> 12345 thousandths -> 12340 (Stripe wants a multiple of 10).
+        self.assertEqual(services._to_minor_units(Decimal("12.345"), "KWD"), 12340)
+
+    @override_settings(PLATFORM_FEE_PERCENT=10, PLATFORM_FEE_FIXED_CENTS=0)
+    def test_fee_two_decimal_currency_unchanged(self):
+        org = SimpleNamespace(platform_fee_percent=None, currency="USD")
+        # 10% of $70 -> 700 minor units (unchanged from the pre-BO-6 behavior).
+        self.assertEqual(services.application_fee_amount(org, Decimal("70.00"), currency="USD"), 700)
+
+    @override_settings(PLATFORM_FEE_PERCENT=10, PLATFORM_FEE_FIXED_CENTS=0)
+    def test_fee_zero_decimal_currency_not_scaled_100x(self):
+        org = SimpleNamespace(platform_fee_percent=None, currency="JPY")
+        # 10% of ¥4000 -> ¥400 -> 400 minor units, NOT 40000.
+        self.assertEqual(services.application_fee_amount(org, Decimal("4000"), currency="JPY"), 400)
+
+
+class FulfillmentIntegrityErrorMappingTests(OrdersFixtureMixin, TestCase):
+    """A non-dup-session IntegrityError during fulfillment (e.g. the live-
+    ticket-per-seat unique constraint firing on a concurrent ticketing) must
+    surface as AvailabilityChangedError -- a FulfillmentError the webhook acks
+    with 200 -- not a bare IntegrityError that 500s into a 3-day Stripe retry
+    loop (BO-6)."""
+
+    def _session(self, hold, session_id="cs_test_ie"):
+        return {
+            "id": session_id,
+            "payment_intent": "pi_test_ie",
+            "metadata": {"hold_id": str(hold.pk), "organization_id": str(hold.organization_id)},
+            "customer_details": {"email": "buyer@example.com", "name": "Buyer"},
+        }
+
+    def test_integrity_error_without_a_winner_maps_to_availability_changed(self):
+        self.build_ga_performance()
+        hold = order_services.set_ga_hold(
+            organization=self.org, performance=self.performance, session_key="sess-ie",
+            user=None, price_tier=self.price_tier, quantity=1,
+        )
+        session = self._session(hold)
+
+        with patch(
+            "payments.services.fulfill_hold", side_effect=IntegrityError("seat conflict")
+        ):
+            with self.assertRaises(services.AvailabilityChangedError):
+                services.fulfill_checkout_session(self.org, session)
+        self.assertEqual(Order.objects.filter(stripe_checkout_session_id="cs_test_ie").count(), 0)
 
 
 class StripeSessionIdempotencyRaceTests(OrdersFixtureMixin, TestCase):

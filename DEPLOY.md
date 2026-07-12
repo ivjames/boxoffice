@@ -454,6 +454,17 @@ errors still surface.
 `boxoffice deploy` prints the old/new commit and a diffstat of what changed,
 same idea as `lab980.com/update.sh`.
 
+**Static AND media are both served by the app** — no nginx `location` blocks.
+The `WhiteNoiseMiddleware` serves hashed static files from `STATIC_ROOT`, and
+`config/wsgi.py` wraps the WSGI app in a second WhiteNoise instance that
+serves user-uploaded **media** (`MEDIA_ROOT`, e.g. tenant logos) at
+`MEDIA_URL`. That's why every per-tenant vhost stays a plain proxy-to-port
+(`deploy/nginx.sample.conf`) and needs no `location /media/` alias. The media
+wrapper runs with `autorefresh=True`, so a logo uploaded via `/admin` after
+the worker started is served immediately without a `boxoffice restart`
+(media is mutable, unlike the immutable hashed static files). Uploaded media
+lives under the app dir's `media/` and is included in `boxoffice backup`.
+
 Other operate commands:
 
 ```bash

@@ -643,3 +643,55 @@ class ShowtimeRenderingTests(TestCase):
         )
         rendered = tmpl.render(Context({"dt": self.DT}))
         self.assertEqual(rendered, "Thu, Jan 14 2027 — 9:00 PM")
+
+
+class SeoRoutesTests(TestCase):
+    """robots.txt, sitemap.xml, and favicon (BO-10). The sitemap must be
+    tenant-scoped: a tenant host lists only its own published upcoming events,
+    and the platform host lists no tenant catalog at all."""
+
+    def setUp(self):
+        self.org = make_org("roxy")
+        self.venue = Venue.objects.create(organization=self.org, name="Main")
+        self.event = Event.objects.create(
+            organization=self.org, title="Hamlet", slug="hamlet", status=Event.Status.PUBLISHED
+        )
+        Performance.objects.create(
+            organization=self.org, event=self.event, venue=self.venue,
+            starts_at=timezone.now() + timezone.timedelta(days=5),
+            seating_mode=Performance.SeatingMode.GA, status=Performance.Status.PUBLISHED,
+        )
+
+    def test_robots_txt_disallows_staff_paths_and_links_sitemap(self):
+        resp = self.client.get("/robots.txt", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "text/plain")
+        body = resp.content.decode()
+        self.assertIn("Disallow: /dashboard/", body)
+        self.assertIn("Disallow: /scan/", body)
+        self.assertIn("Sitemap: http://roxy.localhost/sitemap.xml", body)
+
+    def test_sitemap_lists_published_event_on_tenant_host(self):
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/xml", resp["Content-Type"])
+        body = resp.content.decode()
+        self.assertIn("http://roxy.localhost/events/hamlet/", body)
+        self.assertIn("http://roxy.localhost/faq/", body)
+
+    def test_sitemap_hides_draft_event(self):
+        self.event.status = Event.Status.DRAFT
+        self.event.save(update_fields=["status"])
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="roxy.localhost")
+        self.assertNotIn("hamlet", resp.content.decode())
+
+    def test_platform_host_sitemap_leaks_no_tenant_catalog(self):
+        # No tenant subdomain -> platform host; must not list any org's events.
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("hamlet", resp.content.decode())
+
+    def test_favicon_ico_redirects_to_static_svg(self):
+        resp = self.client.get("/favicon.ico", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 301)
+        self.assertIn("favicon", resp["Location"])

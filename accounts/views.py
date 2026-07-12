@@ -10,6 +10,7 @@ from django.views.decorators.http import require_POST
 
 from tenants.decorators import require_tenant
 
+from . import throttle
 from .forms import StaffLoginForm
 from .models import Membership, User
 
@@ -61,17 +62,26 @@ def login_view(request):
     if request.method == "POST":
         form = StaffLoginForm(request.POST)
         next_url = request.POST.get("next", "")
-        if form.is_valid():
+        if throttle.is_locked_out("staff-login", request):
+            # Refuse before touching authenticate(), so a locked-out IP can't
+            # keep probing. Same generic wording as a bad password.
+            error = "Too many sign-in attempts. Please wait a few minutes and try again."
+        elif form.is_valid():
             user = authenticate(
                 request,
                 username=form.cleaned_data["email"],
                 password=form.cleaned_data["password"],
             )
             if user is None:
+                throttle.register_failure("staff-login", request)
                 error = "Incorrect email or password."
             elif not Membership.objects.filter(user=user, organization=request.organization).exists():
+                # A real password but wrong theater is still a failed attempt
+                # here -- count it so this can't be used to probe unthrottled.
+                throttle.register_failure("staff-login", request)
                 error = "This account doesn't have access to this theater."
             else:
+                throttle.clear("staff-login", request)
                 login(request, user)
                 messages.success(request, f"Welcome back, {user.get_short_name()}.")
                 return redirect(_safe_next(request, next_url))

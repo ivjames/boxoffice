@@ -82,6 +82,10 @@ Shared-schema, row-level tenancy (NOT schema-per-tenant). Simpler ops, fine for 
 - `orders` — `Cart`/`Hold`, `Order`, `OrderItem`, `Ticket`, `Payment`.
 - `payments` — Stripe checkout session creation + webhook handling (per tenant).
 - `scanning` — ticket validation + redemption endpoint and staff scan UI.
+- `guests` — buyer self-service portal: a returning ticket buyer signs in with
+  a per-tenant magic link (no password) and sees every order they've placed at
+  this theater. `GuestAccount` is keyed off the buyer's email at checkout
+  fulfillment; the portal is tenant-scoped like the rest of the storefront.
 - `helpcenter` — tenant-authored knowledge base + built-in FAQ, surfaced to
   staff (role-filtered, in the dashboard) and buyers (public storefront FAQ).
   See `docs/HELP.md`.

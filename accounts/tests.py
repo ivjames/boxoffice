@@ -7,7 +7,8 @@ docstring for why that check happens on every request, not just at login.
 
 from django.contrib.auth import get_user_model
 from django.core import management
-from django.test import TestCase
+from django.core.cache import cache
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from tenants.models import Organization
@@ -30,8 +31,65 @@ class StaffFixtureMixin:
         return user, password
 
 
+@override_settings(LOGIN_RATELIMIT_MAX_ATTEMPTS=3, LOGIN_RATELIMIT_WINDOW_SECONDS=900)
+class LoginThrottleTests(StaffFixtureMixin, TestCase):
+    """Cache-backed login throttle (BO-9): repeated failures from one IP get
+    locked out; a success clears the counter."""
+
+    def setUp(self):
+        cache.clear()  # LocMemCache is shared within the process across tests
+        self.org = make_org("roxy")
+        self.owner, self.owner_password = self.make_staff(self.org, Membership.Role.OWNER)
+
+    def _bad_login(self):
+        return self.client.post(
+            "/login/",
+            {"email": self.owner.email, "password": "wrong"},
+            HTTP_HOST=host_for("roxy"),
+        )
+
+    def test_locks_out_after_max_failures(self):
+        for _ in range(3):
+            resp = self._bad_login()
+            self.assertContains(resp, "Incorrect email or password.")
+        # 4th attempt is refused before authenticate() even runs.
+        resp = self._bad_login()
+        self.assertContains(resp, "Too many sign-in attempts")
+
+        # Even correct credentials are refused while locked out.
+        resp = self.client.post(
+            "/login/",
+            {"email": self.owner.email, "password": self.owner_password},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertContains(resp, "Too many sign-in attempts")
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_success_clears_the_counter(self):
+        self._bad_login()
+        self._bad_login()
+        # A success resets the count, so the next typo starts fresh (no lockout).
+        self.client.post(
+            "/login/",
+            {"email": self.owner.email, "password": self.owner_password},
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.client.logout()
+        resp = self._bad_login()
+        self.assertContains(resp, "Incorrect email or password.")
+        self.assertNotContains(resp, "Too many sign-in attempts")
+
+    @override_settings(LOGIN_RATELIMIT_MAX_ATTEMPTS=0)
+    def test_disabled_when_max_is_zero(self):
+        for _ in range(6):
+            resp = self._bad_login()
+        self.assertContains(resp, "Incorrect email or password.")
+        self.assertNotContains(resp, "Too many sign-in attempts")
+
+
 class LoginViewTests(StaffFixtureMixin, TestCase):
     def setUp(self):
+        cache.clear()
         self.org = make_org("roxy")
         self.owner, self.owner_password = self.make_staff(self.org, Membership.Role.OWNER)
 

@@ -12,6 +12,7 @@ from django.contrib import messages
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_POST
 
+from accounts import throttle
 from orders.models import Order
 from tenants.decorators import require_tenant
 
@@ -62,6 +63,20 @@ def guest_request_link(request):
     form = GuestEmailForm(request.POST)
     if not form.is_valid():
         return render(request, "guests/portal_signin.html", {"form": form})
+
+    # Rate-limit link requests per IP: each valid request sends an email, so
+    # an unthrottled endpoint is an email-bomb / enumeration lever. The
+    # generic confirmation below is shown regardless, so a locked-out attacker
+    # learns nothing new; count every request (not just failures) toward the
+    # cap since every one triggers a send.
+    if throttle.is_locked_out("guest-link", request):
+        messages.success(
+            request,
+            "If that email has tickets with us, we've sent it a sign-in link. "
+            "Check your inbox.",
+        )
+        return redirect("guest_portal")
+    throttle.register_failure("guest-link", request)
 
     email = normalize_email(form.cleaned_data["email"])
     guest = GuestAccount.objects.for_organization(request.organization).filter(email=email).first()

@@ -10,6 +10,8 @@
 
     {% if error %}<p class="scan-result scan-result--fail">{{ error }}</p>{% endif %}
 
+    {% include "oauth/_buttons.html" with audience="staff" next_url=next %}
+
     <form method="post" class="dash-form">
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ next }}">

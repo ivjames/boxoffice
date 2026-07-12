@@ -12,6 +12,7 @@ from django.contrib import messages
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_POST
 
+from oauth.errors import error_message as oauth_error_message
 from orders.models import Order
 from tenants.decorators import require_tenant
 
@@ -30,7 +31,15 @@ def guest_portal(request):
     POST)."""
     guest = services.get_current_guest(request)
     if guest is None:
-        return render(request, "guests/portal_signin.html", {"form": GuestEmailForm()})
+        return render(
+            request,
+            "guests/portal_signin.html",
+            {
+                "form": GuestEmailForm(),
+                # A social sign-in that couldn't complete bounced back here.
+                "oauth_error": oauth_error_message(request.GET.get("oauth_error")),
+            },
+        )
 
     orders = (
         Order.objects.for_organization(request.organization)

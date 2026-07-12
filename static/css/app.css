@@ -1460,6 +1460,63 @@ table.dash-table th {
     color: var(--primary-color);
 }
 
+/* -- social sign-in (OAuth) ----------------------------------------------
+   "Continue with …" buttons on the staff-login and guest-portal sign-in
+   pages (templates/oauth/_buttons.html). Provider brand colors here are the
+   providers' own, not the tenant's -- deliberately NOT keyed on
+   --primary/--accent-color, so they read identically on every storefront. */
+.oauth-options {
+    max-width: 26rem;
+    margin: 1.25rem 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.oauth-button {
+    display: block;
+    text-align: center;
+    padding: 0.6rem 1.25rem;
+    border-radius: 0.375rem;
+    font-weight: 600;
+    border: 1px solid var(--border-color);
+}
+
+.oauth-button:hover {
+    text-decoration: none;
+    opacity: 0.92;
+}
+
+.oauth-button--google {
+    background: #fff;
+    color: #1f2937;
+    border-color: #d1d5db;
+}
+
+.oauth-button--facebook {
+    background: #1877f2;
+    color: #fff;
+    border-color: #1877f2;
+}
+
+/* "or" rule separating social buttons from the email form. */
+.oauth-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--muted-color, #6b7280);
+    font-size: 0.9rem;
+    margin: 0.25rem 0;
+}
+
+.oauth-divider::before,
+.oauth-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-color);
+}
+
 .dash-form .field {
     margin-bottom: 1rem;
 }

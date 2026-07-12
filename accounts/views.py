@@ -8,6 +8,7 @@ from django.utils.encoding import force_str
 from django.utils.http import url_has_allowed_host_and_scheme, urlsafe_base64_decode
 from django.views.decorators.http import require_POST
 
+from oauth.errors import error_message as oauth_error_message
 from tenants.decorators import require_tenant
 
 from .forms import StaffLoginForm
@@ -64,6 +65,9 @@ def login_view(request):
     else:
         form = StaffLoginForm()
         next_url = request.GET.get("next", "")
+        # A social sign-in that couldn't complete bounced back here with a code
+        # (oauth.views); show it the same way as a bad password.
+        error = error or oauth_error_message(request.GET.get("oauth_error"))
 
     return render(
         request,

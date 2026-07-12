@@ -15,6 +15,7 @@ urlpatterns = [
     path("", include("tenants.urls")),
     path("", include("accounts.urls")),
     path("", include("guests.urls")),
+    path("", include("oauth.urls")),
     path("", include("events.urls")),
     path("", include("orders.urls")),
     path("", include("payments.urls")),

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Sign-in problem — Boxo.show{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+    <h1>We couldn't complete that sign-in</h1>
+    <p class="muted">
+        The sign-in request expired or couldn't be verified. This usually
+        happens if it sat open too long, or the link was opened out of order.
+    </p>
+    <p>Head back to the theater's page and try again.</p>
+    <a class="button" href="/">Back to Boxo.show</a>
+</div>
+{% endblock %}

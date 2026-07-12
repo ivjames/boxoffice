@@ -6,6 +6,10 @@
     <a class="back-link" href="{% url 'home' %}">&larr; Back to {{ organization.name }}</a>
     <h1>My tickets</h1>
 
+    {% if oauth_error %}<p class="scan-result scan-result--fail">{{ oauth_error }}</p>{% endif %}
+
+    {% include "oauth/_buttons.html" with audience="guest" %}
+
     {% if login_link %}
         <div class="signin-link-panel">
             <p>

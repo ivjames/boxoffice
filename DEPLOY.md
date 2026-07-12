@@ -182,6 +182,52 @@ systemctl daemon-reload
 systemctl enable --now boxoffice-sweeper.timer
 ```
 
+## Social sign-in (OAuth — optional)
+
+"Continue with Google / Facebook" for both staff and ticket-buyers (the
+`oauth/` app). Entirely optional and off until you set credentials: with the
+env vars blank, no buttons render and the `/oauth/...` routes 404, so a deploy
+that skips this is unaffected.
+
+The catch with a wildcard-subdomain app is that an OAuth client registers
+*exact* redirect URIs. So the whole flow pivots through ONE fixed apex: the
+provider always returns to `https://<apex>/oauth/<provider>/callback/`, which
+then bounces the finished login (a short-lived signed token) back to the
+tenant subdomain it started on. You therefore register just one callback per
+provider, at the apex.
+
+1. **Create the OAuth clients** (once per provider):
+   - Google — Cloud Console → APIs & Services → Credentials → *OAuth client
+     ID* → "Web application". Add the authorized redirect URI
+     `https://boxo.show/oauth/google/callback/` (and
+     `https://beta.boxo.show/oauth/google/callback/` for the beta app, and
+     `http://localhost:8000/oauth/google/callback/` for local dev).
+   - Facebook — developers.facebook.com → your app → *Facebook Login →
+     Settings* → add the same paths under "Valid OAuth Redirect URIs", and make
+     sure the app requests the `email` permission.
+
+2. **Set the credentials** in each app's `.env` (prod, beta, and dev each have
+   their OWN client or at least their own redirect URI registered):
+
+   ```bash
+   GOOGLE_OAUTH_CLIENT_ID=...          # blank => Google button hidden
+   GOOGLE_OAUTH_CLIENT_SECRET=...
+   FACEBOOK_OAUTH_CLIENT_ID=...        # blank => Facebook button hidden
+   FACEBOOK_OAUTH_CLIENT_SECRET=...
+   # Leave blank in prod to derive https://<BASE_DOMAIN>; set it to override
+   # (the beta/apex value is derived automatically from that app's BASE_DOMAIN).
+   OAUTH_CALLBACK_BASE_URL=
+   ```
+
+   Then `boxoffice deploy` (or restart) so gunicorn picks up the new env.
+
+Staff vs buyers differ on purpose: **staff never self-provision** — an OAuth
+login only authenticates an already-invited `accounts.User` who has a
+Membership in that tenant (it's a password-free way in for invited staff; a
+stranger's Google login is rejected). **Buyers do** — a verified Google/Facebook
+login is a first-class signup, creating the tenant's `GuestAccount` for that
+email just as checkout would.
+
 ## Onboarding a tenant (no-wildcard subdomain flow)
 
 Every theater gets a real `<sub>.boxo.show` — no wildcard DNS or cert. All

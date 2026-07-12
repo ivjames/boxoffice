@@ -24,3 +24,11 @@ DATABASES = harden_sqlite({
 })
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+# OAuth callback pivots through the dev server itself (localhost:8000 is both
+# the "apex" and, via ?_tenant=, every tenant). Register this exact callback
+# base with the provider's dev OAuth client. Override if you run on another
+# port/host.
+OAUTH_CALLBACK_BASE_URL = env(
+    "OAUTH_CALLBACK_BASE_URL", default="http://localhost:8000"
+)

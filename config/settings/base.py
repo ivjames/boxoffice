@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "tenants",
     "accounts",
     "guests",
+    "oauth",
     "venues",
     "events",
     "orders",
@@ -93,6 +94,9 @@ TEMPLATES = [
                 "accounts.context_processors.staff_membership",
                 # Exposes the signed-in guest ticket-buyer (or None) as `guest_account`.
                 "guests.context_processors.guest_account",
+                # Exposes the enabled OAuth providers as `oauth_providers` for
+                # the "Continue with …" buttons on the sign-in pages.
+                "oauth.context_processors.oauth_providers",
                 # Exposes the session's live cart item count as `cart_count`.
                 "orders.context_processors.cart_count",
                 # Exposes settings.ENABLE_TEST_CHECKOUT as `test_checkout_enabled`.
@@ -159,6 +163,26 @@ RESERVED_SUBDOMAINS = set(
 # "roxy.boxo.show" resolves to the "roxy" tenant. TenantMiddleware strips
 # this suffix off the Host header to find the subdomain.
 BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
+
+# --- Social sign-in (OAuth) ---------------------------------------------
+# "Continue with Google / Facebook" for both staff and ticket-buyers (see the
+# oauth/ app). A provider only lights up when BOTH its id and secret are set;
+# with these blank (the default), no buttons render and the routes 404 -- so
+# shipping this without credentials is inert. Set the pair(s) you want in .env
+# (see .env.example) after creating an OAuth client with each provider.
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
+GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
+FACEBOOK_OAUTH_CLIENT_ID = env("FACEBOOK_OAUTH_CLIENT_ID", default="")
+FACEBOOK_OAUTH_CLIENT_SECRET = env("FACEBOOK_OAUTH_CLIENT_SECRET", default="")
+
+# The FIXED public origin the providers redirect back to. OAuth apps register
+# exact redirect URIs, but tenants live on wildcard subdomains, so the whole
+# flow pivots through this one apex (oauth.service.callback_base_url): the
+# provider always returns to <this>/oauth/<provider>/callback/, which then
+# bounces the finished login to the originating tenant subdomain. Register
+# exactly that callback URL with Google/Facebook. Leave blank in prod to
+# derive it from BASE_DOMAIN (https://boxo.show); dev.py sets localhost:8000.
+OAUTH_CALLBACK_BASE_URL = env("OAUTH_CALLBACK_BASE_URL", default="")
 
 # --- TEST CHECKOUT (env-gated fake-payment path) -------------------------
 # When True, orders/views.py's checkout_test view (and the "Pay (TEST -- no

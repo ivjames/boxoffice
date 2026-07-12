@@ -1,0 +1,18 @@
+{% comment %}
+"Continue with …" buttons for social sign-in. Rendered only when at least one
+provider is configured (oauth.context_processors.oauth_providers). Callers
+include with an `audience` ("staff" or "guest") and optionally a `next_url`:
+
+    {% include "oauth/_buttons.html" with audience="staff" next_url=next %}
+{% endcomment %}
+{% if oauth_providers %}
+    <div class="oauth-options">
+        {% for p in oauth_providers %}
+            <a class="oauth-button oauth-button--{{ p.name }}"
+               href="{% url 'oauth_start' provider=p.name %}?audience={{ audience }}{% if next_url %}&next={{ next_url|urlencode }}{% endif %}">
+                Continue with {{ p.label }}
+            </a>
+        {% endfor %}
+        <div class="oauth-divider"><span>or</span></div>
+    </div>
+{% endif %}

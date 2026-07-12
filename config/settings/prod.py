@@ -100,3 +100,42 @@ EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="no-reply@boxo.show")
+
+# --- Logging + error monitoring (BO-8) -----------------------------------
+# In prod, gunicorn runs under pm2, which captures stdout/stderr to its logs
+# (see `boxoffice logs`). So a console handler is all we need for logs to be
+# durable + greppable -- no file rotation of our own. Without an explicit
+# config, Django only surfaces request 5xx via the admin-email handler (which
+# needs ADMINS/email set up), so app-level logger.exception() calls in
+# payments/, orders/, guests/ would go nowhere. This sends WARNING+ from
+# Django and INFO+ from our apps to the console at LOG_LEVEL.
+LOG_LEVEL = env("LOG_LEVEL", default="INFO")
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} {levelname} {name} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "verbose"},
+    },
+    "root": {"handlers": ["console"], "level": "WARNING"},
+    "loggers": {
+        "django": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+        # Our apps -- fulfillment, refunds, guest links, tenant provisioning.
+        **{
+            name: {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False}
+            for name in ("payments", "orders", "guests", "tenants", "accounts", "scanning")
+        },
+    },
+}
+
+# Sentry error reporting, only when SENTRY_DSN is set (a silent no-op
+# otherwise -- see config/observability.py). Off by default, no PII shipped.
+from config.observability import init_sentry  # noqa: E402
+
+SENTRY_DSN = env("SENTRY_DSN", default="")
+init_sentry(SENTRY_DSN, environment=env("SENTRY_ENVIRONMENT", default="production"))

@@ -52,6 +52,20 @@ DATABASES = harden_sqlite({
     )
 })
 
+# Shared cache across gunicorn workers. A file-based cache in the app dir is
+# the right fit for the single-droplet deploy: no extra infra (unlike Redis/
+# Memcached), yet shared across all workers on the host -- which the login
+# throttle (accounts/throttle.py) needs to actually hold, since the default
+# per-process LocMemCache would give each worker its own counter. Postgres/
+# Redis deployments can override CACHES via their own settings if desired.
+os.makedirs(BASE_DIR / "data" / "cache", exist_ok=True)
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": str(BASE_DIR / "data" / "cache"),
+    }
+}
+
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True

@@ -200,6 +200,18 @@ PLATFORM_FEE_FIXED_CENTS = env.int("PLATFORM_FEE_FIXED_CENTS", default=0)
 # warning next to ENABLE_TEST_CHECKOUT.
 ENABLE_TEST_CHECKOUT = env.bool("ENABLE_TEST_CHECKOUT", default=False)
 
+# --- Login throttling ----------------------------------------------------
+# Cache-backed rate limit on the staff login and the guest magic-link request
+# (accounts/throttle.py), to blunt password-guessing and email-bombing. After
+# LOGIN_RATELIMIT_MAX_ATTEMPTS failures from one IP within
+# LOGIN_RATELIMIT_WINDOW_SECONDS, further attempts are refused until the
+# window rolls off. Effectiveness depends on a SHARED cache across gunicorn
+# workers -- prod configures a file-based cache in the app dir for exactly
+# this reason (dev/test use the default per-process LocMemCache, which is
+# fine there). Set MAX_ATTEMPTS to 0 to disable entirely.
+LOGIN_RATELIMIT_MAX_ATTEMPTS = env.int("LOGIN_RATELIMIT_MAX_ATTEMPTS", default=10)
+LOGIN_RATELIMIT_WINDOW_SECONDS = env.int("LOGIN_RATELIMIT_WINDOW_SECONDS", default=900)
+
 # Surface a convenience "Admin" link (-> /admin/) in the platform-host nav and
 # footer. Default False: the public marketing landing page (prod) deliberately
 # does not advertise the superuser surface. The staging/beta deploy sets

@@ -24,6 +24,10 @@
         <a href="{% url 'dashboard_team' %}"
            class="{% if url_name == 'dashboard_team' %}is-active{% endif %}">Team</a>
     {% endif %}
+    {# Help is available to every staff role, including scanners (house rules /
+       door FAQ matter most at the door), so it's deliberately ungated. #}
+    <a href="{% url 'dashboard_help' %}"
+       class="{% if url_name == 'dashboard_help' or url_name == 'dashboard_help_manage' or url_name == 'dashboard_help_create' or url_name == 'dashboard_help_update' %}is-active{% endif %}">Help</a>
     {% if request.membership.can_sell_tickets %}
         {# Scanners work the door only -- previewing the public storefront isn't
            part of that job, so the jump-to-storefront link starts at box office. #}

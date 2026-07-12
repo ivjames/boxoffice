@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Help — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Help</h1>
+    {% if can_manage %}
+        <a class="button" href="{% url 'dashboard_help_manage' %}">Manage articles</a>
+    {% endif %}
+</div>
+<p class="muted help-intro">Guides, house rules and show notes for your venue. You see the articles available to your role.</p>
+
+{% for group in groups %}
+    <section class="help-group">
+        <h2 class="help-group__heading">{{ group.label }}</h2>
+        {% for article in group.articles %}
+            {% include "helpcenter/_article.html" with article=article show_visibility=True can_manage=can_manage %}
+        {% endfor %}
+    </section>
+{% empty %}
+    <p class="muted">No help articles yet.</p>
+{% endfor %}
+{% endblock %}

@@ -94,7 +94,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-    {# WCAG seat-label contrast for the GA inert map; loads before Alpine's
-       deferred init so window.SeatContrast exists when the component runs. #}
+    {# WCAG seat-label contrast for the GA inert map; loads before Alpine's deferred init so window.SeatContrast exists when the component runs. #}
     <script src="{% static 'js/seat_contrast.js' %}"></script>
 {% endblock %}

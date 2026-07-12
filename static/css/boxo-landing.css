@@ -236,6 +236,11 @@
 }
 
 .platform-landing .hero__eyebrow {
+  /* max-width:none releases app.css's `.hero p { max-width:40em }`, which
+     otherwise shrinks this short label to a 40em box that — lacking auto
+     margins — pins left instead of centering (headline/lede escape it via
+     their own margin:0 auto). */
+  max-width: none;
   letter-spacing: 0.5em;
   font-size: 11px;
   font-weight: 400;
@@ -277,6 +282,9 @@
 }
 
 .platform-landing .hero__note {
+  /* Same as .hero__eyebrow: release app.css's .hero p max-width so this
+     short line centers instead of pinning left. */
+  max-width: none;
   margin-top: 16px;
   font-size: 12px;
   font-weight: 400;

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 {% load static %}
 
 {% block title %}{{ performance.event.title }} — {{ organization.name }}{% endblock %}
@@ -12,7 +13,7 @@
 
     <section class="hero">
         <h1>{{ performance.event.title }}</h1>
-        <p>{{ performance.starts_at|date:"D, M j Y — g:i A" }} · {{ performance.venue.name }}</p>
+        <p>{% showtime performance.starts_at performance.venue.timezone "D, M j Y — g:i A" %} · {{ performance.venue.name }}</p>
     </section>
 
     {% if performance.seating_mode == "GA" %}

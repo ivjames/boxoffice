@@ -18,6 +18,8 @@ import io
 
 import segno
 
+from events.timezones import in_venue_tz
+
 from .tokens import scan_code
 
 
@@ -65,7 +67,11 @@ def render_order_pdf(order):
 
     c.setFont("Helvetica", 11)
     y -= 22
-    c.drawString(margin, y, performance.starts_at.strftime("%a, %b %-d %Y — %-I:%M %p"))
+    c.drawString(
+        margin,
+        y,
+        in_venue_tz(performance.starts_at, performance.venue.timezone).strftime("%a, %b %-d %Y — %-I:%M %p"),
+    )
     y -= 16
     c.drawString(margin, y, performance.venue.name)
     y -= 16

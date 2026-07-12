@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}Your tickets — {{ organization.name }}{% endblock %}
 
@@ -7,7 +8,7 @@
     <h1>Your tickets</h1>
     <h2>{{ order.performance.event.title }}</h2>
     <p>
-        {{ order.performance.starts_at|date:"D, M j Y — g:i A" }} ·
+        {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ·
         {{ order.performance.venue.name }}
     </p>
     <p>Order total: ${{ order.total }} · Status: <span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>

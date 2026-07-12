@@ -21,6 +21,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
+from events.timezones import in_venue_tz
 from orders.models import Ticket
 from orders.tokens import verify_ticket_sig
 
@@ -99,7 +100,11 @@ def redeem_ticket(*, organization, token, sig, scanned_by):
 
         if ticket.status == Ticket.Status.USED:
             who = ticket.scanned_by.email if ticket.scanned_by_id else "unknown staff"
-            when = timezone.localtime(ticket.used_at).strftime("%b %d, %Y %I:%M %p") if ticket.used_at else "an earlier scan"
+            when = (
+                in_venue_tz(ticket.used_at, ticket.performance.venue.timezone).strftime("%b %d, %Y %I:%M %p")
+                if ticket.used_at
+                else "an earlier scan"
+            )
             return ScanResult(
                 ok=False,
                 reason="already_used",
@@ -133,7 +138,7 @@ def _wrong_time_result(ticket):
     now = timezone.now()
     opens_at = starts_at - SCAN_WINDOW_OPENS_BEFORE
     closes_at = starts_at + SCAN_WINDOW_CLOSES_AFTER
-    when = timezone.localtime(starts_at).strftime("%b %d, %Y %I:%M %p")
+    when = in_venue_tz(starts_at, ticket.performance.venue.timezone).strftime("%b %d, %Y %I:%M %p")
 
     if now < opens_at:
         return ScanResult(

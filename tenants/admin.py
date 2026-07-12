@@ -34,8 +34,17 @@ class OrganizationAdminForm(forms.ModelForm):
       typing a new value overwrites it. The publishable key (pk_…) is public,
       so it stays a normal text field.
     - Colors use a native color picker (<input type="color">).
-    - Timezone and currency are dropdowns of valid values, not free text.
+    - Timezone and currency are ChoiceFields, so the value is validated
+      server-side against the allowed set — not just rendered as a dropdown.
+      (A bare Select widget only styles the input; the underlying CharField
+      would still accept an arbitrary posted value like `Amerca/New_York`.)
     """
+
+    # Declared as fields (not just widgets) so `full_clean` rejects any value
+    # outside the list, whatever posts it — a tampered request, an admin
+    # script, `save()` from the shell. Renders as a <select> either way.
+    timezone = forms.ChoiceField(choices=_TZ_CHOICES)
+    currency = forms.ChoiceField(choices=_CURRENCY_CHOICES)
 
     class Meta:
         model = Organization
@@ -45,8 +54,6 @@ class OrganizationAdminForm(forms.ModelForm):
             "stripe_webhook_secret": forms.PasswordInput(render_value=False),
             "primary_color": forms.TextInput(attrs={"type": "color"}),
             "accent_color": forms.TextInput(attrs={"type": "color"}),
-            "timezone": forms.Select(choices=_TZ_CHOICES),
-            "currency": forms.Select(choices=_CURRENCY_CHOICES),
         }
         help_texts = {
             "stripe_secret_key": "Write-only. Leave blank to keep the current secret.",

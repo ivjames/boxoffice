@@ -1,3 +1,4 @@
+{% load showtimes %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,7 +17,7 @@
 
         <div style="padding: 24px;">
             <h1 style="font-size: 20px; margin: 0 0 4px; color: {{ organization.primary_color }};">Your tickets for {{ order.performance.event.title }}</h1>
-            <p style="margin: 0 0 4px; color: #6b7280;">{{ order.performance.starts_at|date:"D, M j Y — g:i A" }} — {{ order.performance.venue.name }}</p>
+            <p style="margin: 0 0 4px; color: #6b7280;">{% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} — {{ order.performance.venue.name }}</p>
             <p style="margin: 0 0 16px;"><strong>Order total: ${{ order.total }}</strong></p>
 
             <p style="margin: 0 0 24px;">

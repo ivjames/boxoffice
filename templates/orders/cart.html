@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}Your cart — {{ organization.name }}{% endblock %}
 
@@ -11,7 +12,7 @@
             <div class="cart-item" x-data="holdCountdown('{{ item.hold.expires_at|date:'c' }}')" x-init="start()">
                 <div class="cart-item__header">
                     <h2>{{ item.hold.performance.event.title }}</h2>
-                    <p>{{ item.hold.performance.starts_at|date:"D, M j Y — g:i A" }} · {{ item.hold.performance.venue.name }}</p>
+                    <p>{% showtime item.hold.performance.starts_at item.hold.performance.venue.timezone "D, M j Y — g:i A" %} · {{ item.hold.performance.venue.name }}</p>
                 </div>
 
                 {% if item.hold.quantity %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load showtimes %}
 
 {% block title %}{{ event.title }} — {{ organization.name }}{% endblock %}
 
@@ -21,7 +22,7 @@
     <tbody>
     {% for performance in performances %}
         <tr>
-            <td>{{ performance.starts_at|date:"D, M j Y — g:i A" }}</td>
+            <td>{% showtime performance.starts_at performance.venue.timezone "D, M j Y — g:i A" %}</td>
             <td>{{ performance.venue.name }}</td>
             <td>{{ performance.get_seating_mode_display }}</td>
             <td><span class="badge badge--{{ performance.status }}">{{ performance.get_status_display }}</span></td>

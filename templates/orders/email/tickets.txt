@@ -1,7 +1,7 @@
-Your tickets for {{ order.performance.event.title }}
+{% load showtimes %}Your tickets for {{ order.performance.event.title }}
 {{ organization.name }}
 
-{{ order.performance.starts_at|date:"D, M j Y — g:i A" }} — {{ order.performance.venue.name }}
+{% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} — {{ order.performance.venue.name }}
 Order total: ${{ order.total }}
 
 View your tickets online any time: {{ tickets_url }}

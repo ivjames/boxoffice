@@ -141,6 +141,16 @@ pm2 start deploy/ecosystem.config.js
 pm2 save
 ```
 
+**One time per droplet — install pm2's boot hook, or the app won't come back
+after a reboot.** `pm2 save` only writes the process dump; without the systemd
+hook nothing replays it at boot. This bites hard here because the `boxoffice`
+pm2 app also fronts every `*.boxo.show` tenant subdomain.
+
+```bash
+pm2 startup systemd -u root --hp /root   # run the sudo command it prints, once
+systemctl is-enabled pm2-root            # verify -> should print `enabled`
+```
+
 `bin/boxoffice serve` execs:
 
 ```

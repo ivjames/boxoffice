@@ -15,10 +15,11 @@ from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
 from donations.models import DonationCampaign
-from events.models import PricingZone, ZoneTemplate
+from events.models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
 from orders import services as order_services
 from orders.models import Hold, Order, OrderItem, Payment, Ticket
 from orders.tests import OrdersFixtureMixin
+from passes.models import PassProduct, PassPurchase, PassRedemption
 from payments import services
 from promotions.models import PromoCode
 from venues.models import Seat
@@ -1570,3 +1571,757 @@ class RefundDonationOnlyOrderTests(OrdersFixtureMixin, TestCase):
         # No GA inventory was ever involved.
         self.performance.ga_allocation.refresh_from_db()
         self.assertEqual(self.performance.ga_allocation.sold, 0)
+
+
+# --- Phase 3: pass purchase + redemption money path ---------------------------
+#
+# fulfill_pass_purchase turns a paid one-time pass SALE into a null-performance
+# paid Order + kind=PASS OrderItem + the PassPurchase entitlement (every term
+# snapshotted) + a Payment. create_pass_checkout_session builds the standalone
+# Stripe session; fulfill_checkout_session's kind="pass" branch fulfills /
+# replays / rejects missing/cross-org products. fulfill_hold_with_pass is the
+# REDEMPTION core -- it spends a pass on held seats for a $0 order, minting real
+# tickets against real inventory and recording a PassRedemption per ticket. And
+# refund_order guards a used pass, reverses a redemption's entitlement, and
+# handles the $0 (provider="pass") redemption order without calling Stripe.
+
+FLEX = PassProduct.Kind.FLEX
+SEASON = PassProduct.Kind.SEASON
+PASS_ACTIVE = PassPurchase.Status.ACTIVE
+PASS_EXHAUSTED = PassPurchase.Status.EXHAUSTED
+PASS_REFUNDED = PassPurchase.Status.REFUNDED
+
+
+class PassMoneyPathMixin(OrdersFixtureMixin):
+    """Helpers to mint a pass product + a live PassPurchase on self.org and a
+    second GA event/performance in the same org (for season multi-event tests)."""
+
+    def _flex_product(self, *, credit_count=4, price="120.00", name="Flex 4"):
+        return PassProduct.objects.create(
+            organization=self.org, name=name, kind=FLEX,
+            price=Decimal(price), credit_count=credit_count,
+        )
+
+    def _season_product(self, *, price="200.00", name="Season", events=()):
+        product = PassProduct.objects.create(
+            organization=self.org, name=name, kind=SEASON, price=Decimal(price)
+        )
+        if events:
+            product.events.set(events)
+        return product
+
+    def _purchase(self, product, *, credits_remaining=None, status=PASS_ACTIVE,
+                  valid_from=None, valid_until=None, covered_events=(), guest=None):
+        order = Order.objects.create(
+            organization=self.org, buyer_email="holder@example.com",
+            total=product.price, status=Order.Status.PAID,
+        )
+        purchase = PassPurchase.objects.create(
+            organization=self.org, product=product, order=order, guest=guest,
+            kind=product.kind, credit_count=product.credit_count,
+            credits_remaining=(product.credit_count if credits_remaining is None else credits_remaining),
+            valid_from=valid_from, valid_until=valid_until, status=status,
+        )
+        if covered_events:
+            purchase.covered_events.set(covered_events)
+        return purchase
+
+    def _second_ga_event(self, *, slug="show2", title="Show 2"):
+        event = Event.objects.create(organization=self.org, title=title, slug=slug)
+        perf = Performance.objects.create(
+            organization=self.org, event=event, venue=self.venue,
+            starts_at=timezone.now(), seating_mode=Performance.SeatingMode.GA,
+        )
+        GAAllocation.objects.create(organization=self.org, performance=perf, capacity=100)
+        tier = PriceTier.objects.create(
+            organization=self.org, performance=perf, name="GA", amount=Decimal("35.00")
+        )
+        return event, perf, tier
+
+    def _ga_hold(self, *, quantity=1, performance=None, price_tier=None, session_key="sess-redeem"):
+        return order_services.set_ga_hold(
+            organization=self.org,
+            performance=performance or self.performance,
+            session_key=session_key,
+            user=None,
+            price_tier=price_tier or self.price_tier,
+            quantity=quantity,
+        )
+
+
+class FulfillPassPurchaseTests(PassMoneyPathMixin, TestCase):
+    """fulfill_pass_purchase: the SALE path (not the redemption path)."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        self.event_a = self.event  # "show"
+        self.event_b, _, _ = self._second_ga_event()
+
+    def _fulfill(self, product, **kw):
+        defaults = dict(
+            buyer_email="Buyer@Example.com", buyer_name="Buyer",
+            provider="test", payment_ref="test-pass-1",
+        )
+        defaults.update(kw)
+        return services.fulfill_pass_purchase(self.org, product=product, **defaults)
+
+    def test_flex_sale_creates_order_item_purchase_and_payment(self):
+        product = self._flex_product(credit_count=4, price="120.00")
+        order = self._fulfill(product)
+
+        self.assertIsNone(order.performance_id)  # a pass reserves no performance
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(order.total, Decimal("120.00"))
+
+        item = order.items.get()
+        self.assertEqual(item.kind, OrderItem.Kind.PASS)
+        self.assertEqual(item.quantity, 1)
+        self.assertEqual(item.unit_amount, Decimal("120.00"))
+        self.assertEqual(item.pass_product_id, product.pk)
+        self.assertEqual(order.tickets.count(), 0)
+
+        purchase = order.pass_purchases.get()
+        self.assertEqual(purchase.kind, FLEX)
+        self.assertEqual(purchase.credit_count, 4)
+        self.assertEqual(purchase.credits_remaining, 4)  # starts at a full balance
+        self.assertEqual(purchase.status, PASS_ACTIVE)
+
+        # Guest linked (email normalized), and a succeeded Payment recorded.
+        self.assertIsNotNone(order.guest_id)
+        self.assertEqual(order.guest.email, "buyer@example.com")
+        self.assertEqual(purchase.guest_id, order.guest_id)
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(payment.provider, "test")
+        self.assertEqual(payment.amount, Decimal("120.00"))
+        self.assertEqual(payment.status, "succeeded")
+
+    def test_season_sale_snapshots_window_and_covered_events(self):
+        vf = timezone.now() - timedelta(days=5)
+        vu = timezone.now() + timedelta(days=30)
+        product = self._season_product(events=[self.event_a])
+        product.valid_from = vf
+        product.valid_until = vu
+        product.save(update_fields=["valid_from", "valid_until"])
+
+        order = self._fulfill(product)
+        purchase = order.pass_purchases.get()
+
+        self.assertEqual(purchase.kind, SEASON)
+        self.assertIsNone(purchase.credit_count)
+        self.assertIsNone(purchase.credits_remaining)
+        self.assertEqual(purchase.valid_from, vf)
+        self.assertEqual(purchase.valid_until, vu)
+        self.assertEqual(set(purchase.covered_events.all()), {self.event_a})
+
+    def test_later_product_edit_does_not_change_the_sold_purchase(self):
+        product = self._season_product(events=[self.event_a])
+        order = self._fulfill(product)
+        purchase = order.pass_purchases.get()
+
+        # Edit the product AFTER the sale: add a covered event, change price,
+        # narrow the window. None of it may touch the snapshotted purchase.
+        product.events.add(self.event_b)
+        product.price = Decimal("999.00")
+        product.valid_until = timezone.now() - timedelta(days=1)
+        product.save(update_fields=["price", "valid_until"])
+
+        purchase.refresh_from_db()
+        self.assertEqual(set(purchase.covered_events.all()), {self.event_a})
+        self.assertIsNone(purchase.valid_until)
+        self.assertEqual(order.items.get().unit_amount, Decimal("200.00"))
+
+    def test_inactive_product_raises_pass_data_error(self):
+        product = self._flex_product()
+        product.is_active = False
+        product.save(update_fields=["is_active"])
+
+        with self.assertRaises(services.PassDataError):
+            self._fulfill(product)
+        self.assertFalse(PassPurchase.objects.exists())
+
+
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
+class CreatePassCheckoutSessionTests(PassMoneyPathMixin, TestCase):
+    """create_pass_checkout_session builds a standalone pass session: one line
+    item at the pass price, metadata carrying kind/pass_product_id/org, the
+    platform fee on the price, customer_email prefilled, on the connected acct."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        enable_connect(self.org)
+        self.product = self._flex_product(credit_count=4, price="120.00")
+        self.request = RequestFactory().post("/passes/buy/", HTTP_HOST=host_for(self.org.subdomain))
+
+    def _create(self, **overrides):
+        kwargs = dict(
+            product=self.product, buyer_email="buyer@example.com",
+            buyer_name="Buyer", request=self.request,
+        )
+        kwargs.update(overrides)
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = FakeStripeSession()
+            url = services.create_pass_checkout_session(self.org, **kwargs)
+            _, call_kwargs = mock_create.call_args
+        return url, call_kwargs
+
+    def test_line_item_metadata_email_and_connected_account(self):
+        url, kwargs = self._create()
+
+        self.assertEqual(url, "https://checkout.stripe.com/pay/cs_test_123")
+        self.assertEqual(kwargs["api_key"], PLATFORM_KEY)
+        self.assertEqual(kwargs["stripe_account"], TEST_ACCT)
+        self.assertEqual(kwargs["mode"], "payment")
+
+        line_items = kwargs["line_items"]
+        self.assertEqual(len(line_items), 1)
+        item = line_items[0]
+        self.assertEqual(item["quantity"], 1)
+        self.assertEqual(item["price_data"]["unit_amount"], 12000)  # $120.00 -> minor units
+        self.assertIsInstance(item["price_data"]["unit_amount"], int)
+        self.assertIn(self.product.name, item["price_data"]["product_data"]["name"])
+
+        self.assertEqual(kwargs["metadata"]["kind"], "pass")
+        self.assertEqual(kwargs["metadata"]["pass_product_id"], str(self.product.pk))
+        self.assertEqual(kwargs["metadata"]["organization_id"], str(self.org.pk))
+        self.assertEqual(kwargs["customer_email"], "buyer@example.com")
+
+    def test_no_buyer_email_omits_customer_email(self):
+        _, kwargs = self._create(buyer_email="")
+        self.assertNotIn("customer_email", kwargs)
+
+    @override_settings(PLATFORM_FEE_PERCENT=10, PLATFORM_FEE_FIXED_CENTS=0)
+    def test_application_fee_is_charged_on_the_pass_price(self):
+        _, kwargs = self._create()
+        # 10% of $120 -> $12.00 -> 1200 minor units.
+        self.assertEqual(kwargs["payment_intent_data"]["application_fee_amount"], 1200)
+
+    def test_no_fee_when_rate_is_zero(self):
+        _, kwargs = self._create()
+        self.assertNotIn("payment_intent_data", kwargs)
+
+    # NOTE: the STUB-mode branch (charges not enabled -> reverse("pass_stub"))
+    # is intentionally NOT tested here: the `pass_stub` route lands with the
+    # passes UI layer (passes/urls.py, owned by the UI agent and not present in
+    # this service-layer slice), and the spec scopes create_pass_checkout_session
+    # coverage to the charges-enabled Stripe path.
+
+
+class FulfillPassCheckoutSessionWebhookTests(PassMoneyPathMixin, TestCase):
+    """fulfill_checkout_session's kind="pass" metadata branch: creates via
+    fulfill_pass_purchase, replays idempotently, and rejects a missing/cross-org
+    product with PassDataError (writing nothing)."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        self.product = self._flex_product(credit_count=4, price="120.00")
+
+    def _session(self, *, session_id="cs_pass", product_id=None, org_id=None, email="buyer@example.com"):
+        return {
+            "id": session_id,
+            "payment_intent": "pi_pass",
+            "metadata": {
+                "kind": "pass",
+                "organization_id": str(self.org.pk if org_id is None else org_id),
+                "pass_product_id": str(self.product.pk if product_id is None else product_id),
+            },
+            "customer_details": {"email": email, "name": "Buyer"},
+        }
+
+    def test_creates_a_pass_purchase_from_metadata(self):
+        order, created = services.fulfill_checkout_session(self.org, self._session())
+
+        self.assertTrue(created)
+        self.assertIsNone(order.performance_id)
+        self.assertEqual(order.total, Decimal("120.00"))
+        self.assertEqual(order.stripe_checkout_session_id, "cs_pass")
+        purchase = order.pass_purchases.get()
+        self.assertEqual(purchase.kind, FLEX)
+        self.assertEqual(purchase.credits_remaining, 4)
+        self.assertEqual(Payment.objects.get(order=order).provider_ref, "pi_pass")
+
+    def test_replaying_the_same_pass_session_is_idempotent(self):
+        order1, created1 = services.fulfill_checkout_session(self.org, self._session())
+        order2, created2 = services.fulfill_checkout_session(self.org, self._session())
+
+        self.assertTrue(created1)
+        self.assertFalse(created2)
+        self.assertEqual(order1.pk, order2.pk)
+        self.assertEqual(Order.objects.filter(stripe_checkout_session_id="cs_pass").count(), 1)
+        self.assertEqual(PassPurchase.objects.count(), 1)
+
+    def test_missing_product_raises_and_writes_nothing(self):
+        session = self._session()
+        del session["metadata"]["pass_product_id"]
+
+        with self.assertRaises(services.PassDataError):
+            services.fulfill_checkout_session(self.org, session)
+        self.assertEqual(Order.objects.filter(stripe_checkout_session_id="cs_pass").count(), 0)
+        self.assertFalse(PassPurchase.objects.exists())
+
+    def test_cross_org_product_raises_and_writes_nothing(self):
+        other_org = make_org("other-pass-org")
+        other_product = PassProduct.objects.create(
+            organization=other_org, name="Theirs", kind=FLEX,
+            price=Decimal("50.00"), credit_count=2,
+        )
+        # A product that exists but belongs to another org isn't found under the
+        # org-scoped lookup -> PassDataError, nothing issued for this org.
+        session = self._session(product_id=other_product.pk)
+
+        with self.assertRaises(services.PassDataError):
+            services.fulfill_checkout_session(self.org, session)
+        self.assertFalse(PassPurchase.objects.filter(organization=self.org).exists())
+
+
+class FulfillHoldWithPassFlexTests(PassMoneyPathMixin, TestCase):
+    """The REDEMPTION core on a FLEX pass over a GA performance."""
+
+    def setUp(self):
+        self.build_ga_performance()  # $35 GA tier, capacity 100
+
+    def test_flex_ga_redemption_mints_tickets_and_burns_credits(self):
+        purchase = self._purchase(self._flex_product(credit_count=2))
+        hold = self._ga_hold(quantity=2)
+
+        order = services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+
+        # $0 PAID order tied to the performance.
+        self.assertEqual(order.total, Decimal("0.00"))
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(order.performance_id, self.performance.pk)
+
+        # Ticket OrderItem at face value; two tickets minted; GA sold bumped.
+        item = order.items.get()
+        self.assertEqual(item.kind, OrderItem.Kind.TICKET)
+        self.assertEqual(item.quantity, 2)
+        self.assertEqual(item.unit_amount, Decimal("35.00"))
+        self.assertEqual(order.tickets.count(), 2)
+        self.assertTrue(all(t.seat_id is None for t in order.tickets.all()))
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 2)
+
+        # Two PassRedemptions, one credit each, face value snapshotted.
+        redemptions = list(order.pass_redemptions.all())
+        self.assertEqual(len(redemptions), 2)
+        self.assertTrue(all(r.credits_used == 1 for r in redemptions))
+        self.assertTrue(all(r.face_value == Decimal("35.00") for r in redemptions))
+        self.assertTrue(all(r.event_id == self.event.pk for r in redemptions))
+
+        # Credits decremented to 0 -> EXHAUSTED; a $0 pass Payment; hold gone.
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 0)
+        self.assertEqual(purchase.status, PASS_EXHAUSTED)
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(payment.provider, "pass")
+        self.assertEqual(payment.amount, Decimal("0.00"))
+        self.assertFalse(Hold.objects.filter(pk=hold.pk).exists())
+
+    def test_flex_partial_redemption_leaves_pass_active(self):
+        purchase = self._purchase(self._flex_product(credit_count=4))
+        hold = self._ga_hold(quantity=1)
+
+        services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 3)
+        self.assertEqual(purchase.status, PASS_ACTIVE)
+
+    def test_over_redeem_raises_and_writes_nothing(self):
+        purchase = self._purchase(self._flex_product(credit_count=1))
+        hold = self._ga_hold(quantity=2)  # wants 2, only 1 credit
+
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+
+        self.assertEqual(Ticket.objects.count(), 0)
+        self.assertEqual(PassRedemption.objects.count(), 0)
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 1)  # untouched
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+
+    def test_performance_outside_window_raises(self):
+        purchase = self._purchase(
+            self._flex_product(credit_count=2),
+            valid_from=timezone.now() + timedelta(days=1),  # perf starts now -> not covered
+        )
+        hold = self._ga_hold(quantity=1)
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        self.assertEqual(Ticket.objects.count(), 0)
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+
+    def test_expired_pass_raises(self):
+        purchase = self._purchase(
+            self._flex_product(credit_count=2),
+            valid_until=timezone.now() - timedelta(minutes=1),
+        )
+        hold = self._ga_hold(quantity=1)
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        self.assertEqual(PassRedemption.objects.count(), 0)
+
+    def test_refunded_pass_raises(self):
+        purchase = self._purchase(self._flex_product(credit_count=2), status=PASS_REFUNDED)
+        hold = self._ga_hold(quantity=1)
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        self.assertEqual(PassRedemption.objects.count(), 0)
+
+    def test_hold_with_promo_is_rejected_and_writes_nothing(self):
+        purchase = self._purchase(self._flex_product(credit_count=2))
+        hold = self._ga_hold(quantity=1)
+        PromoCode.objects.create(
+            organization=self.org, code="TENOFF", kind=PromoCode.Kind.FIXED, value=Decimal("10")
+        )
+        hold = order_services.apply_promo_code(
+            organization=self.org, session_key=hold.session_key, hold_id=hold.pk, code="TENOFF"
+        )
+
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        self.assertEqual(PassRedemption.objects.count(), 0)
+        self.assertEqual(Ticket.objects.count(), 0)
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+
+    def test_hold_with_donation_is_rejected_and_writes_nothing(self):
+        purchase = self._purchase(self._flex_product(credit_count=2))
+        hold = self._ga_hold(quantity=1)
+        hold = order_services.set_hold_donation(
+            organization=self.org, session_key=hold.session_key, hold_id=hold.pk,
+            amount="15", campaign=None,
+        )
+
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        self.assertEqual(PassRedemption.objects.count(), 0)
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+
+    def test_expired_hold_raises_hold_gone(self):
+        purchase = self._purchase(self._flex_product(credit_count=2))
+        hold = self._ga_hold(quantity=1)
+        hold.expires_at = timezone.now() - timedelta(minutes=1)
+        hold.save(update_fields=["expires_at"])
+
+        with self.assertRaises(services.HoldGoneError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        self.assertEqual(PassRedemption.objects.count(), 0)
+
+    def test_double_spend_committed_state_second_call_rejected(self):
+        """Two SEQUENTIAL redemptions of a 1-credit flex pass: the first
+        commits (credits -> 0, EXHAUSTED), so the second is rejected by the
+        committed state. This is the same committed-state pattern the existing
+        Stripe idempotency-race tests use; a true multi-connection race would
+        need the multiprocess harness (orders/test_concurrency_multiprocess.py),
+        but the season backstop DB constraint that guards the true-race case is
+        covered directly in passes/test_services.py
+        (SeasonEventRedemptionConstraintTests) and the flex balance is a locked
+        select_for_update decrement, so the committed-state coverage here is
+        sufficient for this suite."""
+        purchase = self._purchase(self._flex_product(credit_count=1))
+        first_hold = self._ga_hold(quantity=1, session_key="sess-first")
+
+        services.fulfill_hold_with_pass(
+            first_hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.status, PASS_EXHAUSTED)
+
+        second_hold = self._ga_hold(quantity=1, session_key="sess-second")
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                second_hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        # Only the first redemption exists.
+        self.assertEqual(PassRedemption.objects.count(), 1)
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 1)
+
+
+class FulfillHoldWithPassReservedTests(PassMoneyPathMixin, TestCase):
+    """A FLEX redemption over a RESERVED performance snapshots each seat onto its
+    redemption row, and an availability race surfaces as AvailabilityChangedError."""
+
+    def setUp(self):
+        self.build_reserved_performance()  # $65 section default, one seat A1
+        self.second_seat = Seat.objects.create(
+            organization=self.org, section=self.section, row_label="A", number="2"
+        )
+
+    def _reserved_hold(self, seat_ids, session_key="sess-reserved"):
+        return order_services.set_reserved_hold(
+            organization=self.org, performance=self.performance,
+            session_key=session_key, user=None, seat_ids=seat_ids,
+        )
+
+    def test_reserved_redemption_snapshots_seats_into_redemption_rows(self):
+        purchase = self._purchase(self._flex_product(credit_count=2))
+        hold = self._reserved_hold([self.seat.id, self.second_seat.id])
+
+        order = services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+
+        self.assertEqual(order.total, Decimal("0.00"))
+        self.assertEqual(order.tickets.count(), 2)
+        redemptions = list(order.pass_redemptions.all())
+        self.assertEqual({r.seat_id for r in redemptions}, {self.seat.id, self.second_seat.id})
+        self.assertTrue(all(r.credits_used == 1 for r in redemptions))
+        self.assertTrue(all(r.face_value == Decimal("65.00") for r in redemptions))
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 0)
+        self.assertEqual(purchase.status, PASS_EXHAUSTED)
+
+    def test_seat_ticketed_between_hold_and_redeem_raises_availability_changed(self):
+        purchase = self._purchase(self._flex_product(credit_count=2))
+        hold = self._reserved_hold([self.seat.id])
+        # The seat gets ticketed by another order after the hold, before redeem.
+        other_order = Order.objects.create(
+            organization=self.org, performance=self.performance,
+            buyer_email="other@example.com", total=Decimal("65.00"), status=Order.Status.PAID,
+        )
+        Ticket.objects.create(
+            organization=self.org, order=other_order, performance=self.performance, seat=self.seat
+        )
+
+        with self.assertRaises(services.AvailabilityChangedError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+            )
+        # Nothing consumed: no redemption rows and the credit balance is intact.
+        self.assertEqual(PassRedemption.objects.count(), 0)
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 2)
+
+
+class FulfillHoldWithPassSeasonTests(PassMoneyPathMixin, TestCase):
+    """The REDEMPTION core on a SEASON pass: one admission per covered event."""
+
+    def setUp(self):
+        self.build_ga_performance()  # event "show" == self.event, self.performance
+        self.event_a = self.event
+        self.perf_a = self.performance
+        self.tier_a = self.price_tier
+        self.event_b, self.perf_b, self.tier_b = self._second_ga_event()
+
+    def _season(self, events):
+        return self._purchase(self._season_product(events=events), covered_events=events)
+
+    def test_single_covered_event_redeems_with_zero_credits(self):
+        purchase = self._season([self.event_a, self.event_b])
+        hold = self._ga_hold(quantity=1, performance=self.perf_a, price_tier=self.tier_a)
+
+        order = services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+
+        redemption = order.pass_redemptions.get()
+        self.assertEqual(redemption.credits_used, 0)
+        self.assertEqual(redemption.event_id, self.event_a.pk)
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.status, PASS_ACTIVE)  # season never EXHAUSTED
+        self.assertIsNone(purchase.credits_remaining)
+
+    def test_second_redemption_same_event_is_rejected(self):
+        purchase = self._season([self.event_a])
+        first = self._ga_hold(quantity=1, performance=self.perf_a, price_tier=self.tier_a, session_key="s1")
+        services.fulfill_hold_with_pass(first, purchase, buyer_email="h@example.com", buyer_name="Holder")
+
+        second = self._ga_hold(quantity=1, performance=self.perf_a, price_tier=self.tier_a, session_key="s2")
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(second, purchase, buyer_email="h@example.com", buyer_name="Holder")
+        self.assertEqual(purchase.redemptions.count(), 1)
+
+    def test_different_covered_event_redeems_ok(self):
+        purchase = self._season([self.event_a, self.event_b])
+        first = self._ga_hold(quantity=1, performance=self.perf_a, price_tier=self.tier_a, session_key="s1")
+        services.fulfill_hold_with_pass(first, purchase, buyer_email="h@example.com", buyer_name="Holder")
+
+        second = self._ga_hold(quantity=1, performance=self.perf_b, price_tier=self.tier_b, session_key="s2")
+        services.fulfill_hold_with_pass(second, purchase, buyer_email="h@example.com", buyer_name="Holder")
+
+        self.assertEqual(purchase.redemptions.count(), 2)
+        self.assertEqual(
+            {r.event_id for r in purchase.redemptions.all()}, {self.event_a.pk, self.event_b.pk}
+        )
+
+    def test_quantity_greater_than_one_is_rejected(self):
+        purchase = self._season([self.event_a])
+        hold = self._ga_hold(quantity=2, performance=self.perf_a, price_tier=self.tier_a)
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(hold, purchase, buyer_email="h@example.com", buyer_name="Holder")
+        self.assertEqual(PassRedemption.objects.count(), 0)
+
+    def test_uncovered_event_is_rejected(self):
+        purchase = self._season([self.event_a])  # covers A only
+        hold = self._ga_hold(quantity=1, performance=self.perf_b, price_tier=self.tier_b)
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(hold, purchase, buyer_email="h@example.com", buyer_name="Holder")
+        self.assertEqual(PassRedemption.objects.count(), 0)
+        self.assertTrue(Hold.objects.filter(pk=hold.pk).exists())
+
+
+class RefundPassPurchaseOrderTests(PassMoneyPathMixin, TestCase):
+    """refund_order on a pass PURCHASE (sale) order: blocked while the pass has
+    redemptions; otherwise refunds and marks every PassPurchase REFUNDED."""
+
+    def setUp(self):
+        self.build_ga_performance()
+
+    def _sell(self, product):
+        return services.fulfill_pass_purchase(
+            self.org, product=product, buyer_email="holder@example.com",
+            buyer_name="Holder", provider="test", payment_ref="test-pass-sale",
+        )
+
+    def test_refund_blocked_while_pass_has_redemptions(self):
+        sale_order = self._sell(self._flex_product(credit_count=2))
+        purchase = sale_order.pass_purchases.get()
+        # Redeem one credit so the pass now has a redemption.
+        hold = self._ga_hold(quantity=1)
+        redemption_order = services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="holder@example.com", buyer_name="Holder"
+        )
+
+        with self.assertRaises(services.RefundError):
+            services.refund_order(sale_order)
+
+        sale_order.refresh_from_db()
+        self.assertEqual(sale_order.status, Order.Status.PAID)  # unchanged
+        purchase.refresh_from_db()
+        self.assertNotEqual(purchase.status, PASS_REFUNDED)
+        # The redeemed ticket is NOT voided by the rejected refund.
+        self.assertTrue(
+            redemption_order.tickets.exclude(status=Ticket.Status.VOID).exists()
+        )
+
+    def test_refund_of_an_unredeemed_purchase_marks_it_refunded(self):
+        sale_order = self._sell(self._flex_product(credit_count=2))
+        purchase = sale_order.pass_purchases.get()
+
+        performed = services.refund_order(sale_order)
+
+        self.assertTrue(performed)
+        sale_order.refresh_from_db()
+        self.assertEqual(sale_order.status, Order.Status.REFUNDED)
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.status, PASS_REFUNDED)
+
+        # A refunded pass can no longer be redeemed.
+        hold = self._ga_hold(quantity=1)
+        with self.assertRaises(services.PassRedemptionError):
+            services.fulfill_hold_with_pass(
+                hold, purchase, buyer_email="holder@example.com", buyer_name="Holder"
+            )
+
+
+class RefundPassRedemptionOrderTests(PassMoneyPathMixin, TestCase):
+    """refund_order on a pass REDEMPTION order ($0, provider="pass"): voids the
+    tickets, deletes the PassRedemptions, gives the entitlement back, records a
+    $0 refund Payment, and calls no Stripe (nothing was charged)."""
+
+    def setUp(self):
+        self.build_ga_performance()
+
+    def test_flex_redemption_refund_restores_credits_and_records_zero(self):
+        purchase = self._purchase(self._flex_product(credit_count=2))
+        hold = self._ga_hold(quantity=1)
+        redemption_order = services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 1)
+
+        with patch("payments.services.stripe.Refund.create") as mock_refund:
+            performed = services.refund_order(redemption_order)
+            mock_refund.assert_not_called()  # provider="pass", nothing charged
+
+        self.assertTrue(performed)
+        redemption_order.refresh_from_db()
+        self.assertEqual(redemption_order.status, Order.Status.REFUNDED)
+        # Tickets voided; redemption rows deleted; GA inventory freed.
+        self.assertFalse(
+            redemption_order.tickets.exclude(status=Ticket.Status.VOID).exists()
+        )
+        self.assertEqual(PassRedemption.objects.count(), 0)
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)
+        # Flex credit restored.
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 2)
+        # The refund Payment is $0 for a redemption order.
+        refund_payment = Payment.objects.get(order=redemption_order, status="refunded")
+        self.assertEqual(refund_payment.amount, Decimal("0.00"))
+
+        # And the freed credit can be spent again.
+        hold2 = self._ga_hold(quantity=1, session_key="sess-again")
+        services.fulfill_hold_with_pass(
+            hold2, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.credits_remaining, 1)
+
+    def test_season_redemption_refund_frees_the_event_slot(self):
+        product = self._season_product(events=[self.event])
+        purchase = self._purchase(product, covered_events=[self.event])
+        hold = self._ga_hold(quantity=1)
+        redemption_order = services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+        self.assertEqual(purchase.redemptions.count(), 1)
+
+        performed = services.refund_order(redemption_order)
+        self.assertTrue(performed)
+        self.assertEqual(purchase.redemptions.count(), 0)  # slot freed
+
+        # The same covered event can be redeemed again now the slot is free.
+        hold2 = self._ga_hold(quantity=1, session_key="sess-reagain")
+        services.fulfill_hold_with_pass(
+            hold2, purchase, buyer_email="h@example.com", buyer_name="Holder"
+        )
+        self.assertEqual(purchase.redemptions.count(), 1)
+
+
+class SendOrderReceiptPassDispatchTests(PassMoneyPathMixin, TestCase):
+    """send_order_receipt routes a pass-only order (no tickets, a kind=PASS line)
+    to the pass receipt email, NOT the donation fallback."""
+
+    def setUp(self):
+        self.build_ga_performance()
+
+    def test_pass_only_order_sends_pass_email_not_donation(self):
+        from django.core import mail
+        from orders import emails
+
+        product = self._flex_product(credit_count=4, name="Season Flex")
+        order = services.fulfill_pass_purchase(
+            self.org, product=product, buyer_email="buyer@example.com",
+            buyer_name="Buyer", provider="test", payment_ref="test-pass",
+        )
+        request = RequestFactory().post("/", HTTP_HOST=host_for(self.org.subdomain))
+
+        emails.send_order_receipt(order, request)
+
+        self.assertEqual(len(mail.outbox), 1)
+        subject = mail.outbox[0].subject
+        self.assertIn(product.name, subject)
+        self.assertNotIn("donation", subject.lower())

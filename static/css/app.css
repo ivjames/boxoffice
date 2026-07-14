@@ -3164,3 +3164,75 @@ table.dash-table th {
 .cart-item__pass-redeem {
     margin-top: 0.75rem;
 }
+
+/* -- dashboard overview "Getting started" checklist (Phase 5) ------------
+   Tenant-agnostic: neutral border/muted-color tokens plus the existing
+   --accent-color, same conventions as .stat-tile above. Auto-hides once
+   every step is done (see dashboard.views.overview / show_onboarding),
+   so this only ever appears while it still has something to say. */
+.onboarding-card {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 2rem;
+}
+
+.onboarding-card__header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.onboarding-card__header h2 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--primary-color);
+}
+
+.onboarding-card__progress {
+    font-size: 0.875rem;
+    color: var(--muted-color);
+}
+
+.onboarding-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.onboarding-list__item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.onboarding-list__check {
+    display: inline-block;
+    width: 1.25rem;
+    text-align: center;
+    color: var(--accent-color);
+}
+
+.onboarding-list__item.is-done .onboarding-list__check {
+    color: var(--muted-color);
+}
+
+.onboarding-list__item.is-done .onboarding-list__label {
+    color: var(--muted-color);
+    text-decoration: line-through;
+}
+
+.onboarding-list a.onboarding-list__label {
+    color: var(--text-color);
+    font-weight: 600;
+}
+
+.onboarding-list a.onboarding-list__label:hover {
+    color: var(--accent-color);
+}

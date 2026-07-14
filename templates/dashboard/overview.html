@@ -9,6 +9,27 @@
     <h1>Overview</h1>
 </div>
 
+{% if show_onboarding %}
+<div class="onboarding-card">
+    <div class="onboarding-card__header">
+        <h2>Getting started</h2>
+        <span class="onboarding-card__progress">{{ onboarding_done_count }} of {{ onboarding_total }} done</span>
+    </div>
+    <ul class="onboarding-list">
+        {% for step in onboarding_steps %}
+        <li class="onboarding-list__item{% if step.done %} is-done{% endif %}">
+            <span class="onboarding-list__check" aria-hidden="true">{% if step.done %}&#10003;{% else %}&#9675;{% endif %}</span>
+            {% if not step.done and step.url %}
+            <a href="{{ step.url }}" class="onboarding-list__label">{{ step.label }}</a>
+            {% else %}
+            <span class="onboarding-list__label">{{ step.label }}</span>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 <div class="stat-row">
     <div class="stat-tile">
         <span class="stat-tile__value">{{ upcoming_performances|length }}</span>

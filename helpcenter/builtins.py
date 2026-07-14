@@ -61,6 +61,29 @@ BUILTIN_ARTICLES = [
         ),
     ),
     BuiltinArticle(
+        slug="getting-your-box-office-set-up",
+        title="Getting your box office set up",
+        summary="Five steps from signup to your first sale.",
+        category=Category.HOW_TO,
+        visibility=Visibility.MANAGER,
+        body=(
+            "There are five things to do before you can sell your first ticket:\n\n"
+            "1. Connect Stripe — only an owner can do this, from the setup checklist "
+            "on the Overview page. Ticket money goes straight to your own Stripe "
+            "account; boxo.show never holds it.\n"
+            "2. Add a venue and build your seating chart, or plan to sell a "
+            "performance as general admission, under Seating.\n"
+            "3. Create your event under Events, add a performance for each date, "
+            "and set both the event and the performance to Published when you're "
+            "ready to sell.\n"
+            "4. Set price tiers for each performance under Pricing.\n"
+            "5. Invite your team under Team and give each person a role — Owner, "
+            "Manager, Box office or Scanner.\n\n"
+            "Once a performance is published with prices set, it's live on your "
+            "storefront immediately — there's no separate \"go live\" step."
+        ),
+    ),
+    BuiltinArticle(
         slug="selling-and-refunds",
         title="Selling tickets and issuing refunds",
         summary="Look up an order, resend tickets, and process a refund.",
@@ -74,6 +97,78 @@ BUILTIN_ARTICLES = [
             "Refunds go through the theater's own Stripe account, so the money "
             "returns to the buyer the same way it came in. Check your venue's "
             "refund policy article before promising a refund at the counter."
+        ),
+    ),
+    BuiltinArticle(
+        slug="discounts-and-promo-codes",
+        title="Discounts & promo codes",
+        summary="Create percent or fixed-amount codes and see how buyers apply them.",
+        category=Category.HOW_TO,
+        visibility=Visibility.BOX_OFFICE,
+        body=(
+            "Create a code under Promo codes: give it a name, choose Percentage off "
+            "or Fixed amount off, and set the value. You can add an active window, "
+            "a maximum number of redemptions, and a minimum order amount — leave "
+            "any of those blank for no limit.\n\n"
+            "Buyers enter a code on the cart page, on the item they're checking "
+            "out (holds are per performance, so a code is applied per cart item). "
+            "A valid code shows the discount right under the subtotal before they "
+            "go to Stripe checkout.\n\n"
+            "A code only discounts the ticket subtotal — it never reduces a "
+            "donation added at checkout. Redemptions are only counted once an "
+            "order is actually paid, so an abandoned cart never uses up a "
+            "limited code.\n\n"
+            "Deactivate a code any time from the Promo codes list. Codes are "
+            "retired rather than deleted, so past orders keep an accurate record "
+            "of what was applied."
+        ),
+    ),
+    BuiltinArticle(
+        slug="donations",
+        title="Donations",
+        summary="Turn on the general fund, and where donation money shows up.",
+        category=Category.HOW_TO,
+        visibility=Visibility.MANAGER,
+        body=(
+            "Turn on donations from the donation settings screen: switch it "
+            "active, set a name for the fund, and list a few suggested amounts — "
+            "they show as preset buttons to the buyer. You can also add "
+            "acknowledgment text (your nonprofit status, EIN, or a thank-you) "
+            "that prints on the donation receipt.\n\n"
+            "With donations on, buyers see the preset amounts plus a custom "
+            "amount field on the cart page, so they can add a donation on top of "
+            "a ticket order. There's also a standalone donate page for anyone "
+            "who wants to give without buying a ticket.\n\n"
+            "Donation totals show up in their own report in the dashboard, with "
+            "date filtering and a CSV export, and any donation on an order shows "
+            "as its own line on that order's detail page."
+        ),
+    ),
+    BuiltinArticle(
+        slug="season-and-flex-passes",
+        title="Season & flex passes",
+        summary="The difference between season and flex passes, and how buyers use them.",
+        category=Category.HOW_TO,
+        visibility=Visibility.MANAGER,
+        body=(
+            "A season pass covers one admission per show in the pass — the buyer "
+            "picks which performance of each covered event when they redeem. A "
+            "flex pass instead carries a set number of credits that can be spent "
+            "on any covered performance, in any combination, until the credits "
+            "run out.\n\n"
+            "Passes are sold like any other purchase — buyers pick a pass and "
+            "check out through Stripe, no separate flow. What they bought (which "
+            "events, the validity window, how many credits) is locked in at "
+            "purchase, so changing the pass product later never changes what's "
+            "already sold.\n\n"
+            "To use a pass, a buyer signs in to their account, opens My passes, "
+            "and chooses Redeem. That puts them in redeem mode while they shop "
+            "normally — any covered performance offers a \"Redeem with pass\" "
+            "option in the cart instead of a price, and checkout completes with "
+            "no charge.\n\n"
+            "Staff can see pass sales and outstanding liability — flex credits "
+            "not yet redeemed and their dollar value, plus season admissions "
+            "still owed — from the pass sales report."
         ),
     ),
     BuiltinArticle(
@@ -126,6 +221,32 @@ BUILTIN_ARTICLES = [
             "• Scanner — check tickets in at the door.\n\n"
             "Only owners can grant the owner role. Managers can add and adjust "
             "everyone else."
+        ),
+    ),
+    BuiltinArticle(
+        slug="email-marketing-and-your-audience",
+        title="Email marketing & your audience",
+        summary="Consent, segments, and sending a campaign to your buyers.",
+        category=Category.HOW_TO,
+        visibility=Visibility.MANAGER,
+        body=(
+            "Buyers opt in to marketing email themselves — there's a checkbox at "
+            "checkout on tickets, passes, and donations, and they can change "
+            "their mind any time from their own account preferences. Nobody is "
+            "added to your list without checking that box.\n\n"
+            "The Audience list shows every opted-in guest along with their order "
+            "history and lifetime spend, so you can see who you're about to "
+            "email before you send anything.\n\n"
+            "When you compose a campaign you choose a segment: everyone opted "
+            "in, buyers of a specific event, or buyers who've spent at least a "
+            "minimum amount. Write a subject and a plain-text body, send "
+            "yourself a test copy, then send — delivery happens in the "
+            "background and the campaign page tracks sent, failed and pending "
+            "counts.\n\n"
+            "Every campaign email carries a one-click unsubscribe link, and "
+            "unsubscribing is automatic and immediate — no confirmation click "
+            "required — though a buyer can resubscribe from the same page if "
+            "they change their mind."
         ),
     ),
     BuiltinArticle(

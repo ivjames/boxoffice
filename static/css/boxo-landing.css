@@ -361,6 +361,15 @@
   margin: 0 auto 28px;
 }
 
+/* Optional lede paragraph under a section head (spec: pricing section). */
+.platform-landing .landing-section__lede {
+  margin: 12px 0 0;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.7;
+  color: var(--boxo-text-secondary);
+}
+
 /* -- feature grid ------------------------------------------------------ */
 
 .platform-landing .landing-grid {
@@ -382,6 +391,15 @@
   border-color: var(--boxo-gold);
   box-shadow: none;
   transform: none;
+}
+
+/* Highlight variant — the lead pricing claim gets a permanent gold border
+   and glow instead of only on hover, so it reads first in the grid (spec:
+   pricing section, "the low/no platform fee" card). */
+.platform-landing .landing-card--highlight {
+  background: linear-gradient(180deg, rgba(201, 162, 75, 0.14), rgba(0, 0, 0, 0));
+  border-color: var(--boxo-gold);
+  box-shadow: 0 0 32px rgba(201, 162, 75, 0.1);
 }
 
 .platform-landing .landing-card h3 {

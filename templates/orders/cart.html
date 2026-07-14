@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load showtimes %}
+{% load showtimes pass_tags %}
 
 {% block title %}Your cart — {{ organization.name }}{% endblock %}
 
@@ -9,6 +9,7 @@
 
     {% if items %}
         {% for item in items %}
+            {% redeemable_with_pass item.hold redeeming_pass as item_pass_redeemable %}
             <div class="cart-item" x-data="holdCountdown('{{ item.hold.expires_at|date:'c' }}')" x-init="start()">
                 <div class="cart-item__header">
                     <h2>{{ item.hold.performance.event.title }}</h2>
@@ -37,6 +38,7 @@
                     Holding for: <span x-text="display" :class="{ 'cart-item__timer--warning': secondsLeft > 0 && secondsLeft < 60 }"></span>
                 </p>
 
+                {% if not item_pass_redeemable %}
                 <div class="cart-item__promo">
                     {% if item.hold.promo_code_id %}
                         <p class="muted">Code <strong>{{ item.hold.promo_code_text }}</strong> applied.</p>
@@ -93,9 +95,26 @@
                     {% endif %}
                 </div>
                 {% endif %}
+                {% endif %}{% comment %}/not item_pass_redeemable{% endcomment %}
+
+                {% if redeeming_pass %}
+                    {% if item_pass_redeemable %}
+                        <div class="cart-item__pass-redeem">
+                            <form method="post" action="{% url 'pass_redeem' %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                                <button type="submit" class="button">Redeem with pass</button>
+                            </form>
+                        </div>
+                    {% else %}
+                        <p class="muted">Not covered by your pass.</p>
+                    {% endif %}
+                {% endif %}
 
                 <div class="cart-item__actions">
-                    <a class="button" href="{% url 'checkout' %}">Proceed to checkout</a>
+                    {% if not item_pass_redeemable %}
+                        <a class="button" href="{% url 'checkout' %}">Proceed to checkout</a>
+                    {% endif %}
                     <form method="post" action="{% url 'cart_release' %}">
                         {% csrf_token %}
                         <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">

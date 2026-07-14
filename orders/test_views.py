@@ -1250,3 +1250,74 @@ class DonateStandaloneFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestC
         self.assertRedirects(resp, f"/tickets/{order.token}/", fetch_redirect_response=False)
         self.assertEqual(order.total, Decimal("25.00"))
         self.assertEqual(Payment.objects.get(order=order).provider, "test")
+
+
+class PassRedeemModeCartRenderingTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """Phase 3: the cart's "Redeem with pass" CTA (templates/orders/cart.html,
+    gated by passes.context_processors.pass_nav's `redeeming_pass` + passes/
+    templatetags/pass_tags.py's redeemable_with_pass) only appears for a hold
+    the redeeming pass actually covers -- an uncovered hold gets a muted note
+    instead, and neither shows up at all outside redeem mode. orders/views.py
+    itself carries no passes import (see passes.context_processors' dependency
+    -direction note) -- this is purely a template-rendering check, the
+    business logic is covered in passes/test_views.py and payments/
+    test_services.py."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue, capacity=5)
+        self.other_event, self.other_performance, self.other_tier = self.build_ga(
+            self.org, self.venue, slug="other-show", capacity=5
+        )
+
+    def _hold(self, performance, tier):
+        self.post_as(
+            "org-a", f"/performances/{performance.pk}/hold/", {"price_tier": tier.pk, "quantity": 1}
+        )
+        return Hold.objects.filter(performance=performance).latest("created_at")
+
+    def _start_redeeming(self, events=None, credit_count=2):
+        from passes.models import PassProduct
+
+        product = PassProduct.objects.create(
+            organization=self.org,
+            name="Flex Pack",
+            kind=PassProduct.Kind.FLEX,
+            price=Decimal("40.00"),
+            credit_count=credit_count,
+        )
+        if events is not None:
+            product.events.set(events)
+        self.post_as(
+            "org-a", "/passes/stub/", {"product_id": product.pk, "buyer_email": "holder@example.com"}
+        )
+        from passes.models import PassPurchase
+
+        purchase = PassPurchase.objects.get(product=product)
+        self.post_as("org-a", "/passes/redeem/start/", {"pass_id": purchase.pk})
+        return purchase
+
+    def test_no_cta_outside_redeem_mode(self):
+        self._hold(self.performance, self.tier)
+        resp = self.get_as("org-a", "/cart/")
+        self.assertNotContains(resp, "Redeem with pass")
+        self.assertNotContains(resp, "Not covered by your pass")
+
+    def test_cta_shown_only_for_covered_hold(self):
+        self._start_redeeming(events=[self.event])
+        self._hold(self.performance, self.tier)  # covered
+        self._hold(self.other_performance, self.other_tier)  # not covered
+
+        resp = self.get_as("org-a", "/cart/")
+        self.assertContains(resp, "Redeem with pass")
+        self.assertContains(resp, "Not covered by your pass")
+
+    def test_all_access_pass_covers_every_hold(self):
+        self._start_redeeming(events=None)  # empty events -> all-access
+        self._hold(self.performance, self.tier)
+        self._hold(self.other_performance, self.other_tier)
+
+        resp = self.get_as("org-a", "/cart/")
+        self.assertNotContains(resp, "Not covered by your pass")
+        # One "Redeem with pass" button per covered hold.
+        self.assertEqual(resp.content.decode().count("Redeem with pass"), 2)

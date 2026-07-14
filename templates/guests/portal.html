@@ -20,21 +20,32 @@
             {% for row in order_rows %}
                 <div class="order-list__item">
                     <div class="order-list__main">
-                        <h2>{{ row.order.performance.event.title }}</h2>
-                        <p>
-                            {% showtime row.order.performance.starts_at row.order.performance.venue.timezone "D, M j Y — g:i A" %} ·
-                            {{ row.order.performance.venue.name }}
-                        </p>
-                        <p class="muted">
-                            {{ row.ticket_count }} ticket{{ row.ticket_count|pluralize }} ·
-                            ${{ row.order.total }} ·
-                            <span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span>
-                        </p>
+                        {% if row.order.performance %}
+                            <h2>{{ row.order.performance.event.title }}</h2>
+                            <p>
+                                {% showtime row.order.performance.starts_at row.order.performance.venue.timezone "D, M j Y — g:i A" %} ·
+                                {{ row.order.performance.venue.name }}
+                            </p>
+                            <p class="muted">
+                                {{ row.ticket_count }} ticket{{ row.ticket_count|pluralize }} ·
+                                ${{ row.order.total }} ·
+                                <span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span>
+                            </p>
+                        {% else %}
+                            <h2>Donation · ${{ row.order.total }}</h2>
+                            <p class="muted">
+                                <span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span>
+                            </p>
+                        {% endif %}
                         <p class="muted">Ordered {{ row.order.created_at|date:"M j, Y" }}</p>
                     </div>
                     <div class="order-list__actions">
-                        <a class="button" href="{% url 'ticket_detail' token=row.order.token %}">View / print</a>
-                        <a class="button button--secondary" href="{% url 'ticket_pdf' token=row.order.token %}">Download PDF</a>
+                        {% if row.order.performance %}
+                            <a class="button" href="{% url 'ticket_detail' token=row.order.token %}">View / print</a>
+                            <a class="button button--secondary" href="{% url 'ticket_pdf' token=row.order.token %}">Download PDF</a>
+                        {% else %}
+                            <a class="button" href="{% url 'ticket_detail' token=row.order.token %}">View receipt</a>
+                        {% endif %}
                     </div>
                 </div>
             {% endfor %}

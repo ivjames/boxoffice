@@ -21,7 +21,7 @@
         <tr>
             <td><a href="{% url 'dashboard_order_detail' order.token %}">{{ order.token }}</a></td>
             <td>{{ order.buyer_email }}</td>
-            <td>{{ order.performance.event.title }}</td>
+            <td>{% if order.performance %}{{ order.performance.event.title }}{% else %}Donation{% endif %}</td>
             <td>${{ order.total }}</td>
             <td><span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></td>
             <td>{{ order.created_at|date:"M j Y g:i A" }}</td>

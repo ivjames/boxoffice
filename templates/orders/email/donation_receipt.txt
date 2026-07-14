@@ -1,0 +1,10 @@
+Thank you for your donation
+{{ organization.name }}
+
+Amount: ${{ amount }}
+{% if campaign.acknowledgment %}
+{{ campaign.acknowledgment }}
+{% endif %}
+View your receipt online any time: {{ receipt_url }}
+
+Thank you for your support — {{ organization.name }}

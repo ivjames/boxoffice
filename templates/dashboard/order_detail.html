@@ -9,7 +9,11 @@
 <h1>Order {{ order.token }}</h1>
 <p><span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
 <p><strong>Buyer:</strong> {{ order.buyer_name }} — {{ order.buyer_email }}</p>
+{% if order.performance %}
 <p><strong>Performance:</strong> {{ order.performance.event.title }} — {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ({{ order.performance.venue.name }})</p>
+{% else %}
+<p><strong>Donation order</strong> — no performance.</p>
+{% endif %}
 <p><strong>Total:</strong> ${{ order.total }}</p>
 {% if order.discount_amount %}
 <p><strong>Subtotal:</strong> ${{ order.gross_total }}</p>
@@ -38,6 +42,36 @@
     {% endif %}
 </div>
 
+<h2>Items</h2>
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead><tr><th>Kind</th><th>Description</th><th>Qty</th><th>Amount</th></tr></thead>
+    <tbody>
+    {% for item in items %}
+        <tr>
+            <td>{{ item.get_kind_display }}</td>
+            <td>
+                {% if item.kind == 'donation' %}
+                    Donation{% if item.donation_campaign %} — {{ item.donation_campaign.name }}{% endif %}
+                {% elif item.pricing_zone %}
+                    {{ item.pricing_zone.name }}{% if item.seat %} — {{ item.seat.row_label }}{{ item.seat.number }}{% endif %}
+                {% elif item.price_tier %}
+                    {{ item.price_tier.name }}{% if item.seat %} — {{ item.seat.row_label }}{{ item.seat.number }}{% endif %}
+                {% else %}
+                    —
+                {% endif %}
+            </td>
+            <td>{{ item.quantity }}</td>
+            <td>${{ item.unit_amount }}</td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="4" class="muted">No items on this order.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+
+{% if tickets %}
 <h2>Tickets</h2>
 <div class="dash-table-wrap">
 <table class="dash-table">
@@ -55,4 +89,5 @@
     </tbody>
 </table>
 </div>
+{% endif %}
 {% endblock %}

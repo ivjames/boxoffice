@@ -28,10 +28,11 @@
                 {% if item.discount %}
                     <p>Subtotal: ${{ item.total }}</p>
                     <p class="muted">&minus; ${{ item.discount }} ({{ item.hold.promo_code_text }})</p>
-                    <p><strong>Total: ${{ item.net_total }}</strong></p>
-                {% else %}
-                    <p><strong>Total: ${{ item.total }}</strong></p>
                 {% endif %}
+                {% if item.donation %}
+                    <p class="muted">Donation: ${{ item.donation }}</p>
+                {% endif %}
+                <p><strong>Total: ${{ item.net_total }}</strong></p>
                 <p class="cart-item__timer">
                     Holding for: <span x-text="display" :class="{ 'cart-item__timer--warning': secondsLeft > 0 && secondsLeft < 60 }"></span>
                 </p>
@@ -57,6 +58,41 @@
                         </form>
                     {% endif %}
                 </div>
+
+                {% if donations_enabled %}
+                <div class="cart-item__donation">
+                    {% if item.hold.donation_amount %}
+                        <p class="muted">Donation: <strong>${{ item.hold.donation_amount }}</strong></p>
+                        <form method="post" action="{% url 'donation_remove' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <button type="submit" class="button button--secondary button--sm">Remove donation</button>
+                        </form>
+                    {% else %}
+                        <p class="muted">Add a donation</p>
+                        <div class="cart-item__donation-presets">
+                            {% for preset in donation_suggested_amounts %}
+                                <form method="post" action="{% url 'donation_add' %}" class="cart-item__donation-preset-form">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                                    <input type="hidden" name="amount" value="{{ preset }}">
+                                    <button type="submit" class="button button--secondary button--sm">${{ preset }}</button>
+                                </form>
+                            {% endfor %}
+                        </div>
+                        <form method="post" action="{% url 'donation_add' %}" class="cart-item__donation-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <div class="field">
+                                <label class="sr-only" for="donation-amount-{{ item.hold.pk }}">Custom donation amount</label>
+                                <input type="text" id="donation-amount-{{ item.hold.pk }}" name="amount"
+                                       placeholder="Other amount" inputmode="decimal">
+                            </div>
+                            <button type="submit" class="button button--secondary button--sm">Add</button>
+                        </form>
+                    {% endif %}
+                </div>
+                {% endif %}
 
                 <div class="cart-item__actions">
                     <a class="button" href="{% url 'checkout' %}">Proceed to checkout</a>

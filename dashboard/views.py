@@ -1,3 +1,4 @@
+import csv
 import json
 from decimal import Decimal, InvalidOperation
 
@@ -21,11 +22,12 @@ from accounts.permissions import (
     manager_required,
     tenant_staff_required,
 )
+from donations.services import get_or_create_general_fund
 from events import zones as zone_services
 from events.models import Event, Performance, PriceTier, PricingZone, ZoneTemplate
 from events.zone_export import ZoneExportError, render_zone_map
-from orders.emails import send_ticket_email
-from orders.models import Order, PerformanceSeatBlock, Ticket
+from orders.emails import send_order_receipt
+from orders.models import Order, OrderItem, PerformanceSeatBlock, Ticket
 from orders.services import get_seating_chart, performance_seats, void_order
 from payments.services import RefundError, refund_order
 from promotions.models import PromoCode
@@ -33,6 +35,7 @@ from venues import generation
 from venues.models import Seat, SeatingChart, Section, Venue
 
 from .forms import (
+    DonationSettingsForm,
     EventForm,
     InviteMemberForm,
     PerformanceForm,
@@ -88,11 +91,22 @@ def overview(request):
     event_revenue_rows = []
     if show_revenue:
         paid_orders = Order.objects.filter(organization=organization, status=Order.Status.PAID)
+        # gross_revenue stays computed off EVERY paid order -- donations
+        # included -- see this variable's use in overview.html; a donation
+        # is real revenue even though it reserves no performance.
         gross_revenue = paid_orders.aggregate(total=Sum("total"))["total"] or Decimal("0.00")
+
+        # The per-performance and per-event groupings below are strictly a
+        # TICKETING view (a row per performance / per event), so a Phase 2
+        # donation-only order (Order.performance null) must be excluded --
+        # left in, it would group under a bogus "performance: None" /
+        # "event: None" bucket instead of just not appearing in a table that
+        # isn't about it.
+        ticketed_orders = paid_orders.filter(performance__isnull=False)
 
         revenue_by_performance = {
             row["performance"]: row["revenue"]
-            for row in paid_orders.values("performance").annotate(revenue=Sum("total"))
+            for row in ticketed_orders.values("performance").annotate(revenue=Sum("total"))
         }
 
         event_revenue_rows = [
@@ -104,7 +118,7 @@ def overview(request):
             for row in (
                 # Group by event id (not title): two distinct events can share a
                 # title, and merging them would misreport per-event revenue.
-                paid_orders.values("performance__event", "performance__event__title")
+                ticketed_orders.values("performance__event", "performance__event__title")
                 .annotate(orders=Count("id"), revenue=Sum("total"))
                 .order_by("-revenue")
             )
@@ -687,6 +701,15 @@ class OrderDetailView(BoxOfficeRequiredMixin, DetailView):
         context["tickets"] = self.object.tickets.select_related(
             "seat", "seat__section", "scanned_by"
         ).order_by("id")
+        # Phase 2: a kind-aware line-item table -- a ticket item shows its
+        # existing seat/tier text, a donation item shows the gift amount +
+        # campaign, so a donation-only order's detail page has something to
+        # show besides the (now-guarded) performance line and an empty
+        # tickets table. select_related covers every FK a line item's kind
+        # might read from, so the template never N+1s per row.
+        context["items"] = self.object.items.select_related(
+            "price_tier", "pricing_zone", "seat", "donation_campaign"
+        ).order_by("id")
         return context
 
 
@@ -708,18 +731,20 @@ def _org_order(request, token):
 @box_office_required
 @require_POST
 def order_resend(request, token):
-    """Re-send the confirmation/ticket email for an order (e.g. the buyer lost
-    it or gave a typo'd address that's since been corrected)."""
+    """Re-send the confirmation email for an order (e.g. the buyer lost it or
+    gave a typo'd address that's since been corrected) -- tickets, or (Phase
+    2) a donation acknowledgment for a donation-only order, via the
+    send_order_receipt dispatcher (orders.emails)."""
     order = _org_order(request, token)
     if not order.buyer_email:
         messages.error(request, "This order has no email address on file to send to.")
         return redirect("dashboard_order_detail", token=order.token)
     try:
-        send_ticket_email(order, request)
+        send_order_receipt(order, request)
     except Exception:  # delivery/transport failure -- don't 500 the dashboard
         messages.error(request, "Couldn't send the email just now. Please try again.")
     else:
-        messages.success(request, f"Resent tickets to {order.buyer_email}.")
+        messages.success(request, f"Resent the receipt to {order.buyer_email}.")
     return redirect("dashboard_order_detail", token=order.token)
 
 

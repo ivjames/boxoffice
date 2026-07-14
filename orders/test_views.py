@@ -380,7 +380,7 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         hold = Hold.objects.get(performance=self.performance)
 
         with patch(
-            "orders.views.send_ticket_email", side_effect=Exception("smtp unavailable")
+            "orders.views.send_order_receipt", side_effect=Exception("smtp unavailable")
         ):
             resp = self.post_as(
                 "org-a",

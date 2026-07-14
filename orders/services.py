@@ -25,7 +25,7 @@ regardless, for Postgres parity (it does real work there; SQLite's
 serialization is what makes the same guarantee hold today).
 """
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import Sum
@@ -436,7 +436,12 @@ def void_order(order):
     ga_count = sum(1 for ticket in tickets if ticket.seat_id is None)
     Ticket.objects.filter(pk__in=[t.pk for t in tickets]).update(status=Ticket.Status.VOID)
 
-    if ga_count:
+    # `and order.performance_id` is defensive for a null-performance order:
+    # a donation-only (or, later, pass-only) order has no performance and no
+    # tickets, so this branch is unreachable for it via ga_count anyway -- but
+    # guarding the FK read keeps a future mixed/edge case from dereferencing a
+    # null performance on the GAAllocation lookup below.
+    if ga_count and order.performance_id:
         allocation = (
             GAAllocation.objects.select_for_update()
             .filter(performance=order.performance)
@@ -530,15 +535,46 @@ def hold_discount(hold):
     return hold.discount_amount or Decimal("0.00")
 
 
+def hold_donation(hold):
+    """The donation added to `hold` (Hold.donation_amount), coalescing the "no
+    donation added" null to 0.00 so callers can do plain Decimal math. The
+    single reader of the snapshot for the money paths -- the Stripe donation
+    line item and fulfillment both go through here, so all agree and stay
+    immune to anything editing the cart afterward (the same snapshot pattern as
+    hold_discount / ga_unit_amount)."""
+    return hold.donation_amount or Decimal("0.00")
+
+
 def hold_grand_total(hold):
-    """The NET amount to charge for `hold`: gross subtotal (hold_total) minus
-    the frozen discount (hold_discount), floored at 0.00 as a defensive belt --
-    validate_code already forbids a discount that reaches or exceeds the cart
-    (Stripe rejects a $0 charge), so this max() should never actually clamp; it
-    guarantees we can't emit a negative charge even if a snapshot were somehow
-    inconsistent. This is what payments.services charges and records as
-    Order.total; hold_total is deliberately left untouched as the gross."""
-    return max(hold_total(hold) - hold_discount(hold), Decimal("0.00"))
+    """The NET amount to charge for `hold`: the ticket subtotal net of the
+    promo discount, PLUS any donation added on top.
+
+        max(hold_total - hold_discount, 0.00) + hold_donation
+
+    Two deliberate structural choices:
+
+    - The ticket net is floored at 0.00 before the donation is added --
+      validate_code already forbids a discount that reaches or exceeds the
+      ticket subtotal (Stripe rejects a $0 charge), so the max() should never
+      actually clamp; it guarantees a discount can't turn negative and then
+      eat into the donation.
+    - The donation is added OUTSIDE the discount arithmetic, and this is the
+      whole point of not folding it into hold_total. The promo path reads
+      hold_total (the ticket GROSS) for both its min_order check and its
+      discount base (orders.services.apply_promo_code ->
+      promotions.services.validate_code / compute_discount). Because the
+      donation never enters hold_total, it is automatically (a) never
+      discounted by a percentage code, and (b) never counted toward a code's
+      minimum-order threshold. A buyer can't inflate a cart past a $50 minimum
+      with a $40 gift, and a 20%-off code discounts only the tickets, never the
+      donation -- both fall out for free from keeping the donation out of the
+      ticket-money math rather than from any special-case branch.
+
+    This is what payments.services charges and records as Order.total;
+    hold_total stays the ticket gross, hold_discount the ticket discount, and
+    hold_donation the add-on -- each reconstructable for reporting."""
+    ticket_net = max(hold_total(hold) - hold_discount(hold), Decimal("0.00"))
+    return ticket_net + hold_donation(hold)
 
 
 @transaction.atomic
@@ -622,3 +658,92 @@ def remove_promo_code(*, organization, session_key, hold_id):
     hold.promo_code_text = ""
     hold.discount_amount = None
     hold.save(update_fields=["promo_code", "promo_code_text", "discount_amount"])
+
+
+# --- donation add-on (transactional) ------------------------------------
+#
+# The buyer-facing "add a donation to your order" cart control. Scoped exactly
+# like apply_promo_code (org + session + unexpired hold, with the same POST-data
+# int-coercion tolerance on hold_id), and freezes the gift onto the Hold the
+# same way a promo freezes its discount -- see Hold.donation_amount. The
+# donation deliberately does NOT touch hold_total, so it never interacts with
+# the promo math (see hold_grand_total).
+
+# Sanity ceiling on a single cart donation (major units). Not a business rule
+# so much as a fat-finger / abuse guard -- a five-figure gift through the public
+# add-on is almost certainly a typo or a probe, and a real major donor is a
+# box-office conversation, not a checkbox. Kept generous so ordinary giving is
+# never blocked.
+MAX_HOLD_DONATION = Decimal("10000")
+
+
+@transaction.atomic
+def set_hold_donation(*, organization, session_key, hold_id, amount, campaign):
+    """Add (or replace) a donation of `amount` for `campaign` on the session's
+    hold, snapshotting both onto it (Hold.donation_amount / donation_campaign)
+    so the money paths charge the figure frozen here. Returns the updated Hold.
+
+    Scoped exactly like apply_promo_code: the hold is looked up by
+    (organization, session_key, pk, unexpired), so a request can no more add a
+    donation to another tenant's or another session's hold than it can check one
+    out. `hold_id` comes straight from POST data, so a missing/garbled value
+    reads as "no such hold" (buyer-safe HoldError), not a 500 out of the pk
+    filter -- the same int-coercion tolerance apply_promo_code uses.
+
+    `amount` is validated to a positive, 2-dp Decimal no greater than
+    MAX_HOLD_DONATION; any bad input (non-numeric, <= 0, over the cap) raises
+    HoldError with a buyer-safe message. The gift rides OUTSIDE the promo/
+    discount math (see hold_grand_total), so it is never discounted and never
+    counts toward a code's minimum order."""
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        hold_id = None
+    hold = Hold.objects.filter(
+        organization=organization,
+        session_key=session_key,
+        pk=hold_id,
+        expires_at__gt=timezone.now(),
+    ).first()
+    if hold is None:
+        raise HoldError("Your selection has expired. Please make your selection again.")
+
+    # Coerce whatever the caller passed (a POSTed string, a float, a Decimal)
+    # into a clean 2-dp Decimal, treating anything unparseable as bad input
+    # rather than letting it explode downstream.
+    try:
+        amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        raise HoldError("Please enter a valid donation amount.")
+    if amount <= Decimal("0.00"):
+        raise HoldError("Please enter a donation amount greater than zero.")
+    if amount > MAX_HOLD_DONATION:
+        raise HoldError(
+            f"Donations through checkout are capped at {MAX_HOLD_DONATION:.0f}; "
+            "please contact the box office for a larger gift."
+        )
+
+    hold.donation_amount = amount
+    hold.donation_campaign = campaign
+    hold.save(update_fields=["donation_amount", "donation_campaign"])
+    return hold
+
+
+@transaction.atomic
+def clear_hold_donation(*, organization, session_key, hold_id):
+    """Remove any donation from the session's hold (both snapshot fields). Same
+    tenant/session scoping as set_hold_donation. Silently no-ops if the hold is
+    already gone -- clearing a gift off a vanished cart is not an error worth
+    surfacing to the buyer (mirrors remove_promo_code)."""
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        return
+    hold = Hold.objects.filter(
+        organization=organization, session_key=session_key, pk=hold_id
+    ).first()
+    if hold is None:
+        return
+    hold.donation_amount = None
+    hold.donation_campaign = None
+    hold.save(update_fields=["donation_amount", "donation_campaign"])

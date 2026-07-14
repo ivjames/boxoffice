@@ -33,6 +33,8 @@ from events.models import GAAllocation, Performance, PriceTier, PricingZone, Zon
 from orders import services
 from orders.models import Hold, HoldSeat, Ticket
 from orders.tests import OrdersFixtureMixin
+from promotions.models import PromoCode
+from promotions.services import PromoError
 from venues.models import Seat, SeatingChart, Section
 from venues.tests import make_org
 
@@ -782,3 +784,280 @@ class TenantIsolationTests(TestCase):
         self.assertEqual(services.ga_available(ga_perf_a), 0)
         # org B's identically-shaped GA performance is untouched.
         self.assertEqual(services.ga_available(ga_perf_b), 5)
+
+
+# --- Promo-code apply / remove / net-total helpers ----------------------------
+#
+# apply_promo_code / remove_promo_code snapshot (or clear) the promo onto the
+# Hold; hold_grand_total = max(hold_total - discount, 0); hold_currency resolves
+# the single charge currency. validate_code's own rejection paths are covered in
+# promotions/test_services.py -- here we prove the Hold-bound wiring.
+
+
+def _make_promo(org, code="SAVE10", *, kind=PromoCode.Kind.PERCENT, value="10", **kwargs):
+    return PromoCode.objects.create(
+        organization=org, code=code, kind=kind, value=Decimal(value), **kwargs
+    )
+
+
+class ApplyPromoCodeGATests(OrdersFixtureMixin, TestCase):
+    """apply/remove on a GA hold (2 x $35 tier = $70 gross)."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        self.hold = services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=2,
+        )
+
+    def _apply(self, code):
+        return services.apply_promo_code(
+            organization=self.org, session_key="sess-a", hold_id=self.hold.pk, code=code
+        )
+
+    def test_percent_code_snapshots_all_three_fields_and_nets_the_total(self):
+        promo = _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        hold = self._apply("save10")
+
+        self.assertEqual(hold.discount_amount, Decimal("7.00"))  # 10% of $70
+        self.assertEqual(hold.promo_code_text, "SAVE10")
+        self.assertEqual(hold.promo_code_id, promo.pk)
+        self.assertEqual(services.hold_total(hold), Decimal("70.00"))  # gross unchanged
+        self.assertEqual(services.hold_grand_total(hold), Decimal("63.00"))  # net
+        self.assertEqual(services.hold_discount(hold), Decimal("7.00"))
+
+    def test_fixed_code_snapshots_and_nets_the_total(self):
+        promo = _make_promo(self.org, code="TENOFF", kind=PromoCode.Kind.FIXED, value="10")
+        hold = self._apply("tenoff")
+
+        self.assertEqual(hold.discount_amount, Decimal("10.00"))
+        self.assertEqual(hold.promo_code_text, "TENOFF")
+        self.assertEqual(hold.promo_code_id, promo.pk)
+        self.assertEqual(services.hold_grand_total(hold), Decimal("60.00"))
+
+    def test_persisted_snapshot_survives_reload(self):
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        self._apply("save10")
+        reloaded = Hold.objects.get(pk=self.hold.pk)
+        self.assertEqual(reloaded.discount_amount, Decimal("7.00"))
+        self.assertEqual(reloaded.promo_code_text, "SAVE10")
+
+    def test_maxed_code_raises_and_leaves_hold_untouched(self):
+        promo = _make_promo(self.org, value="10", max_redemptions=1)
+        promo.redemption_count = 1
+        promo.save(update_fields=["redemption_count"])
+
+        with self.assertRaises(PromoError):
+            self._apply("save10")
+
+        reloaded = Hold.objects.get(pk=self.hold.pk)
+        self.assertIsNone(reloaded.discount_amount)
+        self.assertEqual(reloaded.promo_code_text, "")
+        self.assertIsNone(reloaded.promo_code_id)
+
+    def test_expired_code_raises_and_leaves_hold_untouched(self):
+        _make_promo(self.org, value="10", ends_at=timezone.now() - timedelta(days=1))
+        with self.assertRaises(PromoError):
+            self._apply("save10")
+        reloaded = Hold.objects.get(pk=self.hold.pk)
+        self.assertIsNone(reloaded.discount_amount)
+
+    def test_unknown_code_raises(self):
+        with self.assertRaises(PromoError):
+            self._apply("does-not-exist")
+
+    def test_applying_a_second_code_replaces_the_first(self):
+        _make_promo(self.org, code="SAVE10", kind=PromoCode.Kind.PERCENT, value="10")
+        second = _make_promo(self.org, code="TENOFF", kind=PromoCode.Kind.FIXED, value="10")
+
+        self._apply("save10")
+        hold = self._apply("tenoff")
+
+        self.assertEqual(hold.promo_code_text, "TENOFF")
+        self.assertEqual(hold.promo_code_id, second.pk)
+        self.assertEqual(hold.discount_amount, Decimal("10.00"))
+        self.assertEqual(services.hold_grand_total(hold), Decimal("60.00"))
+
+    def test_remove_clears_all_three_fields(self):
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        self._apply("save10")
+
+        services.remove_promo_code(
+            organization=self.org, session_key="sess-a", hold_id=self.hold.pk
+        )
+
+        reloaded = Hold.objects.get(pk=self.hold.pk)
+        self.assertIsNone(reloaded.discount_amount)
+        self.assertEqual(reloaded.promo_code_text, "")
+        self.assertIsNone(reloaded.promo_code_id)
+        # And the net total falls back to the gross.
+        self.assertEqual(services.hold_grand_total(reloaded), Decimal("70.00"))
+
+    def test_remove_on_missing_hold_is_a_silent_noop(self):
+        # No exception even though the hold id is bogus.
+        services.remove_promo_code(
+            organization=self.org, session_key="sess-a", hold_id=self.hold.pk + 999
+        )
+
+    def test_editing_the_promo_after_apply_does_not_move_the_snapshot(self):
+        promo = _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        self._apply("save10")
+
+        # Staff change the code AFTER it was applied and frozen onto the hold.
+        promo.value = Decimal("90")
+        promo.kind = PromoCode.Kind.FIXED
+        promo.save(update_fields=["value", "kind"])
+
+        reloaded = Hold.objects.get(pk=self.hold.pk)
+        self.assertEqual(reloaded.discount_amount, Decimal("7.00"))  # still the frozen 10%
+        self.assertEqual(services.hold_grand_total(reloaded), Decimal("63.00"))
+
+    def test_re_running_set_ga_hold_recreates_hold_and_drops_the_promo(self):
+        """set_ga_hold replaces the Hold row wholesale, so any applied promo is
+        dropped -- the documented v1 behavior (re-selecting quantity clears the
+        code; the buyer re-enters it)."""
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        self._apply("save10")
+
+        new_hold = services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=3,
+        )
+
+        self.assertNotEqual(new_hold.pk, self.hold.pk)
+        self.assertIsNone(new_hold.discount_amount)
+        self.assertEqual(new_hold.promo_code_text, "")
+        self.assertIsNone(new_hold.promo_code_id)
+        self.assertFalse(Hold.objects.filter(pk=self.hold.pk).exists())
+
+    def test_missing_hold_raises_promo_error(self):
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        with self.assertRaises(PromoError):
+            services.apply_promo_code(
+                organization=self.org, session_key="sess-a", hold_id=self.hold.pk + 999, code="save10"
+            )
+
+    def test_expired_hold_raises_promo_error(self):
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        self.hold.expires_at = timezone.now() - timedelta(minutes=1)
+        self.hold.save(update_fields=["expires_at"])
+        with self.assertRaises(PromoError):
+            self._apply("save10")
+
+    def test_another_sessions_hold_is_not_reachable(self):
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        with self.assertRaises(PromoError):
+            services.apply_promo_code(
+                organization=self.org, session_key="sess-other", hold_id=self.hold.pk, code="save10"
+            )
+
+    def test_min_order_amount_boundary_passes_at_exactly_min(self):
+        _make_promo(self.org, value="10", min_order_amount=Decimal("70.00"))  # == $70 gross
+        hold = self._apply("save10")
+        self.assertEqual(hold.discount_amount, Decimal("7.00"))
+
+    def test_min_order_amount_just_above_gross_rejected(self):
+        _make_promo(self.org, value="10", min_order_amount=Decimal("70.01"))
+        with self.assertRaises(PromoError):
+            self._apply("save10")
+
+    def test_hold_currency_reads_ga_tier_currency(self):
+        self.assertEqual(services.hold_currency(self.hold), "USD")
+        self.price_tier.currency = "EUR"
+        self.price_tier.save(update_fields=["currency"])
+        self.assertEqual(services.hold_currency(self.hold), "EUR")
+
+
+class ApplyPromoCodeReservedTests(OrdersFixtureMixin, TestCase):
+    """apply on a reserved hold (1 x $65 seat)."""
+
+    def setUp(self):
+        self.build_reserved_performance()
+        self.hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+
+    def _apply(self, code):
+        return services.apply_promo_code(
+            organization=self.org, session_key="sess-a", hold_id=self.hold.pk, code=code
+        )
+
+    def test_percent_code_on_reserved_hold(self):
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="20")
+        hold = self._apply("save10")
+        self.assertEqual(hold.discount_amount, Decimal("13.00"))  # 20% of $65
+        self.assertEqual(services.hold_grand_total(hold), Decimal("52.00"))
+
+    def test_fixed_code_on_reserved_hold(self):
+        _make_promo(self.org, code="TENOFF", kind=PromoCode.Kind.FIXED, value="15")
+        hold = self._apply("tenoff")
+        self.assertEqual(hold.discount_amount, Decimal("15.00"))
+        self.assertEqual(services.hold_grand_total(hold), Decimal("50.00"))
+
+    def test_hold_currency_reads_first_holdseat_tier_currency(self):
+        self.assertEqual(services.hold_currency(self.hold), "USD")
+        self.price_tier.currency = "GBP"
+        self.price_tier.save(update_fields=["currency"])
+        self.assertEqual(services.hold_currency(self.hold), "GBP")
+
+
+class HoldCurrencyZoneFallbackTests(OrdersFixtureMixin, TestCase):
+    """A zone-priced seat has no PriceTier (price_tier_id is None), so
+    hold_currency falls back to the organization's own currency -- PricingZones
+    carry no currency of their own."""
+
+    def setUp(self):
+        self.build_reserved_performance()
+        self.template = ZoneTemplate.objects.create(
+            organization=self.org, name="Premium", color="#c1121f"
+        )
+        self.zone = PricingZone.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            template=self.template,
+            name="Premium",
+            color="#c1121f",
+            amount=Decimal("95.00"),
+        )
+        self.zone.seats.add(self.seat, through_defaults={"organization": self.org})
+        # Remove the section tier so the seat is priced ONLY by the zone.
+        self.price_tier.delete()
+
+    def test_zone_only_hold_falls_back_to_org_currency(self):
+        hold = services.set_reserved_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            seat_ids=[self.seat.id],
+        )
+        first = hold.hold_seats.first()
+        self.assertIsNone(first.price_tier_id)  # zone-priced, no tier
+        self.assertEqual(services.hold_currency(hold), self.org.currency)
+
+
+class HoldGrandTotalFloorTests(OrdersFixtureMixin, TestCase):
+    def test_grand_total_with_no_promo_equals_gross(self):
+        self.build_ga_performance()
+        hold = services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=2,
+        )
+        self.assertEqual(services.hold_discount(hold), Decimal("0.00"))
+        self.assertEqual(services.hold_grand_total(hold), services.hold_total(hold))

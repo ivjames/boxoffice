@@ -21,6 +21,13 @@
             <span class="onboarding-list__check" aria-hidden="true">{% if step.done %}&#10003;{% else %}&#9675;{% endif %}</span>
             {% if not step.done and step.url %}
             <a href="{{ step.url }}" class="onboarding-list__label">{{ step.label }}</a>
+            {% elif not step.done and step.post_url and request.membership.can_manage_billing %}
+            {# An owner-only action (Stripe onboarding is POST + billing-gated) -- render it as a button, but only for the billing role who can actually complete it. #}
+            <span class="onboarding-list__label">{{ step.label }}</span>
+            <form method="post" action="{{ step.post_url }}" class="onboarding-list__action">
+                {% csrf_token %}
+                <button type="submit" class="button button--small">Start</button>
+            </form>
             {% else %}
             <span class="onboarding-list__label">{{ step.label }}</span>
             {% endif %}

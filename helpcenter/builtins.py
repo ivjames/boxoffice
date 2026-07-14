@@ -104,7 +104,11 @@ BUILTIN_ARTICLES = [
         title="Discounts & promo codes",
         summary="Create percent or fixed-amount codes and see how buyers apply them.",
         category=Category.HOW_TO,
-        visibility=Visibility.BOX_OFFICE,
+        # Manager, not box_office: the Promo codes list/create/edit/deactivate
+        # views are all @manager_required, so a box-office reader would be shown
+        # a workflow their role can't reach. This guide is authoring guidance,
+        # scoped to who can author.
+        visibility=Visibility.MANAGER,
         body=(
             "Create a code under Promo codes: give it a name, choose Percentage off "
             "or Fixed amount off, and set the value. You can add an active window, "

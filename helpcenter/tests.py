@@ -144,9 +144,13 @@ class BuiltinTests(TestCase):
         self.assertIn("email-marketing-and-your-audience", slugs)
         self.assertIn("getting-your-box-office-set-up", slugs)
 
-    def test_box_office_sees_promo_but_not_manager_only_guides(self):
+    def test_box_office_does_not_see_manager_only_revenue_guides(self):
+        # All five revenue guides describe manager-gated authoring workflows
+        # (promo/pass/donation/campaign CRUD, box-office setup), so none are
+        # box_office-visible -- a box-office reader would be pointed at pages
+        # their role can't open.
         slugs = self._slugs(Membership.Role.BOX_OFFICE)
-        self.assertIn("discounts-and-promo-codes", slugs)
+        self.assertNotIn("discounts-and-promo-codes", slugs)
         self.assertNotIn("season-and-flex-passes", slugs)
         self.assertNotIn("donations", slugs)
         self.assertNotIn("email-marketing-and-your-audience", slugs)
@@ -213,11 +217,14 @@ class StaffHelpViewTests(StaffFixtureMixin, TestCase):
         self.assertContains(resp, "Email marketing &amp; your audience")
         self.assertContains(resp, "Getting your box office set up")
 
-    def test_box_office_sees_promo_guide_but_not_manager_only_guides(self):
+    def test_box_office_does_not_see_manager_only_revenue_guides_rendered(self):
+        # The revenue guides all describe manager-gated authoring flows, so a
+        # box-office login sees none of them (it would otherwise be pointed at
+        # pages its role can't open).
         user, _ = self.make_staff(self.org, Membership.Role.BOX_OFFICE)
         self.client.force_login(user)
         resp = self.client.get("/dashboard/help/", HTTP_HOST=self.host)
-        self.assertContains(resp, "Discounts &amp; promo codes")
+        self.assertNotContains(resp, "Discounts &amp; promo codes")
         self.assertNotContains(resp, "Season &amp; flex passes")
         self.assertNotContains(resp, "Donations")
         self.assertNotContains(resp, "Email marketing &amp; your audience")

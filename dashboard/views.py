@@ -95,12 +95,16 @@ def overview(request):
                 "key": "stripe",
                 "label": "Connect Stripe payments",
                 "done": organization.stripe_charges_enabled,
-                # payments.views.connect_start exists but is @billing_required
-                # (owner-only) -- narrower than this checklist's manager+
-                # gate, so a manager clicking through could 403. Left as
-                # plain text rather than a link part of the audience can't
-                # follow; see dashboard/test_overview.py for the reasoning.
+                # connect_start (payments.views) begins Stripe onboarding, but
+                # it's @billing_required + @require_POST -- narrower than this
+                # card's manager+ gate. So instead of a plain link (which would
+                # 403 a non-billing manager), the step carries a POST action the
+                # TEMPLATE renders as a button ONLY for a can_manage_billing
+                # user (owners); everyone else sees plain text. The billing role
+                # is exactly who can actually finish Stripe, so this is the one
+                # actionable path the setup guide points them to.
                 "url": None,
+                "post_url": reverse("connect_start"),
                 "help": "Payouts run through Stripe Connect.",
             },
             {
@@ -136,7 +140,15 @@ def overview(request):
             {
                 "key": "price_tier",
                 "label": "Set ticket prices",
-                "done": PriceTier.objects.filter(organization=organization).exists(),
+                # A reserved-seat show can be priced entirely with PricingZones
+                # (the pricing resolver checks zones first and a seat needs no
+                # PriceTier at all), so a zone-only theater has prices set even
+                # with zero PriceTier rows -- count either as evidence, or this
+                # step would stay undone and the card never auto-hide for them.
+                "done": (
+                    PriceTier.objects.filter(organization=organization).exists()
+                    or PricingZone.objects.filter(organization=organization).exists()
+                ),
                 "url": reverse("dashboard_event_list"),
                 "help": "",
             },

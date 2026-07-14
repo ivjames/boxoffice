@@ -148,6 +148,40 @@ class OnboardingChecklistTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.client.force_login(owner)
         resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 200)
+
+    def test_zone_pricing_counts_as_prices_set(self):
+        # A reserved-seat show priced entirely with PricingZones (no PriceTier
+        # rows) still has prices set -- the step must read done off zones too,
+        # else a zone-only theater is nagged forever.
+        from events.models import PricingZone
+
+        venue = Venue.objects.create(organization=self.org, name="Main Stage")
+        _event, performance, tier = self.build_ga_event(self.org, venue)
+        tier.delete()  # leave zero PriceTier rows for the org
+        PricingZone.objects.create(
+            organization=self.org,
+            performance=performance,
+            name="Orchestra",
+            color="#334455",
+            amount=Decimal("42.00"),
+        )
+        resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
+        steps_by_key = {s["key"]: s for s in resp.context["onboarding_steps"]}
+        self.assertFalse(PriceTier.objects.filter(organization=self.org).exists())
+        self.assertTrue(steps_by_key["price_tier"]["done"])
+
+    def test_owner_gets_actionable_stripe_button_manager_does_not(self):
+        # The Stripe step is billing-gated (connect_start is @billing_required):
+        # an owner (can_manage_billing) gets a POST "Start" button; a plain
+        # manager, who can't finish onboarding, sees only text -- no dead button.
+        resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))  # setUp = manager
+        self.assertNotContains(resp, 'action="/dashboard/payments/connect/"')
+
+        owner = self.make_staff(self.org, Membership.Role.OWNER, email="owner3@roxy.example.com")[0]
+        self.client.logout()
+        self.client.force_login(owner)
+        resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
+        self.assertContains(resp, 'action="/dashboard/payments/connect/"')
         # setUp's self.manager membership is still on this org (non-owner),
         # so "teammate" reads done even though there's no other real data --
         # see the brand-new-org test's comment on that query's quirk.

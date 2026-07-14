@@ -417,6 +417,23 @@ class OrderItem(TenantScopedModel):
         blank=True,
         related_name="order_items",
     )
+    # Provenance for a PASS line (Phase 3): which pass product was sold on this
+    # order. Nullable + SET_NULL for exactly the same reason as
+    # donation_campaign above -- a pass product can be archived/deleted after an
+    # order that sold it was already fulfilled, and that must never orphan or
+    # delete the paid OrderItem. unit_amount stays the AUTHORITATIVE snapshot of
+    # what was charged (the pass's price at purchase); this FK is provenance/
+    # reporting only, never re-read to derive the amount (same stance as
+    # price_tier/pricing_zone for a ticket line, donation_campaign for a gift).
+    # Note a $0 pass REDEMPTION order carries ticket lines, not a PASS line --
+    # this FK is only ever set on the one-time PURCHASE order.
+    pass_product = models.ForeignKey(
+        "passes.PassProduct",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="order_items",
+    )
     seat = models.ForeignKey(
         Seat, on_delete=models.PROTECT, null=True, blank=True, related_name="order_items"
     )
@@ -430,6 +447,9 @@ class OrderItem(TenantScopedModel):
         if self.kind == self.Kind.DONATION:
             label = self.donation_campaign.name if self.donation_campaign_id else "Donation"
             return f"Donation ${self.unit_amount} ({label}) on order {self.order_id}"
+        if self.kind == self.Kind.PASS:
+            label = self.pass_product.name if self.pass_product_id else "Pass"
+            return f"Pass ${self.unit_amount} ({label}) on order {self.order_id}"
         if self.pricing_zone_id:
             label = self.pricing_zone.name
         elif self.price_tier_id:

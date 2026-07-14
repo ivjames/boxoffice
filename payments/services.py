@@ -52,6 +52,8 @@ from events.models import GAAllocation
 from guests.models import GuestAccount
 from orders import services as order_services
 from orders.models import Hold, Order, OrderItem, Payment, Ticket
+from passes import services as passes_services
+from passes.models import PassProduct, PassPurchase, PassRedemption
 from promotions import services as promotions_services
 from venues.models import Seat
 
@@ -90,6 +92,27 @@ class DonationDataError(FulfillmentError):
     rather than making Stripe retry a session that can never fulfill (the
     metadata won't heal on redelivery); a human reconciles the stray charge
     from the Stripe dashboard."""
+
+
+class PassDataError(FulfillmentError):
+    """A pass checkout session's metadata is missing/malformed, or names a pass
+    product that's gone or inactive, by the time payment completed. A
+    FulfillmentError like DonationDataError, so the webhook view acks 200 and
+    logs rather than making Stripe retry a session that can never fulfill (the
+    product won't come back on redelivery); a human reconciles the stray charge
+    from the Stripe dashboard. Also raised by fulfill_pass_purchase when handed
+    an inactive product directly."""
+
+
+class PassRedemptionError(FulfillmentError):
+    """Raised by fulfill_hold_with_pass when a pass can't be redeemed for the
+    requested seats -- no credits left, the pass doesn't cover this
+    show/date, a season pass was already used for this event, or the buyer
+    tried to stack a promo/donation onto a redemption. The message is BUYER-
+    SAFE (shown directly in the guest portal's "use my pass" flow), so it never
+    carries internal detail. A FulfillmentError subclass so the webhook path
+    treats it uniformly, but the redemption core is normally reached from the
+    portal view, not Stripe (a $0 redemption doesn't go through Stripe)."""
 
 
 class RefundError(Exception):
@@ -419,6 +442,84 @@ def create_donation_checkout_session(organization, *, amount, campaign, buyer_em
 
     # The platform's cut is a percentage of the gift actually collected.
     fee = application_fee_amount(organization, amount, currency=currency)
+    if fee is not None:
+        params["payment_intent_data"] = {"application_fee_amount": fee}
+
+    session = stripe.checkout.Session.create(
+        **params,
+        api_key=settings.STRIPE_SECRET_KEY,
+        stripe_account=organization.stripe_account_id,
+    )
+    return session.url
+
+
+def create_pass_checkout_session(organization, *, product, buyer_email, buyer_name, request):
+    """Create a Stripe Checkout Session for a one-time PASS purchase (a season
+    or flex pass bought outright -- see docs/ROADMAP.md Phase 3's "one-time
+    purchase, not a Stripe subscription" decision) and return its hosted payment
+    page URL. The pass analogue of create_donation_checkout_session: one line
+    item at product.price, the same direct-charge shape (session created ON the
+    connected account with the platform key, the platform's cut attached as
+    application_fee_amount), and the same success/cancel URLs. Does NOT create
+    an Order -- fulfill_checkout_session does that on the
+    checkout.session.completed webhook, branching on metadata["kind"] == "pass"
+    to call fulfill_pass_purchase.
+
+    The session carries everything fulfillment needs in metadata (there's no
+    Hold, like the donation path): kind="pass", the org id (tenant re-check),
+    and the pass product id (looked up org-scoped at fulfillment; a product
+    deleted meanwhile is a PassDataError -- unlike a donation campaign, we can't
+    fulfill a pass whose terms are gone). customer_email pre-fills the buyer's
+    email on the hosted page.
+
+    STUB MODE (charges not enabled -- same pre-launch case as the ticket/
+    donation paths): a real Stripe call would fail, so return an internal stub
+    URL instead. The named `pass_stub` route lands with the passes UI layer
+    (passes/urls.py); reverse() is called lazily inside this branch only, so
+    this function is importable/usable on the charges-enabled path before that
+    URL exists."""
+    currency = (organization.currency or "usd").lower()
+
+    if not organization.stripe_charges_enabled:
+        logger.info(
+            "Organization %s can't take payments yet (Connect charges not "
+            "enabled); using the simulated pass stub instead of calling Stripe.",
+            organization.pk,
+        )
+        # `pass_stub` is added by the passes UI layer (passes/urls.py); resolved
+        # lazily here so the charges-enabled path doesn't need it.
+        return request.build_absolute_uri(reverse("pass_stub")) + f"?product_id={product.pk}"
+
+    success_url = request.build_absolute_uri(reverse("checkout_success")) + "?session_id={CHECKOUT_SESSION_ID}"
+    cancel_url = request.build_absolute_uri(reverse("checkout_cancel"))
+
+    line_items = [
+        {
+            "quantity": 1,
+            "price_data": {
+                "currency": currency,
+                "unit_amount": _to_minor_units(product.price, currency),
+                "product_data": {"name": f"{product.name} — {organization.name}"},
+            },
+        }
+    ]
+
+    params = {
+        "mode": "payment",
+        "line_items": line_items,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "metadata": {
+            "kind": "pass",
+            "organization_id": str(organization.pk),
+            "pass_product_id": str(product.pk),
+        },
+    }
+    if buyer_email:
+        params["customer_email"] = buyer_email
+
+    # The platform's cut is a percentage of the pass price actually collected.
+    fee = application_fee_amount(organization, product.price, currency=currency)
     if fee is not None:
         params["payment_intent_data"] = {"application_fee_amount": fee}
 
@@ -776,6 +877,301 @@ def fulfill_donation(
     return order
 
 
+@transaction.atomic
+def fulfill_pass_purchase(
+    organization,
+    *,
+    product,
+    buyer_email,
+    buyer_name,
+    provider,
+    payment_ref,
+    stripe_checkout_session_id=None,
+):
+    """Turn a paid one-time PASS purchase into a paid Order + one kind=PASS
+    OrderItem + the PassPurchase entitlement row + a Payment. The sibling of
+    fulfill_donation for the pass-purchase path (a pass bought outright, no
+    tickets and no hold). NOT to be confused with fulfill_hold_with_pass, which
+    is the REDEMPTION path (spending a pass on seats) -- this is the SALE.
+
+    THE SNAPSHOT MOMENT: every entitlement term is frozen off `product` onto the
+    new PassPurchase here and now (kind, credit_count, credits_remaining
+    starting at the flex credit_count, the valid window, and covered_events as a
+    copy of product.events) -- see passes.models' snapshot rule. A later edit to
+    the product never touches this sold pass.
+
+    Order.performance is left NULL (a pass reserves no performance, same v1 rule
+    as a donation). Order.total is the pass price; promo fields untouched.
+    Rejects an INACTIVE product with PassDataError -- an archived/disabled pass
+    must not be sold even if a stale checkout got this far (the storefront
+    shouldn't have offered it). Idempotency is the caller's job exactly as for
+    fulfill_donation: the Stripe caller pre-checks the session id and wraps this
+    in the same IntegrityError->winner fallback, which is why
+    stripe_checkout_session_id is written in this same Order.objects.create().
+
+    Sending the pass receipt email is the caller's job, done AFTER this commits.
+    """
+    if not product.is_active:
+        raise PassDataError(
+            f"Pass product {product.pk} is inactive; payment succeeded but the pass was "
+            "not issued."
+        )
+
+    guest, _ = GuestAccount.objects.get_or_create_for_email(
+        organization, buyer_email, name=buyer_name
+    )
+
+    order = Order.objects.create(
+        organization=organization,
+        performance=None,
+        buyer_email=buyer_email,
+        buyer_name=buyer_name,
+        guest=guest,
+        total=product.price,
+        status=Order.Status.PAID,
+        stripe_checkout_session_id=stripe_checkout_session_id,
+    )
+    OrderItem.objects.create(
+        organization=organization,
+        order=order,
+        kind=OrderItem.Kind.PASS,
+        quantity=1,
+        unit_amount=product.price,
+        pass_product=product,
+    )
+    purchase = PassPurchase.objects.create(
+        organization=organization,
+        product=product,
+        guest=guest,
+        order=order,
+        # All entitlement terms snapshotted off the product at THIS moment.
+        kind=product.kind,
+        credit_count=product.credit_count,
+        # Flex starts with a full balance; season carries no credit balance
+        # (product.credit_count is null for a season product).
+        credits_remaining=product.credit_count,
+        valid_from=product.valid_from,
+        valid_until=product.valid_until,
+        status=PassPurchase.Status.ACTIVE,
+    )
+    # Snapshot the covered-event set (EMPTY = all events, preserved as empty).
+    purchase.covered_events.set(product.events.all())
+
+    Payment.objects.create(
+        organization=organization,
+        order=order,
+        provider=provider,
+        amount=product.price,
+        status="succeeded",
+        provider_ref=payment_ref,
+    )
+    return order
+
+
+@transaction.atomic
+def fulfill_hold_with_pass(hold, pass_purchase, *, buyer_email, buyer_name):
+    """THE REDEMPTION CORE: spend `pass_purchase` on the seats held by `hold`,
+    minting real Tickets against real inventory for a $0 charge and recording a
+    PassRedemption per ticket. The pass analogue of fulfill_hold -- it reuses
+    the SAME inventory lock+recheck and Ticket-minting helpers
+    (_fulfill_ga/_fulfill_reserved), so a pass seat consumes inventory exactly
+    as a bought one does and can't double-book -- but the money is entitlement,
+    not a charge.
+
+    Reached from the guest portal's "use my pass" flow (a $0 order never goes
+    through Stripe). Raises HoldGoneError if the hold expired, or
+    PassRedemptionError (buyer-safe) for every "can't redeem this" reason.
+
+    Steps:
+      1. Hold expiry re-check (HoldGoneError, like fulfill_hold).
+      2. Strict v1: reject a hold carrying a promo or a donation -- a redemption
+         is $0 and can't also discount or collect a gift; the buyer removes them
+         first (PassRedemptionError).
+      3. Lock the PassPurchase row (select_for_update) and re-check under the
+         lock: redeemable_now, pass_covers_performance(hold.performance), and the
+         per-kind admission budget --
+           FLEX: ticket_count <= credits_remaining.
+           SEASON: ticket_count == 1 AND no existing redemption for this
+                   (pass, event) -- one admission per covered event.
+      4. Create the $0 Order (performance=hold.performance, PAID, total=0.00),
+         then mint tickets + ticket OrderItems via the shared inventory-locking
+         helpers. Order.total stays 0 even though the ticket OrderItems carry
+         their snapshot face values -- Σitems != total is an established
+         precedent here (a promo order's items are gross while total is net; see
+         Order.total's docstring).
+      5. One PassRedemption per minted Ticket (credits_used=1 flex / 0 season,
+         face_value from the ticket's OrderItem snapshot).
+      6. FLEX: decrement credits_remaining by ticket_count; status=EXHAUSTED at 0.
+      7. A $0 Payment(provider="pass") for the audit trail.
+      8. Delete the hold.
+
+    THE RACE PATH: the unique_season_event_redemption constraint can still fire
+    under a true concurrent double-redeem of the same season pass for the same
+    event (both passing the step-3 recheck before either commits). Caught here
+    and re-raised as PassRedemptionError -- the same "let the DB constraint be
+    the backstop, translate its IntegrityError into the buyer-safe failure it
+    represents" pattern fulfill_checkout_session uses for AvailabilityChangedError.
+    """
+    if hold.expires_at <= timezone.now():
+        raise HoldGoneError(
+            f"Hold {hold.pk} is missing or expired; the pass was not redeemed."
+        )
+
+    # v1 STRICT: a redemption is a $0 order -- a promo discount or a cart
+    # donation has nowhere to land on it. Make the buyer clear them rather than
+    # silently dropping money they thought they were giving/saving.
+    if hold.promo_code_id or hold.promo_code_text:
+        raise PassRedemptionError(
+            "Remove the promo code before redeeming a pass -- a pass redemption "
+            "is already free."
+        )
+    if order_services.hold_donation(hold) > Decimal("0.00"):
+        raise PassRedemptionError(
+            "Remove the donation before redeeming a pass, then donate separately."
+        )
+
+    organization = hold.organization
+
+    # Lock and re-fetch the pass under the lock so a concurrent redemption of
+    # the SAME pass can't both pass the budget check (Postgres row lock;
+    # SQLite's IMMEDIATE-mode whole-DB lock does the same -- see
+    # orders.services' locking note).
+    pass_purchase = (
+        PassPurchase.objects.select_for_update().get(pk=pass_purchase.pk)
+    )
+
+    if pass_purchase.organization_id != organization.pk:
+        # Defense in depth -- the caller scopes the pass to the tenant, but a
+        # cross-tenant pass must never redeem against this org's inventory.
+        raise PassRedemptionError("This pass can't be used here.")
+
+    if not passes_services.redeemable_now(pass_purchase):
+        raise PassRedemptionError("This pass is no longer active.")
+
+    if not passes_services.pass_covers_performance(pass_purchase, hold.performance):
+        raise PassRedemptionError("This pass doesn't cover this performance.")
+
+    # How many admissions this hold wants.
+    if hold.price_tier_id and hold.quantity:
+        ticket_count = hold.quantity
+    else:
+        ticket_count = hold.hold_seats.count()
+    if ticket_count <= 0:
+        raise PassRedemptionError("There's nothing to redeem.")
+
+    is_flex = pass_purchase.kind == PassProduct.Kind.FLEX
+    if is_flex:
+        if ticket_count > (pass_purchase.credits_remaining or 0):
+            raise PassRedemptionError("This pass doesn't have enough credits left.")
+    else:
+        # Season: one admission per covered event.
+        if ticket_count != 1:
+            raise PassRedemptionError(
+                "A season pass admits one seat per show -- redeem a single seat."
+            )
+        already = pass_purchase.redemptions.filter(
+            event=hold.performance.event
+        ).exists()
+        if already:
+            raise PassRedemptionError("This pass was already used for this show.")
+
+    # Attach/lookup the buyer's guest -- prefer the pass's own guest (the pass
+    # holder), falling back to the buyer_email get_or_create like the ticket
+    # path so a redemption always has a guest to hang on the portal.
+    guest = pass_purchase.guest
+    if guest is None:
+        guest, _ = GuestAccount.objects.get_or_create_for_email(
+            organization, buyer_email, name=buyer_name
+        )
+
+    order = Order.objects.create(
+        organization=organization,
+        performance=hold.performance,
+        buyer_email=buyer_email,
+        buyer_name=buyer_name,
+        guest=guest,
+        # A redemption charges nothing -- the entitlement already paid for it.
+        # Ticket OrderItems below still carry their snapshot face values, so
+        # Σitems != total here (0.00); that's the established promo precedent.
+        total=Decimal("0.00"),
+        status=Order.Status.PAID,
+    )
+
+    # Mint tickets + ticket OrderItems + consume inventory via the SAME helpers
+    # the paid path uses -- they lock the GAAllocation / Seat rows and re-check
+    # availability, so a pass redemption can't double-book against a concurrent
+    # sale. (They raise AvailabilityChangedError / IntegrityError on a seat
+    # race, handled by the caller exactly as for a paid hold.)
+    if hold.price_tier_id and hold.quantity:
+        _fulfill_ga(organization, hold, order)
+    else:
+        _fulfill_reserved(organization, hold, order)
+
+    # One PassRedemption per minted ticket. face_value comes from the ticket's
+    # OrderItem snapshot (GA: the single GA line's unit_amount; reserved: the
+    # per-seat line's). credits_used is 1 for flex (burned a credit) / 0 for
+    # season (one-per-event, exempt from the season backstop constraint).
+    ga_item = None
+    seat_amounts = {}
+    for item in order.items.all():
+        if item.seat_id is None:
+            ga_item = item
+        else:
+            seat_amounts[item.seat_id] = item.unit_amount
+
+    credits_used = 1 if is_flex else 0
+    try:
+        for ticket in order.tickets.all():
+            if ticket.seat_id is None:
+                face_value = ga_item.unit_amount if ga_item is not None else Decimal("0.00")
+            else:
+                face_value = seat_amounts.get(ticket.seat_id, Decimal("0.00"))
+            PassRedemption.objects.create(
+                organization=organization,
+                pass_purchase=pass_purchase,
+                order=order,
+                ticket=ticket,
+                performance=hold.performance,
+                event=hold.performance.event,
+                seat=ticket.seat,
+                face_value=face_value,
+                credits_used=credits_used,
+            )
+    except IntegrityError as exc:
+        # The season backstop fired under a true concurrent double-redeem of
+        # this event -- translate the raw constraint violation into the
+        # buyer-safe failure it represents (same stance as
+        # fulfill_checkout_session's AvailabilityChangedError translation).
+        raise PassRedemptionError(
+            "This pass was already used for this show."
+        ) from exc
+
+    # Flex: burn the credits now, inside this same transaction. Floored at 0;
+    # a pass that hits 0 is EXHAUSTED (redeemable_now will reject it thereafter,
+    # until credits are restored by a void).
+    if is_flex:
+        pass_purchase.credits_remaining = max(
+            (pass_purchase.credits_remaining or 0) - ticket_count, 0
+        )
+        update_fields = ["credits_remaining"]
+        if pass_purchase.credits_remaining == 0:
+            pass_purchase.status = PassPurchase.Status.EXHAUSTED
+            update_fields.append("status")
+        pass_purchase.save(update_fields=update_fields)
+
+    Payment.objects.create(
+        organization=organization,
+        order=order,
+        provider="pass",
+        amount=Decimal("0.00"),
+        status="succeeded",
+        provider_ref=f"pass-{pass_purchase.pk}",
+    )
+
+    hold.delete()  # HoldSeat rows cascade-delete with it.
+    return order
+
+
 # --- Webhook fulfillment (checkout.session.completed) --------------------
 
 
@@ -846,6 +1242,44 @@ def fulfill_checkout_session(organization, session):
                 organization,
                 amount=amount,
                 campaign=campaign,
+                buyer_email=buyer_email,
+                buyer_name=buyer_name,
+                payment_ref=session.get("payment_intent") or session_id,
+                provider="stripe",
+                stripe_checkout_session_id=session_id,
+            )
+        except IntegrityError as exc:
+            winner = Order.objects.filter(
+                organization=organization, stripe_checkout_session_id=session_id
+            ).first()
+            if winner is not None:
+                return winner, False
+            raise
+        return order, True
+
+    # PASS purchase path: a one-time pass sale carries no Hold either --
+    # everything fulfillment needs is in metadata (see
+    # create_pass_checkout_session). Same shape as the donation branch: look the
+    # product up ORG-SCOPED (a missing/deleted product is a PassDataError -- we
+    # can't issue a pass whose terms are gone, unlike a donation), then hand off
+    # to fulfill_pass_purchase inside the SAME IntegrityError->winner fallback so
+    # two concurrent deliveries collide on Order.objects.create().
+    if metadata.get("kind") == "pass":
+        product_id = metadata.get("pass_product_id") or None
+        product = None
+        if product_id:
+            product = PassProduct.objects.filter(
+                organization=organization, pk=product_id
+            ).first()
+        if product is None:
+            raise PassDataError(
+                f"Pass session {session_id} names product {product_id!r} which is missing "
+                "for this org; payment succeeded but nothing was fulfilled."
+            )
+        try:
+            order = fulfill_pass_purchase(
+                organization,
+                product=product,
                 buyer_email=buyer_email,
                 buyer_name=buyer_name,
                 payment_ref=session.get("payment_intent") or session_id,
@@ -942,6 +1376,21 @@ def refund_order(order):
     if order.status != Order.Status.PAID:
         return False
 
+    # PASS PURCHASE guard: if this order SOLD a pass (a kind=PASS line), block
+    # the refund while that pass has been USED -- refunding a spent pass would
+    # claw back money for admissions already handed out. Staff must void the
+    # redeemed tickets first (which deletes those redemptions and frees the
+    # entitlement -- see fulfill_hold_with_pass / restore_redemptions_for_order),
+    # then the purchase can be refunded. Checked BEFORE any money moves so the
+    # order stays PAID on rejection.
+    sold_a_pass = order.items.filter(kind=OrderItem.Kind.PASS).exists()
+    if sold_a_pass:
+        for purchase in order.pass_purchases.all():
+            if purchase.redemptions.exists():
+                raise RefundError(
+                    "This pass has been used; void its redeemed tickets first."
+                )
+
     payment = order.payments.filter(status="succeeded").order_by("id").first()
     provider = payment.provider if payment is not None else "stripe"
     refund_ref = ""
@@ -968,6 +1417,19 @@ def refund_order(order):
         refund_ref = refund.id
 
     order_services.void_order(order)
+
+    # Pass entitlement reversal, both directions:
+    #  - If this was a pass REDEMPTION order (it USED a pass to comp its
+    #    tickets), give the entitlement back: void_order above already voided the
+    #    tickets; this deletes their PassRedemptions and restores flex credits /
+    #    frees season slots. No-op for a non-redemption order.
+    #  - If this was a pass PURCHASE order (it SOLD a pass), mark the now-refunded
+    #    passes REFUNDED so they can't be redeemed going forward. (We already
+    #    verified above none of them have redemptions.)
+    passes_services.restore_redemptions_for_order(order)
+    if sold_a_pass:
+        order.pass_purchases.update(status=PassPurchase.Status.REFUNDED)
+
     order.status = Order.Status.REFUNDED
     order.save(update_fields=["status"])
     Payment.objects.create(

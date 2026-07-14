@@ -1,0 +1,15 @@
+Your pass is ready
+{{ organization.name }}
+
+{{ product_name }}
+Amount: ${{ amount }}
+{% if purchase %}{% if purchase.kind == "flex" %}
+This is a flex pass: {{ purchase.credit_count }} credit{{ purchase.credit_count|pluralize }} to use however you like — 1 credit admits 1 seat to any covered performance.
+{% else %}
+This is a season pass: one admission per covered show — just pick the performance you want when you redeem.
+{% endif %}{% if purchase.valid_from or purchase.valid_until %}
+Valid{% if purchase.valid_from %} from {{ purchase.valid_from|date:"M j, Y" }}{% endif %}{% if purchase.valid_until %} until {{ purchase.valid_until|date:"M j, Y" }}{% endif %}.
+{% endif %}{% endif %}
+Redeem your pass any time from your account: {{ portal_url }}
+
+Thank you — {{ organization.name }}

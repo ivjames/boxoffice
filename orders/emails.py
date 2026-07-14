@@ -20,23 +20,34 @@ from .qr import ticket_qr_data_uri
 
 def send_order_receipt(order, request):
     """The ONE entry point callers should use to email an order's receipt --
-    dispatches to send_ticket_email for an order with tickets, or (Phase 2)
-    send_donation_receipt_email for a donation-only order (Order.performance
-    is null, no Ticket rows). Every fulfillment path (the Stripe webhook,
-    the stub/test checkout "Pay" request, a staff resend) now calls this
-    instead of send_ticket_email directly, so a donation-only order gets its
-    acknowledgment email through the exact same call sites a ticket order's
-    confirmation always has, with no per-caller branching.
+    dispatches to send_ticket_email for an order with tickets, send_pass_
+    purchase_email for a pass-purchase order (Phase 3), or send_donation_
+    receipt_email for a donation-only order (Order.performance is null, no
+    Ticket rows). Every fulfillment path (the Stripe webhook, the stub/test
+    checkout "Pay" request, a staff resend) now calls this instead of
+    send_ticket_email directly, so every order kind gets its email through the
+    exact same call sites a ticket order's confirmation always has, with no
+    per-caller branching.
 
-    `order.tickets.exists()` (not `order.performance_id`) is the dispatch
-    key: performance is the authoritative "does this order reserve
-    inventory" flag, but tickets are what the ticket email actually needs
-    to render, and the two are equivalent in practice for every order kind
-    this app creates today (a ticketed order always has both; a donation-only
-    order has neither) -- keying off tickets reads more directly as "which
-    email am I about to build" than re-deriving it from the FK."""
+    DISPATCH ORDER MATTERS -- tickets first, then PASS, then donation fallback:
+
+      - Tickets first: any order that minted tickets gets the ticket email --
+        including a PASS REDEMPTION order, which has real Tickets (a pass was
+        spent on seats) and should send the buyer those seats, not a
+        purchase-confirmation. `order.tickets.exists()` is the same "what does
+        this email need to render" key the donation split already used.
+      - PASS before the donation fallback: a pass PURCHASE order has NO tickets
+        (like a donation-only order), so without an explicit PASS check it would
+        fall through to the donation email. Checking for a kind=PASS line first
+        routes it to the pass receipt instead. This ordering is why the pass
+        branch is an `elif` ABOVE the donation `else`, not after it.
+      - Donation last: the remaining ticketless, passless order is a
+        donation-only gift.
+    """
     if order.tickets.exists():
         send_ticket_email(order, request)
+    elif order.items.filter(kind=OrderItem.Kind.PASS).exists():
+        send_pass_purchase_email(order, request)
     else:
         send_donation_receipt_email(order, request)
 
@@ -134,6 +145,66 @@ def send_donation_receipt_email(order, request):
     subject = f"Thank you for your donation — {organization.name}"
     text_body = render_to_string("orders/email/donation_receipt.txt", context)
     html_body = render_to_string("orders/email/donation_receipt.html", context)
+
+    email = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[order.buyer_email],
+    )
+    email.attach_alternative(html_body, "text/html")
+    email.send(fail_silently=False)
+
+
+def send_pass_purchase_email(order, request):
+    """Email `order.buyer_email` their pass receipt -- the Phase 3 analogue of
+    send_donation_receipt_email for a pass PURCHASE order (no tickets: the pass
+    is redeemed for seats LATER, through the guest portal). Renders the pass
+    product's name, a plain-language explanation of what the pass grants (N
+    credits for a flex pass, one admission per show for a season pass), its
+    valid window when set, and a link to the guest portal (/account/) where the
+    holder redeems it -- with the same org branding the other receipts carry.
+
+    Reads the pass detail off the PassPurchase issued for this order (its frozen
+    snapshots), falling back to the kind=PASS OrderItem for the product name/
+    amount if the purchase row can't be found (it always can in practice -- both
+    are created in the same fulfill_pass_purchase transaction). `request`
+    supplies the tenant host for the absolute portal URL, exactly like the other
+    receipt senders."""
+    pass_item = (
+        order.items.filter(kind=OrderItem.Kind.PASS)
+        .select_related("pass_product")
+        .first()
+    )
+    purchase = order.pass_purchases.first()
+
+    product = pass_item.pass_product if pass_item is not None else None
+    product_name = (
+        product.name if product is not None else (purchase.product.name if purchase else "Pass")
+    )
+    amount = pass_item.unit_amount if pass_item is not None else order.total
+
+    # Portal is where the holder redeems -- named route lands with the guests
+    # app; built absolute for dev/prod host correctness like the other senders.
+    portal_url = request.build_absolute_uri(reverse("guest_portal"))
+
+    organization = order.organization
+    logo_url = (
+        request.build_absolute_uri(organization.logo.url) if organization.logo else None
+    )
+
+    context = {
+        "order": order,
+        "organization": organization,
+        "logo_url": logo_url,
+        "purchase": purchase,
+        "product_name": product_name,
+        "amount": amount,
+        "portal_url": portal_url,
+    }
+    subject = f"Your {product_name} — {organization.name}"
+    text_body = render_to_string("orders/email/pass_purchase.txt", context)
+    html_body = render_to_string("orders/email/pass_purchase.html", context)
 
     email = EmailMultiAlternatives(
         subject=subject,

@@ -49,6 +49,7 @@ import stripe
 
 from donations.models import DonationCampaign
 from events.models import GAAllocation
+from guests import services as guest_services
 from guests.models import GuestAccount
 from orders import services as order_services
 from orders.models import Hold, Order, OrderItem, Payment, Ticket
@@ -269,7 +270,7 @@ def application_fee_amount(organization, total, currency=None):
 # --- Checkout Session creation ------------------------------------------
 
 
-def create_checkout_session(hold, request):
+def create_checkout_session(hold, request, *, marketing_opt_in=False):
     """Create a Stripe Checkout Session for `hold` and return its hosted
     payment page URL. Does NOT create an Order/Payment/Ticket -- those are
     created by fulfill_checkout_session() once Stripe confirms payment via
@@ -325,6 +326,14 @@ def create_checkout_session(hold, request):
         "cancel_url": cancel_url,
         "metadata": {"hold_id": str(hold.pk), "organization_id": str(organization.pk)},
     }
+    # Phase 4: carry the buyer's marketing consent through Stripe so fulfillment
+    # can honor it (read back as `metadata.get("marketing_opt_in") == "1"` in
+    # fulfill_checkout_session, threaded into fulfill_hold). Added ONLY when the
+    # box was ticked so the default (no consent) leaves metadata byte-identical
+    # to the pre-Phase-4 shape -- an absent key reads as False, so this stays
+    # regression-safe for every existing caller.
+    if marketing_opt_in:
+        params["metadata"]["marketing_opt_in"] = "1"
     # The platform's cut is a percentage of what's ACTUALLY collected, so the
     # fee base is the NET (post-discount) grand total, not the gross subtotal --
     # otherwise a discounted order would over-charge the fee against money that
@@ -373,7 +382,7 @@ def create_checkout_session(hold, request):
     return session.url
 
 
-def create_donation_checkout_session(organization, *, amount, campaign, buyer_email, buyer_name, request):
+def create_donation_checkout_session(organization, *, amount, campaign, buyer_email, buyer_name, request, marketing_opt_in=False):
     """Create a Stripe Checkout Session for a STANDALONE donation (the
     /donate/ page -- a gift with no hold, no tickets) and return its hosted
     payment page URL. The donation analogue of create_checkout_session: one
@@ -437,6 +446,10 @@ def create_donation_checkout_session(organization, *, amount, campaign, buyer_em
             "donation_amount": str(amount),
         },
     }
+    # Phase 4 marketing consent -- added only when ticked (regression-safe absent
+    # default). See create_checkout_session.
+    if marketing_opt_in:
+        params["metadata"]["marketing_opt_in"] = "1"
     if buyer_email:
         params["customer_email"] = buyer_email
 
@@ -453,7 +466,7 @@ def create_donation_checkout_session(organization, *, amount, campaign, buyer_em
     return session.url
 
 
-def create_pass_checkout_session(organization, *, product, buyer_email, buyer_name, request):
+def create_pass_checkout_session(organization, *, product, buyer_email, buyer_name, request, marketing_opt_in=False):
     """Create a Stripe Checkout Session for a one-time PASS purchase (a season
     or flex pass bought outright -- see docs/ROADMAP.md Phase 3's "one-time
     purchase, not a Stripe subscription" decision) and return its hosted payment
@@ -515,6 +528,10 @@ def create_pass_checkout_session(organization, *, product, buyer_email, buyer_na
             "pass_product_id": str(product.pk),
         },
     }
+    # Phase 4 marketing consent -- added only when ticked (regression-safe absent
+    # default). See create_checkout_session.
+    if marketing_opt_in:
+        params["metadata"]["marketing_opt_in"] = "1"
     if buyer_email:
         params["customer_email"] = buyer_email
 
@@ -668,7 +685,7 @@ def _to_minor_units(amount, currency):
 
 
 @transaction.atomic
-def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe_checkout_session_id=None):
+def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe_checkout_session_id=None, marketing_opt_in=False):
     """Core order-fulfillment transaction, shared by EVERY payment path
     (the Stripe webhook below, and the env-gated TEST CHECKOUT path in
     orders/views.py). This is the one and only place that turns a Hold into
@@ -735,6 +752,14 @@ def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe
     guest, _ = GuestAccount.objects.get_or_create_for_email(
         organization, buyer_email, name=buyer_name
     )
+    # Phase 4 consent: if the buyer ticked the marketing opt-in box at checkout,
+    # record it on their guest account. record_marketing_opt_in is idempotent
+    # and ONE-WAY (it never opts anyone out), so a returning buyer who leaves
+    # the box un-ticked -- marketing_opt_in defaults False here -- is never
+    # silently unsubscribed; only an explicit opt-in adds consent. See
+    # guests.services.record_marketing_opt_in.
+    if marketing_opt_in:
+        guest_services.record_marketing_opt_in(guest)
 
     order = Order.objects.create(
         organization=organization,
@@ -816,6 +841,7 @@ def fulfill_donation(
     provider,
     payment_ref,
     stripe_checkout_session_id=None,
+    marketing_opt_in=False,
 ):
     """Turn a standalone (hold-less) donation into a paid Order + one
     kind=DONATION OrderItem + a Payment. The sibling of fulfill_hold for the
@@ -847,6 +873,9 @@ def fulfill_donation(
     guest, _ = GuestAccount.objects.get_or_create_for_email(
         organization, buyer_email, name=buyer_name
     )
+    # Phase 4 consent (idempotent, one-way -- see fulfill_hold / guests.services).
+    if marketing_opt_in:
+        guest_services.record_marketing_opt_in(guest)
 
     order = Order.objects.create(
         organization=organization,
@@ -887,6 +916,7 @@ def fulfill_pass_purchase(
     provider,
     payment_ref,
     stripe_checkout_session_id=None,
+    marketing_opt_in=False,
 ):
     """Turn a paid one-time PASS purchase into a paid Order + one kind=PASS
     OrderItem + the PassPurchase entitlement row + a Payment. The sibling of
@@ -920,6 +950,9 @@ def fulfill_pass_purchase(
     guest, _ = GuestAccount.objects.get_or_create_for_email(
         organization, buyer_email, name=buyer_name
     )
+    # Phase 4 consent (idempotent, one-way -- see fulfill_hold / guests.services).
+    if marketing_opt_in:
+        guest_services.record_marketing_opt_in(guest)
 
     order = Order.objects.create(
         organization=organization,
@@ -969,7 +1002,7 @@ def fulfill_pass_purchase(
 
 
 @transaction.atomic
-def fulfill_hold_with_pass(hold, pass_purchase, *, buyer_email, buyer_name):
+def fulfill_hold_with_pass(hold, pass_purchase, *, buyer_email, buyer_name, marketing_opt_in=False):
     """THE REDEMPTION CORE: spend `pass_purchase` on the seats held by `hold`,
     minting real Tickets against real inventory for a $0 charge and recording a
     PassRedemption per ticket. The pass analogue of fulfill_hold -- it reuses
@@ -1083,6 +1116,11 @@ def fulfill_hold_with_pass(hold, pass_purchase, *, buyer_email, buyer_name):
         guest, _ = GuestAccount.objects.get_or_create_for_email(
             organization, buyer_email, name=buyer_name
         )
+    # Phase 4 consent: opt in WHICHEVER guest this redemption links (the pass
+    # holder if the pass carries one, else the buyer's get-or-created guest).
+    # Idempotent + one-way, like every other fulfill_* path.
+    if marketing_opt_in:
+        guest_services.record_marketing_opt_in(guest)
 
     order = Order.objects.create(
         organization=organization,
@@ -1202,6 +1240,12 @@ def fulfill_checkout_session(organization, session):
     metadata = session.get("metadata") or {}
     hold_id = metadata.get("hold_id")
     session_org_id = metadata.get("organization_id")
+    # Phase 4: the buyer's marketing consent rode along in metadata (set by every
+    # create_*_checkout_session). Decode it ONCE here and thread it into whichever
+    # fulfill_* this session dispatches to. "" / absent -> False, so a session
+    # created before this field existed (or with the box un-ticked) simply
+    # doesn't opt anyone in.
+    opt_in = metadata.get("marketing_opt_in") == "1"
     if session_org_id and str(session_org_id) != str(organization.pk):
         raise TenantMismatchError(
             f"Session {session_id} metadata organization_id={session_org_id} does not match "
@@ -1247,6 +1291,7 @@ def fulfill_checkout_session(organization, session):
                 payment_ref=session.get("payment_intent") or session_id,
                 provider="stripe",
                 stripe_checkout_session_id=session_id,
+                marketing_opt_in=opt_in,
             )
         except IntegrityError as exc:
             winner = Order.objects.filter(
@@ -1285,6 +1330,7 @@ def fulfill_checkout_session(organization, session):
                 payment_ref=session.get("payment_intent") or session_id,
                 provider="stripe",
                 stripe_checkout_session_id=session_id,
+                marketing_opt_in=opt_in,
             )
         except IntegrityError as exc:
             winner = Order.objects.filter(
@@ -1324,6 +1370,7 @@ def fulfill_checkout_session(organization, session):
             payment_ref=session.get("payment_intent") or session_id,
             provider="stripe",
             stripe_checkout_session_id=session_id,
+            marketing_opt_in=opt_in,
         )
     except IntegrityError as exc:
         winner = Order.objects.filter(

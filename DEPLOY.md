@@ -183,6 +183,49 @@ systemctl daemon-reload
 systemctl enable --now boxoffice-sweeper.timer
 ```
 
+### 8. Install the campaign email sender
+
+Phase 4 (CRM + email marketing) sends campaign emails from a batch worker on a
+schedule — the exact same cron/systemd shape as the Hold sweeper above, just a
+different command. When a staffer triggers a campaign from the dashboard,
+`campaigns.services.start_campaign` fans it out into `pending` `CampaignSend`
+rows and marks the campaign `sending`; this worker
+(`manage.py send_campaign_emails`) drains those rows, sending one email each.
+
+It's safe to run often: a no-op when nothing is queued, each row is **claimed
+atomically** (a conditional `pending -> sending` UPDATE) so overlapping ticks
+can't double-send, opt-in is **re-checked at send time** (an unsubscribe
+between trigger and send is honored as `skipped`, never mailed), and each run
+is capped at `CAMPAIGN_BATCH_SIZE` rows (default 50) so a large blast paces out
+across ticks instead of blocking one run on thousands of SMTP round-trips. When
+a campaign's last row drains, the worker flips it to `sent`.
+
+Unlike the tenant provisioner it does **not** need root (no certbot/nginx/doctl
+— just DB + SMTP), but it does need `DJANGO_SETTINGS_MODULE=config.settings.prod`
+(baked into both deploy files) so it reads the prod DB the dashboard writes to.
+Two equivalent options, pick one:
+
+```bash
+# cron (every 2 minutes — comfortable for a rate-limited SMTP relay; drop to
+# every minute on a fast transactional provider):
+(crontab -l 2>/dev/null; grep -v '^#' deploy/boxoffice-campaigns.cron) | crontab -
+
+# systemd timer:
+cp deploy/systemd/boxoffice-campaigns.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now boxoffice-campaigns.timer
+```
+
+**Deliverability gate.** The worker won't send until email delivery is actually
+configured (`guests.services.email_delivery_configured()` — the same check the
+guest sign-in portal uses): if the prod SMTP backend is selected but
+`EMAIL_HOST` is still blank, it leaves the sends `pending` and logs a note
+rather than burning them against a dead transport. Wire up SMTP (`.env`'s
+`EMAIL_*`) and the next tick picks the queue back up. `List-Unsubscribe` /
+`List-Unsubscribe-Post` one-click headers are attached to every send (an
+RFC 8058 bulk-sender requirement), pointing at the same signed unsubscribe link
+carried in the email body. Tune throughput with `CAMPAIGN_BATCH_SIZE` in `.env`.
+
 ## Onboarding a tenant (no-wildcard subdomain flow)
 
 Every theater gets a real `<sub>.boxo.show` — no wildcard DNS or cert. All

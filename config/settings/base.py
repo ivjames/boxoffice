@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "promotions",
     "donations",
     "passes",
+    "campaigns",
     "orders",
     "payments",
     "dashboard",
@@ -193,6 +194,15 @@ STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
 # is sent at all (Stripe rejects an explicit fee of 0).
 PLATFORM_FEE_PERCENT = env.int("PLATFORM_FEE_PERCENT", default=0)
 PLATFORM_FEE_FIXED_CENTS = env.int("PLATFORM_FEE_FIXED_CENTS", default=0)
+
+# --- Campaign email sender (Phase 4) -------------------------------------
+# Max CampaignSend rows the cron batch sender
+# (campaigns.management.commands.send_campaign_emails) drains per run. Caps how
+# many SMTP round-trips one tick makes so a large blast paces out across ticks
+# rather than blocking a single run -- the same one-thing-per-tick discipline
+# the Hold sweeper / tenant provisioner use. Tune up on a fast transactional
+# provider, down on a rate-limited SMTP relay.
+CAMPAIGN_BATCH_SIZE = env.int("CAMPAIGN_BATCH_SIZE", default=50)
 
 # --- TEST CHECKOUT (env-gated fake-payment path) -------------------------
 # When True, orders/views.py's checkout_test view (and the "Pay (TEST -- no

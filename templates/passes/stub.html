@@ -39,6 +39,7 @@
                 <label for="stub-pass-card">Card number</label>
                 <input type="text" id="stub-pass-card" value="4242 4242 4242 4242 (simulated)" disabled>
             </div>
+            {% include "orders/_marketing_consent.html" %}
 
             <button type="submit" class="button">Pay ${{ product.price }} (simulated — no real charge)</button>
         </form>

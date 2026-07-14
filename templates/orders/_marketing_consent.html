@@ -1,0 +1,15 @@
+{% comment %}
+Buyer marketing-consent checkbox (Phase 4 CRM). Tenant-agnostic -- no brand
+colors, reuses the existing `.field` form-row class. Included in every buyer
+form that can lead to a paid/fulfilled order: ticket checkout (real + stub +
+test), donations (real + stub), and pass purchase (real + stub). The POSTed
+name is read the same way everywhere: `request.POST.get("marketing_opt_in")
+in ("on", "1", "true")` -- an unchecked box simply omits the key, which reads
+as False, so no hidden "off" companion field is needed.
+{% endcomment %}
+<div class="field field--checkbox">
+    <label>
+        <input type="checkbox" name="marketing_opt_in" value="on">
+        Email me about upcoming shows and events
+    </label>
+</div>

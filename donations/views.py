@@ -73,6 +73,13 @@ def _parse_amount(raw):
     return amount, None
 
 
+def _marketing_opt_in(request):
+    """Whether the donor ticked the marketing-consent checkbox on this POST
+    (templates/orders/_marketing_consent.html) -- mirrors orders.views.
+    _marketing_opt_in / passes.views._marketing_opt_in exactly."""
+    return request.POST.get("marketing_opt_in") in ("on", "1", "true")
+
+
 def _active_campaign_or_404(organization):
     """The org's active general-fund campaign, or Http404 -- the one gate
     every view in this module opens with. Filters rather than calling
@@ -147,6 +154,8 @@ def donate(request):
                 },
             )
 
+        marketing_opt_in = _marketing_opt_in(request)
+
         if not organization.stripe_charges_enabled and settings.ENABLE_TEST_CHECKOUT:
             # Same env-gated, org-can't-charge-yet shortcut as checkout_test:
             # skip even the simulated stub and fulfill immediately.
@@ -158,6 +167,7 @@ def donate(request):
                 buyer_name=buyer_name,
                 provider="test",
                 payment_ref=f"test-{uuid.uuid4()}",
+                marketing_opt_in=marketing_opt_in,
             )
             _sign_in_donor(order, request)
             _send_receipt_best_effort(order, request)
@@ -170,6 +180,7 @@ def donate(request):
             buyer_email=buyer_email,
             buyer_name=buyer_name,
             request=request,
+            marketing_opt_in=marketing_opt_in,
         )
         return redirect(url)
 
@@ -220,6 +231,7 @@ def donate_stub(request):
             buyer_name=buyer_name,
             provider="stub",
             payment_ref=f"stub-{uuid.uuid4()}",
+            marketing_opt_in=_marketing_opt_in(request),
         )
         _sign_in_donor(order, request)
         _send_receipt_best_effort(order, request)

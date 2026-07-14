@@ -47,6 +47,14 @@ def _parse_int(value, default=0):
         return default
 
 
+def _marketing_opt_in(request):
+    """Whether the buyer ticked the marketing-consent checkbox on this POST
+    (templates/orders/_marketing_consent.html) -- the single parse used by
+    every checkout path below, mirrored in donations/views.py and
+    passes/views.py."""
+    return request.POST.get("marketing_opt_in") in ("on", "1", "true")
+
+
 def _donation_suggested_amounts(organization):
     """The org's active donation campaign's quick-pick preset amounts (see
     DonationCampaign.suggested_amount_list), or [] if none is active. Reads
@@ -419,7 +427,9 @@ def checkout_view(request):
             expires_at__gt=timezone.now(),
         )
         try:
-            checkout_url = payment_services.create_checkout_session(hold, request)
+            checkout_url = payment_services.create_checkout_session(
+                hold, request, marketing_opt_in=_marketing_opt_in(request)
+            )
         except payment_services.CheckoutError as exc:
             messages.error(request, str(exc))
             return redirect("cart")
@@ -496,6 +506,7 @@ def checkout_test(request):
             buyer_name=buyer_name,
             payment_ref=f"test-{uuid.uuid4()}",
             provider="test",
+            marketing_opt_in=_marketing_opt_in(request),
         )
     except payment_services.FulfillmentError as exc:
         messages.error(request, str(exc))
@@ -565,6 +576,7 @@ def checkout_stub(request):
                 buyer_name=buyer_name,
                 payment_ref=f"stub-{uuid.uuid4()}",
                 provider="stub",
+                marketing_opt_in=_marketing_opt_in(request),
             )
         except payment_services.FulfillmentError as exc:
             messages.error(request, str(exc))

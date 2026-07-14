@@ -65,6 +65,37 @@ class GuestAccount(TenantScopedModel):
     email = models.EmailField()
     name = models.CharField(max_length=255, blank=True)
 
+    # --- Phase 4 CRM / email-marketing fields --------------------------------
+    # All four are ADDITIVE (no new index/constraint): a GuestAccount already
+    # exists per (org, email) and is linked to every order at fulfillment, so
+    # these just annotate that anchor with the consent + light CRM metadata the
+    # campaigns app segments and sends against. LTV / order-count stay COMPUTED
+    # queries (campaigns.services.audience_queryset annotates them off Orders) --
+    # deliberately not stored columns, so they can never drift from the orders
+    # they summarize. See docs/ROADMAP.md Phase 4.
+    #
+    # marketing_opt_in is the single gate every bulk send checks (the sender
+    # re-reads it at send time, campaigns.services.segment_guests filters on it):
+    # consent is a legal prerequisite, so it defaults False and is only ever
+    # flipped True by an explicit act (checkout opt-in tickbox, the portal
+    # toggle). db_default mirrors marketing_opt_in's Python default so a row
+    # inserted by a historical migration model (which doesn't know this column)
+    # still satisfies NOT NULL -- the same reason Organization's flags carry one.
+    marketing_opt_in = models.BooleanField(default=False, db_default=False)
+    # When consent was FIRST given (stamped once by guests.services.
+    # record_marketing_opt_in / set_marketing_opt_in). Retained even after an
+    # unsubscribe (set_marketing_opt_in flips the bool False but leaves this
+    # standing) so there's an audit trail of when the guest had opted in.
+    marketing_opt_in_at = models.DateTimeField(null=True, blank=True)
+    # Free-form CSV of staff-applied labels ("vip,subscriber,board") the
+    # audience list filters on. Parsed leniently by tag_list (below), exactly
+    # like DonationCampaign.suggested_amounts -- presentation/segmentation only,
+    # never a money-path input.
+    tags = models.CharField(max_length=255, blank=True, default="")
+    # Private staff notes about this guest (never shown on the storefront or in
+    # any email). Purely for the dashboard's audience detail.
+    notes = models.TextField(blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -85,3 +116,23 @@ class GuestAccount(TenantScopedModel):
 
     def display_name(self):
         return self.name or self.email
+
+    def tag_list(self):
+        """The `tags` CSV parsed into a de-duped, order-preserving list of
+        trimmed non-empty labels, so a fat-fingered "vip, , subscriber,vip"
+        yields ["vip", "subscriber"] rather than blanks or repeats. Lenient by
+        design -- the exact mirror of DonationCampaign.suggested_amount_list:
+        tags are a presentation/segmentation convenience (the audience filter
+        matches against them), never an authoritative input, so a stray comma
+        or duplicate is skipped rather than surfaced as an error. Case is
+        preserved (labels are shown back to staff verbatim); only exact repeats
+        are dropped, first occurrence winning to keep the staff-entered order."""
+        seen = set()
+        labels = []
+        for chunk in (self.tags or "").split(","):
+            chunk = chunk.strip()
+            if not chunk or chunk in seen:
+                continue
+            seen.add(chunk)
+            labels.append(chunk)
+        return labels

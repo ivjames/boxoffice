@@ -72,6 +72,48 @@ urlpatterns = [
         name="dashboard_pass_toggle",
     ),
     path("dashboard/passes/report/", views.pass_report, name="dashboard_pass_report"),
+    # -- audience / CRM + email campaigns (manager+, Phase 4) ---------------
+    path("dashboard/audience/", views.audience_list, name="dashboard_audience_list"),
+    path(
+        "dashboard/audience/<int:pk>/",
+        views.audience_detail,
+        name="dashboard_audience_detail",
+    ),
+    path(
+        "dashboard/campaigns/",
+        views.EmailCampaignListView.as_view(),
+        name="dashboard_campaign_list",
+    ),
+    path(
+        "dashboard/campaigns/new/",
+        views.EmailCampaignCreateView.as_view(),
+        name="dashboard_campaign_create",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/edit/",
+        views.EmailCampaignUpdateView.as_view(),
+        name="dashboard_campaign_update",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/",
+        views.campaign_detail,
+        name="dashboard_campaign_detail",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/preview/",
+        views.campaign_preview,
+        name="dashboard_campaign_preview",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/test/",
+        views.campaign_test,
+        name="dashboard_campaign_test",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/send/",
+        views.campaign_send,
+        name="dashboard_campaign_send",
+    ),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),

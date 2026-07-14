@@ -10,8 +10,10 @@ from decimal import Decimal, InvalidOperation
 from django import forms
 
 from accounts.models import Membership
+from campaigns.models import EmailCampaign
 from donations.models import DonationCampaign
 from events.models import Event, GAAllocation, Performance, PriceTier
+from guests.models import GuestAccount
 from orders.services import get_seating_chart
 from passes.models import PassProduct
 from promotions.models import PromoCode
@@ -428,3 +430,71 @@ class DonationSettingsForm(forms.ModelForm):
         if not amounts:
             raise forms.ValidationError("Enter at least one positive amount, e.g. 10,25,50,100.")
         return ",".join(amounts)
+
+
+# --- CRM / email marketing (manager+, Phase 4) ------------------------------
+#
+# Mirrors PassProductForm's shape: `organization` is taken explicitly (never
+# trusted from POST data), purely to scope the `segment_event` field's
+# queryset to this tenant's own events -- the view stamps instance.organization
+# (and created_by) on create, this form never writes either itself.
+
+
+class EmailCampaignForm(forms.ModelForm):
+    """Dashboard CRUD for campaigns.EmailCampaign -- see its docstring for the
+    lifecycle/segment semantics. clean() enforces that the segment param
+    matching the chosen segment_kind is actually filled in, mirroring
+    PassProductForm.clean()'s kind-conditional-field pattern; the other
+    segment param is left as submitted (harmless -- campaigns.services.
+    segment_guests only reads the param relevant to the campaign's own kind)."""
+
+    class Meta:
+        model = EmailCampaign
+        fields = [
+            "name", "subject", "body",
+            "segment_kind", "segment_event", "segment_min_spend",
+        ]
+        widgets = {
+            "body": forms.Textarea(attrs={"rows": 10}),
+        }
+        help_texts = {
+            "body": "Plain text, paragraphs separated by a blank line -- the HTML email is generated from this automatically.",
+            "segment_event": "Required when the segment is “Bought a specific event”.",
+            "segment_min_spend": "Required when the segment is “Minimum lifetime spend”.",
+        }
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.fields["segment_event"].queryset = Event.objects.filter(organization=organization).order_by(
+            "title"
+        )
+        self.fields["segment_event"].required = False
+        self.fields["segment_min_spend"].required = False
+
+    def clean(self):
+        cleaned = super().clean()
+        kind = cleaned.get("segment_kind")
+        if kind == EmailCampaign.SegmentKind.EVENT and not cleaned.get("segment_event"):
+            self.add_error("segment_event", "Choose the event this campaign targets.")
+        if kind == EmailCampaign.SegmentKind.MIN_SPEND and not cleaned.get("segment_min_spend"):
+            self.add_error("segment_min_spend", "Enter a minimum lifetime spend amount.")
+        return cleaned
+
+
+class GuestTagsNotesForm(forms.ModelForm):
+    """The audience detail page's editable staff fields on a guest -- tags
+    (a free-text CSV, GuestAccount.tag_list parses it) and private notes.
+    Everything else about a GuestAccount (email, opt-in state, order history)
+    is read-only here; consent is only ever changed by the guest themselves
+    (portal toggle / unsubscribe link), never by staff."""
+
+    class Meta:
+        model = GuestAccount
+        fields = ["tags", "notes"]
+        widgets = {
+            "notes": forms.Textarea(attrs={"rows": 4}),
+        }
+        help_texts = {
+            "tags": "Comma-separated, e.g. vip, subscriber, board member.",
+        }

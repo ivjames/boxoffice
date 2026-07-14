@@ -39,6 +39,7 @@
         <label for="pass-buyer-email">Email</label>
         <input type="email" id="pass-buyer-email" name="buyer_email" value="{{ buyer_email|default:'' }}" autocomplete="email" required>
     </div>
+    {% include "orders/_marketing_consent.html" %}
     <button type="submit" class="button">Buy for ${{ product.price }}</button>
 </form>
 {% endblock %}

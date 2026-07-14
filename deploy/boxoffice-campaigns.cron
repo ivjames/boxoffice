@@ -1,0 +1,32 @@
+# Cron sample: send queued campaign emails (Phase 4 CRM / email marketing).
+# Drains PENDING CampaignSend rows for SENDING campaigns -- see
+# campaigns/management/commands/send_campaign_emails.py for what it does and
+# why it's safe to run this often (no-op when nothing is queued, each row
+# claimed atomically, capped at CAMPAIGN_BATCH_SIZE per run).
+#
+# Runs on the SAME shape as the Hold sweeper (deploy/boxoffice-sweeper.cron):
+#
+#   * DJANGO_SETTINGS_MODULE=config.settings.prod is REQUIRED -- manage.py
+#     defaults to dev settings, which point at a different, unmigrated SQLite
+#     file; without this the sender reads the wrong database and never sees the
+#     campaigns the dashboard queued.
+#   * PATH is set for cron's minimal default.
+#
+# Unlike the provisioner it does NOT need root (it only reads/writes the DB and
+# talks SMTP -- no certbot/nginx/doctl), so it can live in the app user's
+# crontab. Every 2 minutes: SMTP relays are often rate-limited and a 2-minute
+# cadence with CAMPAIGN_BATCH_SIZE per tick paces a large blast comfortably;
+# drop to `* * * * *` (every minute) on a fast transactional provider.
+#
+# Install (as root, since lab980 apps run as root and there's no dedicated
+# service user):
+#
+#   crontab -e
+#   # paste the line below, adjusting the path if boxoffice isn't at
+#   # /var/www/boxoffice
+#
+# Or non-interactively:
+#
+#   (crontab -l 2>/dev/null; grep -v '^#' deploy/boxoffice-campaigns.cron) | crontab -
+
+*/2 * * * * cd /var/www/boxoffice && DJANGO_SETTINGS_MODULE=config.settings.prod PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin venv/bin/python manage.py send_campaign_emails >> data/send_campaign_emails.log 2>&1

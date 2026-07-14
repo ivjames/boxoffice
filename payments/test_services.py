@@ -16,6 +16,7 @@ from django.utils import timezone
 
 from donations.models import DonationCampaign
 from events.models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
+from guests.models import GuestAccount
 from orders import services as order_services
 from orders.models import Hold, Order, OrderItem, Payment, Ticket
 from orders.tests import OrdersFixtureMixin
@@ -2325,3 +2326,247 @@ class SendOrderReceiptPassDispatchTests(PassMoneyPathMixin, TestCase):
         subject = mail.outbox[0].subject
         self.assertIn(product.name, subject)
         self.assertNotIn("donation", subject.lower())
+
+
+# --- Phase 4: marketing-consent threading through every fulfill path ----------
+#
+# Every fulfill_* takes a marketing_opt_in kwarg (default False) that, when True,
+# opts the linked guest in via guests.services.record_marketing_opt_in (one-way,
+# idempotent). Omitting the kwarg must leave existing callers unchanged -- the
+# guest is NOT opted in -- which is the regression these tests guard.
+
+
+class ConsentThreadingFulfillmentTests(OrdersFixtureMixin, TestCase):
+    """marketing_opt_in threads through fulfill_hold / fulfill_donation /
+    fulfill_pass_purchase to opt the linked guest in; the default (omitted)
+    leaves them opted OUT."""
+
+    def _guest(self, email):
+        return GuestAccount.objects.get(organization=self.org, email=email)
+
+    def _ga_hold(self):
+        self.build_ga_performance()
+        return order_services.set_ga_hold(
+            organization=self.org, performance=self.performance, session_key="sess-a",
+            user=None, price_tier=self.price_tier, quantity=1,
+        )
+
+    def test_fulfill_hold_with_opt_in_opts_the_guest_in(self):
+        hold = self._ga_hold()
+        services.fulfill_hold(
+            hold, buyer_email="buyer@example.com", buyer_name="Buyer",
+            payment_ref="test-1", provider="test", marketing_opt_in=True,
+        )
+        guest = self._guest("buyer@example.com")
+        self.assertTrue(guest.marketing_opt_in)
+        self.assertIsNotNone(guest.marketing_opt_in_at)
+
+    def test_fulfill_hold_default_leaves_guest_opted_out(self):
+        hold = self._ga_hold()
+        services.fulfill_hold(
+            hold, buyer_email="buyer@example.com", buyer_name="Buyer",
+            payment_ref="test-1", provider="test",  # marketing_opt_in omitted
+        )
+        self.assertFalse(self._guest("buyer@example.com").marketing_opt_in)
+
+    def test_fulfill_donation_with_opt_in_opts_the_guest_in(self):
+        self.build_ga_performance()
+        services.fulfill_donation(
+            self.org, amount=Decimal("25.00"), campaign=None,
+            buyer_email="donor@example.com", buyer_name="Donor",
+            provider="test", payment_ref="d-1", marketing_opt_in=True,
+        )
+        self.assertTrue(self._guest("donor@example.com").marketing_opt_in)
+
+    def test_fulfill_donation_default_leaves_guest_opted_out(self):
+        self.build_ga_performance()
+        services.fulfill_donation(
+            self.org, amount=Decimal("25.00"), campaign=None,
+            buyer_email="donor@example.com", buyer_name="Donor",
+            provider="test", payment_ref="d-1",
+        )
+        self.assertFalse(self._guest("donor@example.com").marketing_opt_in)
+
+    def test_fulfill_pass_purchase_with_opt_in_opts_the_guest_in(self):
+        self.build_ga_performance()
+        product = PassProduct.objects.create(
+            organization=self.org, name="Flex", kind=PassProduct.Kind.FLEX,
+            price=Decimal("100.00"), credit_count=4,
+        )
+        services.fulfill_pass_purchase(
+            self.org, product=product, buyer_email="holder@example.com",
+            buyer_name="Holder", provider="test", payment_ref="p-1",
+            marketing_opt_in=True,
+        )
+        self.assertTrue(self._guest("holder@example.com").marketing_opt_in)
+
+    def test_fulfill_pass_purchase_default_leaves_guest_opted_out(self):
+        self.build_ga_performance()
+        product = PassProduct.objects.create(
+            organization=self.org, name="Flex", kind=PassProduct.Kind.FLEX,
+            price=Decimal("100.00"), credit_count=4,
+        )
+        services.fulfill_pass_purchase(
+            self.org, product=product, buyer_email="holder@example.com",
+            buyer_name="Holder", provider="test", payment_ref="p-1",
+        )
+        self.assertFalse(self._guest("holder@example.com").marketing_opt_in)
+
+
+class ConsentThreadingRedemptionTests(PassMoneyPathMixin, TestCase):
+    """fulfill_hold_with_pass threads marketing_opt_in onto the pass's own guest
+    (the entitlement holder)."""
+
+    def setUp(self):
+        self.build_ga_performance()
+
+    def test_redemption_with_opt_in_opts_the_pass_guest_in(self):
+        holder = GuestAccount.objects.create(
+            organization=self.org, email="holder@example.com", marketing_opt_in=False
+        )
+        purchase = self._purchase(self._flex_product(credit_count=2), guest=holder)
+        hold = self._ga_hold(quantity=1)
+
+        services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="holder@example.com", buyer_name="Holder",
+            marketing_opt_in=True,
+        )
+
+        holder.refresh_from_db()
+        self.assertTrue(holder.marketing_opt_in)
+        self.assertIsNotNone(holder.marketing_opt_in_at)
+
+    def test_redemption_default_leaves_pass_guest_opted_out(self):
+        holder = GuestAccount.objects.create(
+            organization=self.org, email="holder@example.com", marketing_opt_in=False
+        )
+        purchase = self._purchase(self._flex_product(credit_count=2), guest=holder)
+        hold = self._ga_hold(quantity=1)
+
+        services.fulfill_hold_with_pass(
+            hold, purchase, buyer_email="holder@example.com", buyer_name="Holder",
+        )
+
+        holder.refresh_from_db()
+        self.assertFalse(holder.marketing_opt_in)
+
+
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
+class StripeMarketingMetadataTests(OrdersFixtureMixin, TestCase):
+    """The buyer's marketing consent rides through Stripe as
+    metadata["marketing_opt_in"] == "1" -- and, per the foundation's documented
+    deviation, the key is PRESENT ONLY when opt-in is true (absent reads as
+    False), so an un-ticked box leaves metadata byte-identical to pre-Phase-4."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        enable_connect(self.org)
+        self.hold = order_services.set_ga_hold(
+            organization=self.org, performance=self.performance, session_key="sess-a",
+            user=None, price_tier=self.price_tier, quantity=1,
+        )
+        self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
+
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_opt_in_true_sets_metadata_flag_to_one(self, mock_create):
+        mock_create.return_value = FakeStripeSession()
+        services.create_checkout_session(self.hold, self.request, marketing_opt_in=True)
+        _, kwargs = mock_create.call_args
+        self.assertEqual(kwargs["metadata"]["marketing_opt_in"], "1")
+
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_opt_in_false_omits_the_metadata_key(self, mock_create):
+        mock_create.return_value = FakeStripeSession()
+        services.create_checkout_session(self.hold, self.request, marketing_opt_in=False)
+        _, kwargs = mock_create.call_args
+        self.assertNotIn("marketing_opt_in", kwargs["metadata"])
+
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_opt_in_omitted_omits_the_metadata_key(self, mock_create):
+        mock_create.return_value = FakeStripeSession()
+        services.create_checkout_session(self.hold, self.request)  # default
+        _, kwargs = mock_create.call_args
+        self.assertNotIn("marketing_opt_in", kwargs["metadata"])
+
+
+class FulfillCheckoutSessionMarketingMetadataTests(PassMoneyPathMixin, TestCase):
+    """fulfill_checkout_session decodes metadata["marketing_opt_in"] == "1" once
+    and threads it into whichever fulfill_* it dispatches to -- ticket, donation,
+    and pass alike. A session WITHOUT the key opts no one in."""
+
+    def setUp(self):
+        self.build_ga_performance()
+
+    def _guest(self, email="buyer@example.com"):
+        return GuestAccount.objects.get(organization=self.org, email=email)
+
+    def _ticket_session(self, *, opt_in):
+        hold = order_services.set_ga_hold(
+            organization=self.org, performance=self.performance, session_key="sess-t",
+            user=None, price_tier=self.price_tier, quantity=1,
+        )
+        metadata = {"hold_id": str(hold.pk), "organization_id": str(self.org.pk)}
+        if opt_in:
+            metadata["marketing_opt_in"] = "1"
+        return {
+            "id": "cs_ticket",
+            "payment_intent": "pi_ticket",
+            "metadata": metadata,
+            "customer_details": {"email": "buyer@example.com", "name": "Buyer"},
+        }
+
+    def _donation_session(self, *, opt_in):
+        metadata = {
+            "kind": "donation",
+            "organization_id": str(self.org.pk),
+            "donation_amount": "40.00",
+        }
+        if opt_in:
+            metadata["marketing_opt_in"] = "1"
+        return {
+            "id": "cs_don",
+            "payment_intent": "pi_don",
+            "metadata": metadata,
+            "customer_details": {"email": "buyer@example.com", "name": "Buyer"},
+        }
+
+    def _pass_session(self, product, *, opt_in):
+        metadata = {
+            "kind": "pass",
+            "organization_id": str(self.org.pk),
+            "pass_product_id": str(product.pk),
+        }
+        if opt_in:
+            metadata["marketing_opt_in"] = "1"
+        return {
+            "id": "cs_pass",
+            "payment_intent": "pi_pass",
+            "metadata": metadata,
+            "customer_details": {"email": "buyer@example.com", "name": "Buyer"},
+        }
+
+    def test_ticket_session_opt_in_opts_the_guest_in(self):
+        services.fulfill_checkout_session(self.org, self._ticket_session(opt_in=True))
+        self.assertTrue(self._guest().marketing_opt_in)
+
+    def test_ticket_session_without_key_opts_no_one_in(self):
+        services.fulfill_checkout_session(self.org, self._ticket_session(opt_in=False))
+        self.assertFalse(self._guest().marketing_opt_in)
+
+    def test_donation_session_opt_in_opts_the_guest_in(self):
+        services.fulfill_checkout_session(self.org, self._donation_session(opt_in=True))
+        self.assertTrue(self._guest().marketing_opt_in)
+
+    def test_donation_session_without_key_opts_no_one_in(self):
+        services.fulfill_checkout_session(self.org, self._donation_session(opt_in=False))
+        self.assertFalse(self._guest().marketing_opt_in)
+
+    def test_pass_session_opt_in_opts_the_guest_in(self):
+        product = self._flex_product(credit_count=4, price="120.00")
+        services.fulfill_checkout_session(self.org, self._pass_session(product, opt_in=True))
+        self.assertTrue(self._guest().marketing_opt_in)
+
+    def test_pass_session_without_key_opts_no_one_in(self):
+        product = self._flex_product(credit_count=4, price="120.00")
+        services.fulfill_checkout_session(self.org, self._pass_session(product, opt_in=False))
+        self.assertFalse(self._guest().marketing_opt_in)

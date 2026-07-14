@@ -102,6 +102,11 @@ TEMPLATES = [
                 # Exposes whether donations are switched on for this tenant as
                 # `donations_enabled` (nav link, cart add-on gating).
                 "donations.context_processors.donation_nav",
+                # Exposes whether passes are switched on for this tenant as
+                # `passes_enabled` (nav link), and the session's in-progress
+                # redemption as `redeeming_pass` (redeem-mode banner, cart/
+                # checkout "Redeem with pass" gating).
+                "passes.context_processors.pass_nav",
                 # Exposes settings.ENABLE_TEST_CHECKOUT as `test_checkout_enabled`.
                 "payments.context_processors.test_checkout_enabled",
                 # Exposes the resolved deploy stamp as `app_version` (footer).

@@ -56,6 +56,22 @@ urlpatterns = [
         views.donation_settings,
         name="dashboard_donation_settings",
     ),
+    # -- passes (manager+) ----------------------------------------------------
+    path("dashboard/passes/", views.PassProductListView.as_view(), name="dashboard_pass_list"),
+    path(
+        "dashboard/passes/new/", views.PassProductCreateView.as_view(), name="dashboard_pass_create"
+    ),
+    path(
+        "dashboard/passes/<int:pk>/edit/",
+        views.PassProductUpdateView.as_view(),
+        name="dashboard_pass_update",
+    ),
+    path(
+        "dashboard/passes/<int:pk>/toggle/",
+        views.pass_toggle,
+        name="dashboard_pass_toggle",
+    ),
+    path("dashboard/passes/report/", views.pass_report, name="dashboard_pass_report"),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),

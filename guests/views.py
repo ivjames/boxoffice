@@ -14,6 +14,8 @@ from django.views.decorators.http import require_POST
 
 from accounts import throttle
 from orders.models import Order
+from passes import services as pass_services
+from passes.models import PassPurchase
 from tenants.decorators import require_tenant
 
 from . import services
@@ -43,10 +45,30 @@ def guest_portal(request):
     order_rows = [
         {"order": order, "ticket_count": order.tickets.count()} for order in orders
     ]
+
+    # Phase 3: "My passes" -- every pass this guest owns (any status), each
+    # annotated with its live remaining-admissions figure and whether it can
+    # be redeemed right now (see passes.services). Read-only lookups; nothing
+    # here mutates a pass or its entitlement -- redeeming one is the separate
+    # pass_redeem_start POST (passes/views.py).
+    passes_qs = (
+        PassPurchase.objects.filter(organization=request.organization, guest=guest)
+        .select_related("product")
+        .order_by("-created_at")
+    )
+    pass_rows = [
+        {
+            "pass_purchase": pass_purchase,
+            "remaining": pass_services.remaining_admissions(pass_purchase),
+            "redeemable": pass_services.redeemable_now(pass_purchase),
+        }
+        for pass_purchase in passes_qs
+    ]
+
     return render(
         request,
         "guests/portal.html",
-        {"guest": guest, "order_rows": order_rows},
+        {"guest": guest, "order_rows": order_rows, "pass_rows": pass_rows},
     )
 
 

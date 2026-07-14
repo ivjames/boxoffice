@@ -3043,3 +3043,49 @@ table.dash-table th {
     padding-top: 1rem;
     border-top: 1px solid var(--border-color);
 }
+
+/* -- passes (Phase 3) ----------------------------------------------------- */
+
+/* Redeem-mode banner (templates/base.html): sits above the page messages
+   whenever the session has a pass "loaded" for redemption, so it's visible
+   no matter which storefront page the buyer is browsing. Themed (unlike
+   .test-mode-banner) since it's a normal, tenant-branded state -- not a
+   danger/warning condition. */
+.redeem-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    background: var(--primary-color);
+    color: #fff;
+    padding: 0.6rem 1rem;
+    border-radius: 0.375rem;
+    margin-bottom: 1rem;
+}
+
+.redeem-banner form {
+    margin: 0;
+}
+
+.pass-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.pass-card {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+}
+
+.pass-card h2,
+.pass-card h3 {
+    margin: 0 0 0.35rem;
+}
+
+.cart-item__pass-redeem {
+    margin-top: 0.75rem;
+}

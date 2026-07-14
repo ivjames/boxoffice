@@ -1,0 +1,77 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Passes — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Passes</h1>
+    <div class="dash-header__actions">
+        <a class="button button--secondary" href="{% url 'dashboard_pass_report' %}">Report</a>
+        <a class="button" href="{% url 'dashboard_pass_create' %}">New pass</a>
+    </div>
+</div>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Kind</th>
+            <th>Price</th>
+            <th>Window</th>
+            <th>Events</th>
+            <th>Active</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for product in products %}
+        <tr>
+            <td>{{ product.name }}</td>
+            <td>
+                {% if product.kind == 'season' %}
+                    Season
+                {% else %}
+                    Flex &middot; {{ product.credit_count }} credit{{ product.credit_count|pluralize }}
+                {% endif %}
+            </td>
+            <td>${{ product.price }}</td>
+            <td>
+                {% if product.valid_from or product.valid_until %}
+                    {{ product.valid_from|date:"M j Y"|default:"…" }} &ndash; {{ product.valid_until|date:"M j Y"|default:"…" }}
+                {% else %}
+                    always
+                {% endif %}
+            </td>
+            <td>
+                {% if product.events.exists %}
+                    {{ product.events.count }} show{{ product.events.count|pluralize }}
+                {% else %}
+                    all shows
+                {% endif %}
+            </td>
+            <td>
+                {% if product.is_active %}
+                    <span class="badge badge--active">Active</span>
+                {% else %}
+                    <span class="badge badge--inactive">Inactive</span>
+                {% endif %}
+            </td>
+            <td class="dash-table__actions">
+                <a href="{% url 'dashboard_pass_update' product.pk %}">Edit</a>
+                <form method="post" action="{% url 'dashboard_pass_toggle' product.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="button button--secondary button--sm">
+                        {% if product.is_active %}Deactivate{% else %}Reactivate{% endif %}
+                    </button>
+                </form>
+            </td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="7" class="muted">No passes yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

@@ -302,3 +302,102 @@ class TicketPdfTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         org_b, _ = self.build_org("org-b")
         resp = self.get_as("org-b", f"/tickets/{order.token}/pdf/")
         self.assertEqual(resp.status_code, 404)
+
+
+class DonationOnlyOrderPortalTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """Phase 2: the guest portal must render a donation-only order (no
+    performance, no tickets) as its own row, without 500ing -- see
+    templates/guests/portal.html's guard."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+
+    def _donation_order(self, email="donor@example.com", amount=Decimal("20.00")):
+        from donations.services import get_or_create_general_fund
+        from orders.models import OrderItem
+
+        campaign = get_or_create_general_fund(self.org)
+        guest, _ = GuestAccount.objects.get_or_create_for_email(self.org, email)
+        order = Order.objects.create(
+            organization=self.org,
+            performance=None,
+            buyer_email=email,
+            guest=guest,
+            total=amount,
+            status=Order.Status.PAID,
+        )
+        OrderItem.objects.create(
+            organization=self.org,
+            order=order,
+            kind=OrderItem.Kind.DONATION,
+            quantity=1,
+            unit_amount=amount,
+            donation_campaign=campaign,
+        )
+        return order, guest
+
+    def test_portal_renders_donation_only_order_without_500(self):
+        order, guest = self._donation_order()
+
+        # Sign in the same way the storefront does (session write) --
+        # mirrors guests.services.login_guest, which needs a real request
+        # object rather than the test client.
+        session = self.client.session
+        session["guest_account_id"] = guest.pk
+        session["guest_org_id"] = self.org.pk
+        session.save()
+
+        resp = self.get_as("org-a", "/account/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Donation")
+        self.assertContains(resp, "$20.00")
+        self.assertContains(resp, "View receipt")
+
+    def test_portal_mixes_ticket_and_donation_orders(self):
+        # A ticket order (normal row) alongside a donation-only order (the
+        # new row shape) for the same signed-in guest.
+        from orders.models import Order as OrderModel
+        from orders.models import Ticket as TicketModel
+
+        _event, performance, tier = self.build_ga(self.org, self.venue)
+        guest, _ = GuestAccount.objects.get_or_create_for_email(self.org, "buyer@example.com")
+        ticket_order = OrderModel.objects.create(
+            organization=self.org,
+            performance=performance,
+            buyer_email="buyer@example.com",
+            guest=guest,
+            total=Decimal("20.00"),
+            status=OrderModel.Status.PAID,
+        )
+        TicketModel.objects.create(organization=self.org, order=ticket_order, performance=performance)
+
+        from donations.services import get_or_create_general_fund
+        from orders.models import OrderItem
+
+        campaign = get_or_create_general_fund(self.org)
+        donation_order = OrderModel.objects.create(
+            organization=self.org,
+            performance=None,
+            buyer_email="buyer@example.com",
+            guest=guest,
+            total=Decimal("5.00"),
+            status=OrderModel.Status.PAID,
+        )
+        OrderItem.objects.create(
+            organization=self.org,
+            order=donation_order,
+            kind=OrderItem.Kind.DONATION,
+            quantity=1,
+            unit_amount=Decimal("5.00"),
+            donation_campaign=campaign,
+        )
+
+        session = self.client.session
+        session["guest_account_id"] = guest.pk
+        session["guest_org_id"] = self.org.pk
+        session.save()
+
+        resp = self.get_as("org-a", "/account/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "GA Show")  # the ticket order
+        self.assertContains(resp, "$5.00")  # the donation order

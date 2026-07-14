@@ -1,0 +1,21 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Donation settings — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_donation_report' %}">&larr; Donations</a>
+<h1>Donation settings</h1>
+<form method="post" class="dash-form">
+    {% csrf_token %}
+    {% for field in form %}
+        <div class="field">
+            {{ field.label_tag }}
+            {{ field }}
+            {{ field.errors }}
+            {% if field.help_text %}<p class="muted">{{ field.help_text }}</p>{% endif %}
+        </div>
+    {% endfor %}
+    <button type="submit" class="button">Save</button>
+</form>
+{% endblock %}

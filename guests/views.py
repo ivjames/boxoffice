@@ -9,7 +9,9 @@ makes sense on a tenant subdomain, exactly like the cart/checkout views.
 import logging
 
 from django.contrib import messages
+from django.http import HttpResponse
 from django.shortcuts import redirect, render
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from accounts import throttle
@@ -201,22 +203,40 @@ def guest_preferences(request):
 
 
 @require_tenant
+@csrf_exempt
 def guest_unsubscribe(request):
-    """One-click unsubscribe from a campaign email's footer link (GET,
-    ?token=...) -- deliberately NOT sign-in gated, since the whole point of a
-    one-click unsubscribe link is that it works straight from the inbox with
-    no portal session. Also handles the confirm page's re-subscribe control
-    (POST, same token carried in a hidden field) so re-subscribing doesn't
-    need sign-in either -- the token is exactly as much proof of "this is
-    that guest's inbox" as the original unsubscribe click was.
+    """Unsubscribe from a campaign email's footer link -- deliberately NOT
+    sign-in gated, since the whole point is that it works straight from the
+    inbox with no portal session. The signed token is the capability; it's
+    exactly as much proof of "this is that guest's inbox" as a login link.
+
+    Three ways in, all token-authed, all handled here:
+      - **GET ?token=...** -- the human clicks the footer link. Unsubscribes,
+        then renders a confirm page with a Resubscribe button (in case it was
+        a fat-finger).
+      - **RFC 8058 one-click POST** -- the mail client's own "Unsubscribe"
+        button (advertised via the List-Unsubscribe / List-Unsubscribe-Post
+        headers we send) POSTs `List-Unsubscribe=One-Click` to the *exact*
+        header URI, so the token rides the QUERY STRING, not the body. This
+        MUST opt the guest out (a resubscribe here would defeat the native
+        control) and just returns 200 -- mail clients don't render the body.
+      - **confirm-page Resubscribe POST** -- the only path that opts back IN,
+        disambiguated by an explicit `action=resubscribe` field (not "any
+        POST", which would collide with the one-click POST above).
+
+    This view is @csrf_exempt because the one-click POST originates from a mail
+    provider and carries no CSRF cookie/token; the signed token is the auth,
+    and the only state change a forged request could cause is opting the token's
+    own guest in or out -- not a meaningful attack (and the guest can trivially
+    flip it back). Token is read query-first so the one-click POST (token in the
+    URL) and the confirm form (token in the body) both resolve.
 
     read_unsubscribe_token re-checks the token's embedded org id against
-    request.organization (see guests.tokens), so a token minted for one
-    theater can't be replayed to opt a guest in/out on another. An invalid,
-    expired, or wrong-tenant token renders the same template's friendly
-    "invalid" branch rather than a 404/500 -- a stale or mis-copied link is
-    an expected case for an email footer link, not an error."""
-    token = request.POST.get("token", "") if request.method == "POST" else request.GET.get("token", "")
+    request.organization (see guests.tokens), so a token minted for one theater
+    can't be replayed on another. An invalid/expired/wrong-tenant token renders
+    the friendly "invalid" branch, not a 404/500 -- a stale or mis-copied footer
+    link is expected, not an error."""
+    token = request.GET.get("token") or request.POST.get("token") or ""
     guest_id = read_unsubscribe_token(token, request.organization)
     guest = None
     if guest_id is not None:
@@ -226,18 +246,28 @@ def guest_unsubscribe(request):
             .first()
         )
 
+    # RFC 8058 native one-click: the mail client POSTs List-Unsubscribe=One-Click.
+    one_click = (
+        request.method == "POST"
+        and request.POST.get("List-Unsubscribe") == "One-Click"
+    )
+    # The confirm page's Resubscribe button is the ONLY opt-back-in path.
+    resubscribe = request.method == "POST" and request.POST.get("action") == "resubscribe"
+
+    if guest is not None:
+        services.set_marketing_opt_in(guest, opted_in=resubscribe)
+
+    if one_click:
+        # Mail clients discard the response body; a bare 200 is the whole
+        # contract. Do this before rendering so a missing/invalid guest here
+        # (already unsubscribed, stale token) still 200s rather than 404s.
+        return HttpResponse(status=200)
+
     if guest is None:
         return render(request, "guests/unsubscribe_confirm.html", {"invalid": True})
-
-    if request.method == "POST":
-        services.set_marketing_opt_in(guest, True)
-        resubscribed = True
-    else:
-        services.set_marketing_opt_in(guest, False)
-        resubscribed = False
 
     return render(
         request,
         "guests/unsubscribe_confirm.html",
-        {"guest": guest, "token": token, "resubscribed": resubscribed},
+        {"guest": guest, "token": token, "resubscribed": resubscribe},
     )

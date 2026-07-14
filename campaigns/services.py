@@ -16,6 +16,7 @@ N sends" can never disagree.
 
 from django.db import transaction
 from django.db.models import Count, F, Q, Sum
+from django.utils import timezone
 
 from guests.models import GuestAccount
 from orders.models import Order
@@ -135,8 +136,19 @@ def start_campaign(campaign):
 
     count = len(guests)
     locked.recipient_count = count
-    locked.status = EmailCampaign.Status.SENDING
-    locked.save(update_fields=["recipient_count", "status", "updated_at"])
+    if count == 0:
+        # An empty segment (a brand-new tenant, or an event/min-spend filter no
+        # opted-in guest matches) creates zero PENDING rows. The cron sender only
+        # flips a campaign to SENT after draining sends it actually touched, so a
+        # zero-send campaign left SENDING would hang there forever -- never SENT,
+        # never re-editable (the composer only edits drafts). Finish it here:
+        # there is nothing to send, so it's already sent.
+        locked.status = EmailCampaign.Status.SENT
+        locked.sent_at = timezone.now()
+        locked.save(update_fields=["recipient_count", "status", "sent_at", "updated_at"])
+    else:
+        locked.status = EmailCampaign.Status.SENDING
+        locked.save(update_fields=["recipient_count", "status", "updated_at"])
     return count
 
 

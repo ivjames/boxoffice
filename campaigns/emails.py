@@ -138,16 +138,20 @@ def send_test_campaign_email(campaign, to_email):
     guest = services.segment_guests(campaign).first()
     if guest is None:
         # No opted-in recipient yet: render against a synthetic, unsaved guest so
-        # the preview still works. It has no pk, so mint a plain signed link off
-        # the org rather than make_unsubscribe_token (which reads guest.pk).
+        # the preview still works.
         guest = GuestAccount(
             organization=campaign.organization,
             email=to_email,
             name="Sample Subscriber",
         )
-        unsubscribe_url = tenant_base_url(campaign.organization) + "/unsubscribe/"
-    else:
-        unsubscribe_url = tenant_base_url(campaign.organization) + _unsubscribe_path(guest)
+    # A test send ALWAYS uses a non-mutating placeholder unsubscribe link, never a
+    # real guest's signed token. The message goes to the staffer, but its footer
+    # link (and List-Unsubscribe header) would otherwise carry a live one-click
+    # token for whichever real subscriber seeded the preview -- so the staffer's
+    # click, or a mail scanner that fetches links, would silently opt out a
+    # customer who never asked. The placeholder points at the bare unsubscribe
+    # page (no token -> renders the "invalid link" branch, opts out nobody).
+    unsubscribe_url = tenant_base_url(campaign.organization) + "/account/unsubscribe/"
 
     subject, text_body, html_body = render_campaign(
         campaign, guest, unsubscribe_url=unsubscribe_url

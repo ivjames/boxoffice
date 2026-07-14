@@ -29,6 +29,7 @@
         <form method="post" action="{% url 'guest_unsubscribe' %}">
             {% csrf_token %}
             <input type="hidden" name="token" value="{{ token }}">
+            <input type="hidden" name="action" value="resubscribe">
             <button type="submit" class="button button--secondary">Resubscribe</button>
         </form>
     {% endif %}

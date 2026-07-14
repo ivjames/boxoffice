@@ -108,13 +108,48 @@ class GuestUnsubscribeTests(TenantClientMixin, StorefrontFixtureMixin, TestCase)
         self.assertFalse(self.guest.marketing_opt_in)
 
         # Then resubscribe via the confirm page's POST -- no sign-in, token only.
-        resp = self.post_as("org-a", "/account/unsubscribe/", {"token": token})
+        # The explicit action=resubscribe is what distinguishes this from an
+        # RFC 8058 one-click POST (which must UNsubscribe -- see below).
+        resp = self.post_as(
+            "org-a", "/account/unsubscribe/", {"token": token, "action": "resubscribe"}
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "subscribed again")
         self.guest.refresh_from_db()
         self.assertTrue(self.guest.marketing_opt_in)
 
+    def test_one_click_post_unsubscribes_with_token_in_query(self):
+        # RFC 8058: a mail client's native Unsubscribe button POSTs
+        # `List-Unsubscribe=One-Click` to the EXACT List-Unsubscribe URI, so the
+        # token rides the query string, not the body. This must opt the guest
+        # OUT (a resubscribe here would defeat the native control) and 200.
+        token = make_unsubscribe_token(self.guest)
+        resp = self.post_as(
+            "org-a",
+            f"/account/unsubscribe/?token={token}",
+            {"List-Unsubscribe": "One-Click"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.guest.refresh_from_db()
+        self.assertFalse(self.guest.marketing_opt_in)
+
+    def test_one_click_post_never_resubscribes(self):
+        # A one-click POST on an already-unsubscribed guest stays unsubscribed
+        # (idempotent) -- it must never be mistaken for the resubscribe path.
+        token = make_unsubscribe_token(self.guest)
+        services.set_marketing_opt_in(self.guest, False)
+        resp = self.post_as(
+            "org-a",
+            f"/account/unsubscribe/?token={token}",
+            {"List-Unsubscribe": "One-Click"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.guest.refresh_from_db()
+        self.assertFalse(self.guest.marketing_opt_in)
+
     def test_resubscribe_with_invalid_token_shows_friendly_state(self):
-        resp = self.post_as("org-a", "/account/unsubscribe/", {"token": "bogus"})
+        resp = self.post_as(
+            "org-a", "/account/unsubscribe/", {"token": "bogus", "action": "resubscribe"}
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "isn't valid")

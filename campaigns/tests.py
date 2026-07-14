@@ -52,7 +52,8 @@ from venues.models import Venue
 from venues.tests import make_org
 
 from campaigns import services
-from campaigns.emails import render_campaign, send_campaign_send
+from campaigns.emails import render_campaign, send_campaign_send, send_test_campaign_email
+from guests.tokens import make_unsubscribe_token
 from campaigns.models import CampaignSend, EmailCampaign
 from campaigns.services import CampaignStateError
 
@@ -315,6 +316,23 @@ class StartCampaignTests(CampaignFixtureMixin, TestCase):
         )
         self.assertEqual({s.guest_id for s in sends}, {self.g1.pk, self.g2.pk})
 
+    def test_empty_segment_campaign_finishes_immediately_as_sent(self):
+        """A segment nobody matches creates zero PENDING sends. The cron sender
+        only flips campaigns it touches, so a zero-send campaign left SENDING
+        would hang there forever -- never SENT, never re-editable. start_campaign
+        must finish it on the spot instead."""
+        # A min-spend threshold none of the opted-in guests meet -> empty segment.
+        campaign = self.campaign(kind=EmailCampaign.SegmentKind.MIN_SPEND, min_spend="500.00")
+
+        count = services.start_campaign(campaign)
+
+        self.assertEqual(count, 0)
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, EmailCampaign.Status.SENT)
+        self.assertIsNotNone(campaign.sent_at)
+        self.assertEqual(campaign.recipient_count, 0)
+        self.assertEqual(campaign.sends.count(), 0)
+
     def test_second_trigger_of_a_sending_campaign_raises_state_error(self):
         campaign = self.campaign(kind=EmailCampaign.SegmentKind.ALL)
         services.start_campaign(campaign)
@@ -389,6 +407,29 @@ class RenderAndSendCampaignTests(CampaignFixtureMixin, TestCase):
         )
         # An HTML alternative is attached alongside the text body.
         self.assertTrue(any(ctype == "text/html" for _, ctype in msg.alternatives))
+
+    def test_test_send_uses_placeholder_link_not_a_real_guests_token(self):
+        """A test send goes to the staffer, but its footer link + List-
+        Unsubscribe header must NOT carry a live one-click token for whichever
+        real subscriber seeded the preview -- else the staffer's click (or a
+        mail scanner fetching links) silently opts out a customer. The URL must
+        be the bare, tokenless unsubscribe page (which opts out nobody)."""
+        # A real opted-in guest exists (self.g) and would seed the preview.
+        real_token = make_unsubscribe_token(self.g)
+
+        send_test_campaign_email(self.campaign_obj, "staffer@theater.test")
+
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, ["staffer@theater.test"])
+        # No live token anywhere in the message (body or List-Unsubscribe header).
+        self.assertNotIn(real_token, msg.body)
+        self.assertNotIn("token=", msg.body)
+        self.assertNotIn(real_token, msg.extra_headers.get("List-Unsubscribe", ""))
+        self.assertNotIn("token=", msg.extra_headers.get("List-Unsubscribe", ""))
+        # And the real subscriber is untouched.
+        self.g.refresh_from_db()
+        self.assertTrue(self.g.marketing_opt_in)
 
     @skipUnless(GUEST_UNSUB, "needs UI-owned reverse('guest_unsubscribe')")
     def test_send_builds_its_own_unsub_link_when_none_passed(self):

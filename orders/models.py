@@ -311,6 +311,15 @@ class Order(TenantScopedModel):
     def __str__(self):
         return f"Order {self.token} ({self.status})"
 
+    @property
+    def gross_total(self):
+        """Pre-discount subtotal: `total` (the docstring above explains it's
+        NET -- what was actually charged) plus the frozen `discount_amount`
+        snapshot. The inverse of how `total` was computed at fulfillment;
+        used by the dashboard order-detail page to show a Subtotal line
+        alongside the net Total without any template-side arithmetic."""
+        return self.total + self.discount_amount
+
 
 class OrderItem(TenantScopedModel):
     """Phase C note: `price_tier` is nullable -- a zone-priced reserved

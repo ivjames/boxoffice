@@ -278,6 +278,49 @@ def cart_release(request):
 
 
 @require_tenant
+@require_POST
+def promo_apply(request):
+    """Apply a promo code to the session's targeted hold. Scoped exactly
+    like cart_release above (org + session_key + hold_id from POST) -- a
+    request can no more apply a code to another session's or another
+    tenant's hold than it can release one. Always redirects to the cart:
+    on success the hold's snapshot (Hold.promo_code_text/discount_amount)
+    now reflects the applied code, which cart_view already reads to render
+    the discount line; on failure services.apply_promo_code raises
+    PromoError with a buyer-safe message, flashed instead of a 500/404."""
+    session_key = services.get_session_key(request)
+    try:
+        hold = services.apply_promo_code(
+            organization=request.organization,
+            session_key=session_key,
+            hold_id=request.POST.get("hold_id"),
+            code=request.POST.get("code", ""),
+        )
+    except services.PromoError as exc:
+        messages.error(request, str(exc))
+        return redirect("cart")
+    messages.success(request, f"Code {hold.promo_code_text} applied.")
+    return redirect("cart")
+
+
+@require_tenant
+@require_POST
+def promo_remove(request):
+    """Clear any promo code off the session's targeted hold. Same org/
+    session/hold_id scoping as promo_apply/cart_release. Silently no-ops if
+    the hold is already gone -- see services.remove_promo_code -- so this
+    never surfaces an error for a cart that's already vanished."""
+    session_key = services.get_session_key(request)
+    services.remove_promo_code(
+        organization=request.organization,
+        session_key=session_key,
+        hold_id=request.POST.get("hold_id"),
+    )
+    messages.info(request, "Promo code removed.")
+    return redirect("cart")
+
+
+@require_tenant
 def checkout_view(request):
     """GET renders the current hold(s) as an order summary. POST creates a
     Stripe Checkout Session for the targeted hold (using THIS org's own

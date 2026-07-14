@@ -563,6 +563,13 @@ def apply_promo_code(*, organization, session_key, hold_id, code):
     (for_update) while we snapshot, serializing concurrent applies of the same
     code (Postgres row lock; SQLite's IMMEDIATE-mode whole-DB lock does the same
     -- the module-level locking parity note applies here too)."""
+    # `hold_id` comes straight from POST data; a missing/garbled value must
+    # read as "no such hold" (buyer-safe PromoError below), not a ValueError
+    # 500 out of the pk filter.
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        hold_id = None
     hold = (
         Hold.objects.select_related("price_tier")
         .filter(
@@ -600,6 +607,12 @@ def remove_promo_code(*, organization, session_key, hold_id):
     fields). Same tenant/session scoping as apply_promo_code. Silently no-ops if
     the hold is already gone -- removing a code off a vanished cart is not an
     error worth surfacing to the buyer."""
+    # Same POST-data tolerance as apply_promo_code: a garbled hold_id means
+    # "nothing to clear", never a 500.
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        return
     hold = Hold.objects.filter(
         organization=organization, session_key=session_key, pk=hold_id
     ).first()

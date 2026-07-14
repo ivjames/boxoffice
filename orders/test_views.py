@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from events.models import Event, GAAllocation, Performance, PriceTier
 from orders.models import Hold
+from promotions.models import PromoCode
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
 
@@ -660,3 +661,151 @@ class TicketDetailViewTests(TenantClientMixin, StorefrontFixtureMixin, TestCase)
         order = self._make_order_with_tickets(self.org, self.performance, n=1)
         resp = self.client.get(f"/tickets/{order.token}/")
         self.assertEqual(resp.status_code, 404)
+
+
+class PromoApplyRemoveViewTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """orders.views.promo_apply / promo_remove: the cart-facing wrapper
+    around orders.services.apply_promo_code/remove_promo_code (the money-
+    path logic itself is covered in orders/test_services.py). These tests
+    only exercise the HTTP layer -- scoping, messages, redirects."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue, capacity=5)
+
+    def _hold(self):
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        return Hold.objects.get(performance=self.performance)
+
+    def _make_promo(self, code="SAVE10", **kwargs):
+        defaults = dict(
+            organization=self.org,
+            code=code,
+            kind=PromoCode.Kind.PERCENT,
+            value=Decimal("10.00"),
+        )
+        defaults.update(kwargs)
+        return PromoCode.objects.create(**defaults)
+
+    def test_apply_valid_code_snapshots_discount_and_redirects_to_cart(self):
+        hold = self._hold()
+        self._make_promo()
+
+        resp = self.post_as("org-a", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "save10"})
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertEqual(hold.promo_code_text, "SAVE10")
+        self.assertEqual(hold.discount_amount, Decimal("4.00"))  # 10% of 2 x $20
+
+        resp = self.get_as("org-a", "/cart/")
+        self.assertContains(resp, "Code")
+        self.assertContains(resp, "SAVE10")
+
+    def test_apply_invalid_code_shows_error_and_leaves_hold_undiscounted(self):
+        hold = self._hold()
+
+        resp = self.post_as(
+            "org-a", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "NOPE"}, follow=True
+        )
+
+        self.assertRedirects(resp, "/cart/")
+        self.assertContains(resp, "isn&#x27;t valid")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.discount_amount)
+        self.assertEqual(hold.promo_code_text, "")
+
+    def test_apply_expired_code_shows_error(self):
+        hold = self._hold()
+        self._make_promo(ends_at=timezone.now() - timezone.timedelta(days=1))
+
+        resp = self.post_as(
+            "org-a", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "SAVE10"}, follow=True
+        )
+
+        self.assertContains(resp, "expired")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.discount_amount)
+
+    def test_apply_inactive_code_shows_error(self):
+        hold = self._hold()
+        self._make_promo(is_active=False)
+
+        resp = self.post_as(
+            "org-a", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "SAVE10"}, follow=True
+        )
+
+        self.assertContains(resp, "isn&#x27;t valid")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.discount_amount)
+
+    def test_apply_maxed_out_code_shows_error(self):
+        hold = self._hold()
+        self._make_promo(max_redemptions=1, redemption_count=1)
+
+        resp = self.post_as(
+            "org-a", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "SAVE10"}, follow=True
+        )
+
+        self.assertContains(resp, "redemption limit")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.discount_amount)
+
+    def test_remove_clears_the_snapshot(self):
+        hold = self._hold()
+        self._make_promo()
+        self.post_as("org-a", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "SAVE10"})
+        hold.refresh_from_db()
+        self.assertIsNotNone(hold.discount_amount)
+
+        resp = self.post_as("org-a", "/cart/promo/remove/", {"hold_id": hold.pk})
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertIsNone(hold.discount_amount)
+        self.assertEqual(hold.promo_code_text, "")
+        self.assertIsNone(hold.promo_code_id)
+
+    def test_remove_on_an_already_gone_hold_does_not_crash(self):
+        # services.remove_promo_code is a silent no-op for a missing hold --
+        # the view must simply bounce back to the cart, not 404/500.
+        resp = self.post_as("org-a", "/cart/promo/remove/", {"hold_id": 999999})
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+
+    def test_apply_to_another_sessions_hold_is_rejected_not_a_crash(self):
+        hold = self._hold()
+        self._make_promo()
+
+        other_client = self.client_class()
+        resp = other_client.post(
+            "/cart/promo/apply/",
+            {"hold_id": hold.pk, "code": "SAVE10"},
+            HTTP_HOST=host_for("org-a"),
+        )
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertIsNone(hold.discount_amount)  # a different session's hold, never touched
+
+    def test_apply_to_another_tenants_hold_is_rejected_not_a_crash(self):
+        hold = self._hold()
+        other_org, other_venue = self.build_org("org-b")
+        self._make_promo()  # lives on org-a; irrelevant here either way
+
+        resp = self.post_as("org-b", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "SAVE10"})
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertIsNone(hold.discount_amount)
+
+    def test_apply_get_not_allowed(self):
+        resp = self.get_as("org-a", "/cart/promo/apply/")
+        self.assertEqual(resp.status_code, 405)
+
+    def test_remove_get_not_allowed(self):
+        resp = self.get_as("org-a", "/cart/promo/remove/")
+        self.assertEqual(resp.status_code, 405)

@@ -32,6 +32,19 @@ urlpatterns = [
         views.performance_price_tiers,
         name="dashboard_performance_price_tiers",
     ),
+    # -- promo codes (manager+) ----------------------------------------------
+    path("dashboard/promos/", views.PromoCodeListView.as_view(), name="dashboard_promo_list"),
+    path("dashboard/promos/new/", views.PromoCodeCreateView.as_view(), name="dashboard_promo_create"),
+    path(
+        "dashboard/promos/<int:pk>/edit/",
+        views.PromoCodeUpdateView.as_view(),
+        name="dashboard_promo_update",
+    ),
+    path(
+        "dashboard/promos/<int:pk>/toggle/",
+        views.promo_deactivate,
+        name="dashboard_promo_toggle",
+    ),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),

@@ -11,6 +11,10 @@
 <p><strong>Buyer:</strong> {{ order.buyer_name }} — {{ order.buyer_email }}</p>
 <p><strong>Performance:</strong> {{ order.performance.event.title }} — {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ({{ order.performance.venue.name }})</p>
 <p><strong>Total:</strong> ${{ order.total }}</p>
+{% if order.discount_amount %}
+<p><strong>Subtotal:</strong> ${{ order.gross_total }}</p>
+<p><strong>Promo {{ order.promo_code_text }}:</strong> &minus;${{ order.discount_amount }}</p>
+{% endif %}
 <p class="muted">Placed {{ order.created_at|date:"M j Y g:i A" }}</p>
 
 <div class="order-actions">

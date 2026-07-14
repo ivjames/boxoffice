@@ -903,6 +903,24 @@ class ApplyPromoCodeGATests(OrdersFixtureMixin, TestCase):
             organization=self.org, session_key="sess-a", hold_id=self.hold.pk + 999
         )
 
+    def test_garbled_hold_id_is_promo_error_not_500(self):
+        # hold_id comes straight off POST data -- an empty or non-numeric value
+        # must read as "no such hold" (buyer-safe PromoError / silent no-op),
+        # never a ValueError out of the pk filter. Caught live in the smoke
+        # drive: a crafted POST with hold_id="" 500'd before this guard.
+        _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
+        for bogus in ("", "abc", None):
+            with self.assertRaises(PromoError):
+                services.apply_promo_code(
+                    organization=self.org,
+                    session_key="sess-a",
+                    hold_id=bogus,
+                    code="save10",
+                )
+            services.remove_promo_code(  # must not raise
+                organization=self.org, session_key="sess-a", hold_id=bogus
+            )
+
     def test_editing_the_promo_after_apply_does_not_move_the_snapshot(self):
         promo = _make_promo(self.org, kind=PromoCode.Kind.PERCENT, value="10")
         self._apply("save10")

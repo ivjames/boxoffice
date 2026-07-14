@@ -51,6 +51,7 @@ from events.models import GAAllocation
 from guests.models import GuestAccount
 from orders import services as order_services
 from orders.models import Hold, Order, OrderItem, Payment, Ticket
+from promotions import services as promotions_services
 from venues.models import Seat
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,10 @@ def create_checkout_session(hold, request):
     success_url = request.build_absolute_uri(reverse("checkout_success")) + "?session_id={CHECKOUT_SESSION_ID}"
     cancel_url = request.build_absolute_uri(reverse("checkout_cancel"))
 
+    # Resolve the charge currency once -- both the platform fee and the promo
+    # coupon below must be denominated in it.
+    currency = _hold_currency(hold)
+
     params = {
         "mode": "payment",
         "line_items": line_items,
@@ -287,13 +292,45 @@ def create_checkout_session(hold, request):
         "cancel_url": cancel_url,
         "metadata": {"hold_id": str(hold.pk), "organization_id": str(organization.pk)},
     }
+    # The platform's cut is a percentage of what's ACTUALLY collected, so the
+    # fee base is the NET (post-discount) grand total, not the gross subtotal --
+    # otherwise a discounted order would over-charge the fee against money that
+    # never changed hands.
     fee = application_fee_amount(
-        organization, order_services.hold_total(hold), currency=_hold_currency(hold)
+        organization, order_services.hold_grand_total(hold), currency=currency
     )
     if fee is not None:
         # On a direct charge, the application fee is set on the underlying
         # PaymentIntent the Checkout Session creates.
         params["payment_intent_data"] = {"application_fee_amount": fee}
+
+    # Apply the promo discount as a Stripe COUPON rather than by shrinking the
+    # line items. The line items stay GROSS (list price) so the hosted page and
+    # the buyer's receipt show the discount as its own explicit deduction --
+    # matching how the cart/checkout summary presents it. Reconciliation is
+    # exact because every unit price is 2-dp: gross_minor - amount_off =
+    # net_minor = the Order.total (hold_grand_total) fulfillment records.
+    #
+    # Three deliberate choices here:
+    #  - the coupon is created ON THE CONNECTED ACCOUNT (stripe_account=...), the
+    #    same direct-charge account the Session lives on -- a platform-account
+    #    coupon can't be attached to a connected-account Checkout Session;
+    #  - duration="once" so even if this Session is abandoned, the orphaned
+    #    coupon is inert (it only ever discounts a single charge, and only if
+    #    redeemed) -- no cleanup job needed;
+    #  - the coupon is minted fresh per Session (not reused) so its amount_off
+    #    always matches THIS hold's snapshotted discount exactly.
+    discount_minor = _to_minor_units(order_services.hold_discount(hold), currency)
+    if discount_minor > 0:
+        coupon = stripe.Coupon.create(
+            amount_off=discount_minor,
+            currency=currency.lower(),
+            duration="once",
+            name=(hold.promo_code_text or "Discount")[:40],
+            api_key=settings.STRIPE_SECRET_KEY,
+            stripe_account=organization.stripe_account_id,
+        )
+        params["discounts"] = [{"coupon": coupon.id}]
 
     session = stripe.checkout.Session.create(
         **params,
@@ -304,16 +341,13 @@ def create_checkout_session(hold, request):
 
 
 def _hold_currency(hold):
-    """The single charge currency for `hold` (a Stripe session is one
-    currency). GA reads the tier's currency; reserved reads the first
-    hold_seat's tier currency, falling back to the org's currency for a
-    zone-priced seat (zones carry no currency -- see _line_items_for_hold)."""
-    if hold.price_tier_id:
-        return hold.price_tier.currency
-    first = hold.hold_seats.select_related("price_tier").first()
-    if first is not None and first.price_tier_id:
-        return first.price_tier.currency
-    return hold.organization.currency
+    """The single charge currency for `hold`. Now a thin delegate to
+    orders.services.hold_currency -- the definition moved there so the promo
+    path (which must resolve the charge currency to validate a fixed-amount
+    code) and this Stripe path read ONE implementation. Kept as a payments-side
+    name so the existing call sites here don't churn; payments imports
+    orders.services, so this direction is safe (orders never imports payments)."""
+    return order_services.hold_currency(hold)
 
 
 def _line_items_for_hold(hold):
@@ -454,7 +488,12 @@ def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe
         )
 
     organization = hold.organization
-    total = order_services.hold_total(hold)
+    # The NET (post-discount) total is what Stripe actually collected and what
+    # a refund reverses, so it's what Order.total must record -- not the gross
+    # subtotal. hold_grand_total = hold_total - hold_discount (floored at 0).
+    # For a hold with no promo, hold_discount is 0.00 and this equals the gross,
+    # so the un-discounted path is byte-for-byte unchanged.
+    total = order_services.hold_grand_total(hold)
 
     # Attach (or create) the buyer's per-theater guest account so this order
     # shows up in their self-service portal (guests/). Keyed off buyer_email;
@@ -472,6 +511,13 @@ def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe
         buyer_email=buyer_email,
         buyer_name=buyer_name,
         guest=guest,
+        # Snapshot the promo off the hold onto the Order: promo_code_text is the
+        # code as applied (the FK may later be archived/deleted), discount_amount
+        # is the frozen deduction. Order.total above is already NET, so these two
+        # are the order-level discount line that reconstructs the gross for
+        # reporting (gross = total + discount_amount). See Order's docstring.
+        promo_code_text=hold.promo_code_text or "",
+        discount_amount=order_services.hold_discount(hold),
         total=total,
         status=Order.Status.PAID,
         stripe_checkout_session_id=stripe_checkout_session_id,
@@ -490,6 +536,22 @@ def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe
         status="succeeded",
         provider_ref=payment_ref,
     )
+
+    # Count the redemption ONLY now, at fulfillment, inside this same
+    # transaction -- so an abandoned cart never burns a use, and the increment
+    # commits atomically with the Order it belongs to. record_redemption is an
+    # F()-based DB update, so it can't lose a count to a concurrent fulfillment.
+    #
+    # DESIGN STANCE -- a paid order is NEVER rejected for promo state. The code
+    # may have expired or hit its cap in the window between apply-to-cart and
+    # this payment; we DO NOT re-validate here. The buyer already paid the
+    # discounted amount Stripe collected, and refusing to hand out their tickets
+    # over a soft-cap technicality would be the wrong trade-off -- the exact
+    # OPPOSITE of HoldGoneError (where nothing was charged yet, so bailing is
+    # correct). The cap is enforced softly at apply time (validate_code); a rare
+    # over-cap-by-one under concurrent checkouts is accepted on purpose.
+    if hold.promo_code_id:
+        promotions_services.record_redemption(hold.promo_code)
 
     hold.delete()  # HoldSeat rows cascade-delete with it.
     return order

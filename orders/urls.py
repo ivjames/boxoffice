@@ -7,6 +7,8 @@ urlpatterns = [
     path("performances/<int:pk>/hold/", views.hold_create, name="hold_create"),
     path("cart/", views.cart_view, name="cart"),
     path("cart/release/", views.cart_release, name="cart_release"),
+    path("cart/promo/apply/", views.promo_apply, name="promo_apply"),
+    path("cart/promo/remove/", views.promo_remove, name="promo_remove"),
     path("checkout/", views.checkout_view, name="checkout"),
     # STUB CHECKOUT: the simulated hosted-payment page create_checkout_session
     # redirects to when a tenant hasn't finished Stripe Connect onboarding

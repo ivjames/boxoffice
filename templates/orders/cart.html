@@ -25,10 +25,38 @@
                     </ul>
                 {% endif %}
 
-                <p><strong>Total: ${{ item.total }}</strong></p>
+                {% if item.discount %}
+                    <p>Subtotal: ${{ item.total }}</p>
+                    <p class="muted">&minus; ${{ item.discount }} ({{ item.hold.promo_code_text }})</p>
+                    <p><strong>Total: ${{ item.net_total }}</strong></p>
+                {% else %}
+                    <p><strong>Total: ${{ item.total }}</strong></p>
+                {% endif %}
                 <p class="cart-item__timer">
                     Holding for: <span x-text="display" :class="{ 'cart-item__timer--warning': secondsLeft > 0 && secondsLeft < 60 }"></span>
                 </p>
+
+                <div class="cart-item__promo">
+                    {% if item.hold.promo_code_id %}
+                        <p class="muted">Code <strong>{{ item.hold.promo_code_text }}</strong> applied.</p>
+                        <form method="post" action="{% url 'promo_remove' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <button type="submit" class="button button--secondary button--sm">Remove code</button>
+                        </form>
+                    {% else %}
+                        <form method="post" action="{% url 'promo_apply' %}" class="cart-item__promo-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <div class="field">
+                                <label class="sr-only" for="promo-code-{{ item.hold.pk }}">Promo code</label>
+                                <input type="text" id="promo-code-{{ item.hold.pk }}" name="code"
+                                       placeholder="Promo code" autocapitalize="characters">
+                            </div>
+                            <button type="submit" class="button button--secondary button--sm">Apply</button>
+                        </form>
+                    {% endif %}
+                </div>
 
                 <div class="cart-item__actions">
                     <a class="button" href="{% url 'checkout' %}">Proceed to checkout</a>

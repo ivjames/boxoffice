@@ -363,3 +363,61 @@ class TestCheckoutEnabledUITests(TenantClientMixin, StorefrontFixtureMixin, Test
     def test_banner_shown_on_storefront(self):
         resp = self.get_as("org-a", "/")
         self.assertContains(resp, "TEST MODE")
+
+
+@override_settings(ENABLE_TEST_CHECKOUT=True)
+class PromoCodeTestCheckoutTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """End-to-end through the HTTP test-checkout view with a promo applied: the
+    Order records the NET total and the code's redemption is counted. The promo
+    is applied via the service (orders.services.apply_promo_code) on the
+    session's own hold -- the buyer-facing apply view is exercised elsewhere;
+    here we prove the discount snapshot flows through fulfillment end to end."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue, capacity=5)
+
+    def _create_hold(self, quantity=2):
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": quantity},
+        )
+        return Hold.objects.get(performance=self.performance)
+
+    def _apply_promo_to(self, hold, *, code="TENOFF", value="10"):
+        from orders import services as order_services
+        from promotions.models import PromoCode
+
+        promo = PromoCode.objects.create(
+            organization=self.org, code=code, kind=PromoCode.Kind.FIXED, value=Decimal(value)
+        )
+        # Apply against the hold's own session (the one the test client created).
+        order_services.apply_promo_code(
+            organization=self.org,
+            session_key=hold.session_key,
+            hold_id=hold.pk,
+            code=code,
+        )
+        return promo
+
+    def test_test_checkout_records_net_total_and_counts_redemption(self):
+        hold = self._create_hold(quantity=2)  # 2 x $20 = $40 gross
+        promo = self._apply_promo_to(hold, value="10")  # $10 off -> $30 net
+
+        resp = self.post_as(
+            "org-a",
+            "/checkout/test/",
+            {"hold_id": hold.pk, "buyer_name": "Test Buyer", "buyer_email": "buyer@example.com"},
+        )
+
+        order = Order.objects.get()
+        self.assertRedirects(resp, f"/tickets/{order.token}/", fetch_redirect_response=False)
+        self.assertEqual(order.total, Decimal("30.00"))  # NET, not the $40 gross
+        self.assertEqual(order.discount_amount, Decimal("10.00"))
+        self.assertEqual(order.promo_code_text, "TENOFF")
+        self.assertEqual(Payment.objects.get(order=order).amount, Decimal("30.00"))
+
+        promo.refresh_from_db()
+        self.assertEqual(promo.redemption_count, 1)
+        self.assertFalse(Hold.objects.filter(pk=hold.pk).exists())

@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "guests",
     "venues",
     "events",
+    "promotions",
     "orders",
     "payments",
     "dashboard",

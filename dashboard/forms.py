@@ -5,11 +5,14 @@ another tenant's data no matter what a form POST contains -- see
 docs/ARCHITECTURE.md "Tenant isolation is non-negotiable."
 """
 
+from decimal import Decimal
+
 from django import forms
 
 from accounts.models import Membership
 from events.models import Event, GAAllocation, Performance, PriceTier
 from orders.services import get_seating_chart
+from promotions.models import PromoCode
 from venues.models import SeatingChart, Section, Venue
 
 
@@ -239,3 +242,77 @@ class SectionForm(forms.ModelForm):
         if commit:
             section.save()
         return section
+
+
+# --- promo codes (manager+) -------------------------------------------------
+
+
+class PromoCodeForm(forms.ModelForm):
+    """Dashboard CRUD for promotions.PromoCode -- see its docstring for the
+    field semantics (percent vs fixed, the soft max_redemptions cap,
+    redemption accounting). `organization` is taken explicitly (never
+    trusted from POST data), purely so clean_code can run its per-org
+    uniqueness check during validation -- the CreateView is what actually
+    STAMPS instance.organization on create (mirrors EventCreateView); this
+    form never writes it itself, same division of responsibility as every
+    other CRUD form in this module."""
+
+    class Meta:
+        model = PromoCode
+        fields = [
+            "code", "kind", "value", "currency", "starts_at", "ends_at",
+            "max_redemptions", "min_order_amount", "is_active",
+        ]
+        widgets = {
+            "starts_at": forms.DateTimeInput(
+                attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"
+            ),
+            "ends_at": forms.DateTimeInput(
+                attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"
+            ),
+        }
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.fields["starts_at"].input_formats = ["%Y-%m-%dT%H:%M"]
+        self.fields["ends_at"].input_formats = ["%Y-%m-%dT%H:%M"]
+
+    def clean_code(self):
+        # `organization` isn't a form field (it's fixed by the view, not
+        # user-editable here), so Django's own ModelForm.validate_unique()
+        # excludes it -- and with it, the WHOLE unique_promo_code_per_org
+        # (organization, code) constraint check (a model field absent from
+        # the form can't have its unique-together validated, by design --
+        # see BaseModelForm._get_validation_exclusions()). Left unchecked, a
+        # duplicate code under THIS org would pass form validation and blow
+        # up as a raw IntegrityError at PromoCode.save() instead of a clean
+        # field error. Mirrors SectionForm.clean_name's approach above.
+        # Normalized the same way PromoCode.save() normalizes (strip/upper)
+        # so this check matches exactly what will actually be persisted.
+        code = (self.cleaned_data.get("code") or "").strip().upper()
+        if code:
+            existing = PromoCode.objects.filter(organization=self.organization, code=code)
+            if self.instance.pk:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise forms.ValidationError("A promo code with this code already exists.")
+        return code
+
+    def clean(self):
+        # Business-rule bounds on `value` that depend on `kind`, so they
+        # can't live as a plain field validator: a PERCENT code above 100 (or
+        # below 0) is nonsensical, and a FIXED code has to actually discount
+        # something -- promotions.services.validate_code separately refuses
+        # a discount that would zero out or exceed the cart, but that's a
+        # per-order check made at apply time; this is the simpler "is this
+        # code well-formed at all" check made at save time.
+        cleaned = super().clean()
+        kind = cleaned.get("kind")
+        value = cleaned.get("value")
+        if value is not None:
+            if kind == PromoCode.Kind.PERCENT and not (Decimal("0") <= value <= Decimal("100")):
+                self.add_error("value", "A percentage must be between 0 and 100.")
+            elif kind == PromoCode.Kind.FIXED and value <= Decimal("0"):
+                self.add_error("value", "A fixed amount must be greater than 0.")
+        return cleaned

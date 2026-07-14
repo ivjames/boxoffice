@@ -1,5 +1,6 @@
 import secrets
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -89,6 +90,35 @@ class Hold(TenantScopedModel):
 
     # Reserved-seat selection.
     seats = models.ManyToManyField(Seat, through="HoldSeat", related_name="holds", blank=True)
+
+    # --- Promo / discount snapshot (same sacred pattern as ga_unit_amount /
+    # HoldSeat.unit_amount above) --------------------------------------------
+    # A buyer may apply ONE promo code to the whole hold (orders.services.
+    # apply_promo_code). The discount is COMPUTED AND FROZEN at apply time and
+    # stored here, so a later PromoCode edit -- a changed value, currency, even
+    # deactivation -- can't change what this hold is charged: the money paths
+    # (hold_grand_total, the Stripe coupon, fulfill_hold's Order.total) all read
+    # discount_amount, never re-derive it off the live PromoCode. The FK is
+    # kept only to (a) bump redemption_count at fulfillment (record_redemption)
+    # and (b) let a later edit see which code was used; it is SET_NULL so
+    # deleting/archiving a code never orphans or deletes a hold mid-checkout,
+    # and promo_code_text preserves what the buyer actually typed regardless.
+    promo_code = models.ForeignKey(
+        "promotions.PromoCode",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="holds",
+    )
+    # The code string as applied -- the human-readable label for the discount
+    # line on the cart, the Stripe coupon name, and the Order snapshot. Survives
+    # the PromoCode row being deleted (unlike promo_code above), mirroring how
+    # OrderItem.unit_amount survives its tier/zone being deleted.
+    promo_code_text = models.CharField(max_length=32, blank=True, default="")
+    # The frozen discount in major units. Null = no code applied (distinct from
+    # a $0.00 discount, which validate_code forbids anyway). hold_discount()
+    # coalesces null -> 0.00 for the money math.
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -223,6 +253,18 @@ class Order(TenantScopedModel):
         blank=True,
         related_name="orders",
     )
+    # Order.total is the NET amount actually charged (gross subtotal MINUS the
+    # promo discount) -- it's what Stripe collected and what a refund reverses,
+    # so it must be the discounted figure, not the sticker price. The gross is
+    # recoverable as total + discount_amount when a report needs it. OrderItem
+    # rows stay GROSS (each at its full unit_amount); the discount is carried
+    # once here as an order-level line rather than smeared across items -- this
+    # matches the Stripe coupon/receipt shape (line items at list price, a
+    # single coupon deduction) and keeps per-seat/per-item pricing honest for
+    # accounting. See payments.services.fulfill_hold, which snapshots these two
+    # fields off the Hold at fulfillment.
+    promo_code_text = models.CharField(max_length=32, blank=True, default="")
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
     total = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
@@ -268,6 +310,15 @@ class Order(TenantScopedModel):
 
     def __str__(self):
         return f"Order {self.token} ({self.status})"
+
+    @property
+    def gross_total(self):
+        """Pre-discount subtotal: `total` (the docstring above explains it's
+        NET -- what was actually charged) plus the frozen `discount_amount`
+        snapshot. The inverse of how `total` was computed at fulfillment;
+        used by the dashboard order-detail page to show a Subtotal line
+        alongside the net Total without any template-side arithmetic."""
+        return self.total + self.discount_amount
 
 
 class OrderItem(TenantScopedModel):

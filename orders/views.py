@@ -246,8 +246,21 @@ def _active_holds(organization, session_key):
 def cart_view(request):
     session_key = services.get_session_key(request)
     holds = _active_holds(request.organization, session_key)
-    items = [{"hold": h, "total": services.hold_total(h)} for h in holds]
-    grand_total = sum((item["total"] for item in items), Decimal("0.00"))
+    # `total` stays GROSS (pre-discount) for the per-item line the template
+    # shows; `discount` and `net_total` carry the promo math so the UI can show
+    # a discount line and the discounted per-hold figure. The page-level
+    # grand_total aggregates the NET (what the buyer actually pays). See
+    # services.hold_grand_total.
+    items = [
+        {
+            "hold": h,
+            "total": services.hold_total(h),
+            "discount": services.hold_discount(h),
+            "net_total": services.hold_grand_total(h),
+        }
+        for h in holds
+    ]
+    grand_total = sum((item["net_total"] for item in items), Decimal("0.00"))
     return render(request, "orders/cart.html", {"items": items, "grand_total": grand_total})
 
 
@@ -261,6 +274,49 @@ def cart_release(request):
         hold_id=request.POST.get("hold_id"),
     )
     messages.info(request, "Hold released.")
+    return redirect("cart")
+
+
+@require_tenant
+@require_POST
+def promo_apply(request):
+    """Apply a promo code to the session's targeted hold. Scoped exactly
+    like cart_release above (org + session_key + hold_id from POST) -- a
+    request can no more apply a code to another session's or another
+    tenant's hold than it can release one. Always redirects to the cart:
+    on success the hold's snapshot (Hold.promo_code_text/discount_amount)
+    now reflects the applied code, which cart_view already reads to render
+    the discount line; on failure services.apply_promo_code raises
+    PromoError with a buyer-safe message, flashed instead of a 500/404."""
+    session_key = services.get_session_key(request)
+    try:
+        hold = services.apply_promo_code(
+            organization=request.organization,
+            session_key=session_key,
+            hold_id=request.POST.get("hold_id"),
+            code=request.POST.get("code", ""),
+        )
+    except services.PromoError as exc:
+        messages.error(request, str(exc))
+        return redirect("cart")
+    messages.success(request, f"Code {hold.promo_code_text} applied.")
+    return redirect("cart")
+
+
+@require_tenant
+@require_POST
+def promo_remove(request):
+    """Clear any promo code off the session's targeted hold. Same org/
+    session/hold_id scoping as promo_apply/cart_release. Silently no-ops if
+    the hold is already gone -- see services.remove_promo_code -- so this
+    never surfaces an error for a cart that's already vanished."""
+    session_key = services.get_session_key(request)
+    services.remove_promo_code(
+        organization=request.organization,
+        session_key=session_key,
+        hold_id=request.POST.get("hold_id"),
+    )
+    messages.info(request, "Promo code removed.")
     return redirect("cart")
 
 
@@ -291,8 +347,18 @@ def checkout_view(request):
         return redirect(checkout_url)
 
     holds = _active_holds(request.organization, session_key)
-    items = [{"hold": h, "total": services.hold_total(h)} for h in holds]
-    grand_total = sum((item["total"] for item in items), Decimal("0.00"))
+    # Same gross/discount/net split as cart_view -- `total` gross for the line,
+    # `discount`/`net_total` for the promo display, page grand_total on the net.
+    items = [
+        {
+            "hold": h,
+            "total": services.hold_total(h),
+            "discount": services.hold_discount(h),
+            "net_total": services.hold_grand_total(h),
+        }
+        for h in holds
+    ]
+    grand_total = sum((item["net_total"] for item in items), Decimal("0.00"))
     return render(
         request,
         "orders/checkout.html",
@@ -428,11 +494,21 @@ def checkout_stub(request):
         _send_tickets_best_effort(order, request)
         return redirect("ticket_detail", token=order.token)
 
+    # `total` is the GROSS subtotal (unchanged); `discount` and `grand_total`
+    # carry the promo math so the simulated payment page shows the same
+    # discounted figure a real Stripe page would (grand_total is what the stub
+    # "charges" -- it fulfills via hold_grand_total the same way, below).
     total = services.hold_total(hold)
     return render(
         request,
         "orders/checkout_stub.html",
-        {"hold": hold, "total": total, "prefill_email": _prefill_email(request)},
+        {
+            "hold": hold,
+            "total": total,
+            "discount": services.hold_discount(hold),
+            "grand_total": services.hold_grand_total(hold),
+            "prefill_email": _prefill_email(request),
+        },
     )
 
 

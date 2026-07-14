@@ -33,9 +33,21 @@ from django.utils import timezone
 
 from events import pricing
 from events.models import GAAllocation
+from promotions import services as promo_services
+from promotions.services import PromoError
 from venues.models import Section, Seat
 
 from .models import Hold, HoldSeat, PerformanceSeatBlock, Ticket, default_hold_expiry
+
+# Re-exported so views (and payments) can catch a promo failure right alongside
+# HoldError without importing the promotions app directly -- the storefront
+# already does `except services.HoldError` (see orders/views.py hold_create),
+# and a promo apply flashes its buyer-safe message the same way. PromoError is
+# deliberately NOT a subclass of HoldError: making it one would force the
+# promotions app to import orders and invert the dependency (promotions must
+# stay orders-agnostic -- see promotions/services.py's module docstring). Views
+# catch it explicitly instead.
+__all__ = ["PromoError"]  # re-export marker; the import above is what matters.
 
 
 class HoldError(Exception):
@@ -475,3 +487,138 @@ def hold_total(hold):
     for hold_seat in hold.hold_seats.all():
         total += hold_seat.unit_amount
     return total
+
+
+# --- promo / discount money helpers -------------------------------------
+#
+# hold_total (above) stays the GROSS subtotal -- the pre-discount sum of every
+# line, unchanged, because existing tests and the Stripe LINE ITEMS both depend
+# on it staying gross (the hosted page shows list prices and a separate coupon
+# deduction -- see payments.services._line_items_for_hold). The discount is
+# layered on TOP via the two helpers below, so the net charge is a derived
+# figure, never something hold_total has to know about.
+
+
+def hold_currency(hold):
+    """The single charge currency for `hold` (a Stripe session, and therefore a
+    promo, is one currency). GA reads the snapshotted tier's currency; reserved
+    reads the first hold_seat's tier currency, falling back to the org's own
+    currency for a zone-priced seat (PricingZones carry no currency -- see
+    payments.services._line_items_for_hold, which resolves the per-line currency
+    the same way).
+
+    Lives HERE, not in payments, so both the promo path (apply_promo_code, which
+    must resolve the charge currency to validate a fixed-amount code against it)
+    and the Stripe path read one definition -- payments.services._hold_currency
+    is now a thin delegate to this. Kept in orders because it's pure hold data
+    with no Stripe dependency, and orders must not import payments (the money
+    path imports orders, never the reverse)."""
+    if hold.price_tier_id:
+        return hold.price_tier.currency
+    first = hold.hold_seats.select_related("price_tier").first()
+    if first is not None and first.price_tier_id:
+        return first.price_tier.currency
+    return hold.organization.currency
+
+
+def hold_discount(hold):
+    """The promo discount frozen on `hold` (Hold.discount_amount), coalescing
+    the "no code applied" null to 0.00 so callers can do plain Decimal math.
+    The single reader of the snapshot for the money paths -- the Stripe coupon
+    and fulfillment both go through here, so all agree and stay immune to a
+    later PromoCode edit (the snapshot pattern, mirroring ga_unit_amount)."""
+    return hold.discount_amount or Decimal("0.00")
+
+
+def hold_grand_total(hold):
+    """The NET amount to charge for `hold`: gross subtotal (hold_total) minus
+    the frozen discount (hold_discount), floored at 0.00 as a defensive belt --
+    validate_code already forbids a discount that reaches or exceeds the cart
+    (Stripe rejects a $0 charge), so this max() should never actually clamp; it
+    guarantees we can't emit a negative charge even if a snapshot were somehow
+    inconsistent. This is what payments.services charges and records as
+    Order.total; hold_total is deliberately left untouched as the gross."""
+    return max(hold_total(hold) - hold_discount(hold), Decimal("0.00"))
+
+
+@transaction.atomic
+def apply_promo_code(*, organization, session_key, hold_id, code):
+    """Apply promo `code` to the session's hold, snapshotting the computed
+    discount onto it (Hold.promo_code / promo_code_text / discount_amount) so
+    the money paths charge a figure frozen at THIS moment, immune to any later
+    PromoCode edit. Returns the updated Hold. Applying a new code REPLACES any
+    code already on the hold (a buyer can swap codes freely pre-payment).
+
+    Scoped exactly like every other hold-consuming call in this module
+    (release_hold_by_id, checkout_view): the hold is looked up by
+    (organization, session_key, pk, unexpired), so a request can no more apply a
+    code to another tenant's or another session's hold than it can check one
+    out. A missing/expired hold or an unknown code raises PromoError with a
+    buyer-safe message; validate_code raises PromoError for every other "can't
+    apply" reason (window, cap, minimum, currency, zero-out).
+
+    Redemption is NOT counted here -- redemption_count is bumped only when the
+    order is actually PAID (payments.services.fulfill_hold -> record_redemption),
+    so an abandoned cart never burns a code's remaining uses. The code is locked
+    (for_update) while we snapshot, serializing concurrent applies of the same
+    code (Postgres row lock; SQLite's IMMEDIATE-mode whole-DB lock does the same
+    -- the module-level locking parity note applies here too)."""
+    # `hold_id` comes straight from POST data; a missing/garbled value must
+    # read as "no such hold" (buyer-safe PromoError below), not a ValueError
+    # 500 out of the pk filter.
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        hold_id = None
+    hold = (
+        Hold.objects.select_related("price_tier")
+        .filter(
+            organization=organization,
+            session_key=session_key,
+            pk=hold_id,
+            expires_at__gt=timezone.now(),
+        )
+        .first()
+    )
+    if hold is None:
+        raise PromoError("Your selection has expired. Please make your selection again.")
+
+    promo = promo_services.get_usable_code(organization, code, for_update=True)
+    if promo is None:
+        raise PromoError("That code isn't valid.")
+
+    currency = hold_currency(hold)
+    subtotal = hold_total(hold)
+    # Raises PromoError (buyer-safe) if the code isn't usable for this cart.
+    promo_services.validate_code(promo, subtotal=subtotal, currency=currency)
+
+    # Freeze the discount NOW -- see Hold.discount_amount's docstring for why a
+    # later PromoCode edit must not move this number.
+    hold.promo_code = promo
+    hold.promo_code_text = promo.code
+    hold.discount_amount = promo_services.compute_discount(promo, subtotal)
+    hold.save(update_fields=["promo_code", "promo_code_text", "discount_amount"])
+    return hold
+
+
+@transaction.atomic
+def remove_promo_code(*, organization, session_key, hold_id):
+    """Clear any applied promo code from the session's hold (the three snapshot
+    fields). Same tenant/session scoping as apply_promo_code. Silently no-ops if
+    the hold is already gone -- removing a code off a vanished cart is not an
+    error worth surfacing to the buyer."""
+    # Same POST-data tolerance as apply_promo_code: a garbled hold_id means
+    # "nothing to clear", never a 500.
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        return
+    hold = Hold.objects.filter(
+        organization=organization, session_key=session_key, pk=hold_id
+    ).first()
+    if hold is None:
+        return
+    hold.promo_code = None
+    hold.promo_code_text = ""
+    hold.discount_amount = None
+    hold.save(update_fields=["promo_code", "promo_code_text", "discount_amount"])

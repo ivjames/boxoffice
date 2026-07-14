@@ -19,6 +19,7 @@ from orders import services as order_services
 from orders.models import Hold, Order, Payment, Ticket
 from orders.tests import OrdersFixtureMixin
 from payments import services
+from promotions.models import PromoCode
 from venues.models import Seat
 
 # The platform key every Connect call authenticates with, and a stand-in
@@ -48,6 +49,14 @@ class FakeStripeSession:
     def __init__(self, url="https://checkout.stripe.com/pay/cs_test_123"):
         self.url = url
         self.id = "cs_test_123"
+
+
+class FakeCoupon:
+    """Minimal stand-in for what stripe.Coupon.create() returns -- the promo
+    discount path attaches its `.id` to the Session's `discounts` param."""
+
+    def __init__(self, coupon_id="coupon_test_123"):
+        self.id = coupon_id
 
 
 @override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
@@ -743,3 +752,303 @@ class ZonePricingCheckoutAndFulfillmentTests(OrdersFixtureMixin, TestCase):
         self.assertEqual(unzoned_item.unit_amount, Decimal("65.00"))
         self.assertIsNotNone(unzoned_item.price_tier_id)
         self.assertIsNone(unzoned_item.pricing_zone_id)
+
+
+# --- Promo-code money path (Stripe coupon + net fee + fulfillment) ------------
+#
+# create_checkout_session mints a per-session stripe.Coupon (amount_off = the
+# hold's snapshotted discount in minor units, on the CONNECTED account) and
+# passes it as `discounts`, while line items stay GROSS; the application fee is
+# charged on the NET (post-discount) total; fulfill_hold records Order.total /
+# Payment.amount as the net and bumps redemption_count exactly once.
+
+
+def _add_promo(org, *, code="TENOFF", kind=PromoCode.Kind.FIXED, value="10", currency=""):
+    return PromoCode.objects.create(
+        organization=org, code=code, kind=kind, value=Decimal(value), currency=currency
+    )
+
+
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
+class DiscountedCheckoutSessionTests(OrdersFixtureMixin, TestCase):
+    """GA fixture: 2 x $35 tier = $70 gross. Coupon + net-fee behavior."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        enable_connect(self.org)
+        self.hold = order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=2,
+        )
+        self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
+
+    def _apply(self, **kwargs):
+        _add_promo(self.org, **kwargs)
+        return order_services.apply_promo_code(
+            organization=self.org,
+            session_key="sess-a",
+            hold_id=self.hold.pk,
+            code=kwargs.get("code", "TENOFF"),
+        )
+
+    @patch("payments.services.stripe.Coupon.create")
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_discount_mints_a_connected_account_coupon_and_attaches_it(self, mock_session, mock_coupon):
+        mock_session.return_value = FakeStripeSession()
+        mock_coupon.return_value = FakeCoupon()
+        hold = self._apply(kind=PromoCode.Kind.FIXED, value="10")  # $10 off $70
+
+        services.create_checkout_session(hold, self.request)
+
+        # Coupon minted on the CONNECTED account with the platform key, in minor
+        # units of the $10.00 discount, once-only.
+        _, ckwargs = mock_coupon.call_args
+        self.assertEqual(ckwargs["amount_off"], 1000)
+        self.assertEqual(ckwargs["currency"], "usd")
+        self.assertEqual(ckwargs["duration"], "once")
+        self.assertEqual(ckwargs["api_key"], PLATFORM_KEY)
+        self.assertEqual(ckwargs["stripe_account"], TEST_ACCT)
+
+        # And attached to the Session, whose line items are still GROSS.
+        _, skwargs = mock_session.call_args
+        self.assertEqual(skwargs["discounts"], [{"coupon": "coupon_test_123"}])
+        line_items = skwargs["line_items"]
+        self.assertEqual(len(line_items), 1)
+        self.assertEqual(line_items[0]["quantity"], 2)
+        self.assertEqual(line_items[0]["price_data"]["unit_amount"], 3500)  # gross, undiscounted
+
+    @patch("payments.services.stripe.Coupon.create")
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_percent_discount_amount_off(self, mock_session, mock_coupon):
+        mock_session.return_value = FakeStripeSession()
+        mock_coupon.return_value = FakeCoupon()
+        hold = self._apply(code="SAVE10", kind=PromoCode.Kind.PERCENT, value="10")  # 10% of $70 = $7
+
+        services.create_checkout_session(hold, self.request)
+
+        _, ckwargs = mock_coupon.call_args
+        self.assertEqual(ckwargs["amount_off"], 700)
+
+    @patch("payments.services.stripe.Coupon.create")
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_no_promo_never_calls_coupon_and_omits_discounts(self, mock_session, mock_coupon):
+        mock_session.return_value = FakeStripeSession()
+
+        services.create_checkout_session(self.hold, self.request)
+
+        mock_coupon.assert_not_called()
+        _, skwargs = mock_session.call_args
+        self.assertNotIn("discounts", skwargs)
+
+    @override_settings(PLATFORM_FEE_PERCENT=10, PLATFORM_FEE_FIXED_CENTS=0)
+    @patch("payments.services.stripe.Coupon.create")
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_application_fee_is_charged_on_the_net_total(self, mock_session, mock_coupon):
+        """10% fee on the $70 gross with a $10 discount is charged on the $60
+        NET -> 600 minor units, NOT 700. Otherwise a discounted order would
+        over-charge the fee against money that never changed hands."""
+        mock_session.return_value = FakeStripeSession()
+        mock_coupon.return_value = FakeCoupon()
+        hold = self._apply(kind=PromoCode.Kind.FIXED, value="10")
+
+        services.create_checkout_session(hold, self.request)
+
+        _, skwargs = mock_session.call_args
+        self.assertEqual(skwargs["payment_intent_data"]["application_fee_amount"], 600)
+
+
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
+class DiscountedCheckoutCurrencyTests(OrdersFixtureMixin, TestCase):
+    """The coupon amount_off must be denominated in the charge currency's minor
+    units -- whole units for a zero-decimal currency (JPY), thousandths (x1000,
+    a multiple of 10) for a three-decimal currency (KWD) -- not blindly x100."""
+
+    def _build_ga_hold_in(self, currency, tier_amount, quantity=2):
+        self.build_ga_performance()
+        enable_connect(self.org)
+        self.price_tier.currency = currency
+        self.price_tier.amount = Decimal(tier_amount)
+        self.price_tier.save(update_fields=["currency", "amount"])
+        self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
+        return order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=quantity,
+        )
+
+    def _apply(self, hold, *, value, currency):
+        _add_promo(self.org, kind=PromoCode.Kind.FIXED, value=value, currency=currency)
+        return order_services.apply_promo_code(
+            organization=self.org, session_key="sess-a", hold_id=hold.pk, code="TENOFF"
+        )
+
+    @patch("payments.services.stripe.Coupon.create")
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_zero_decimal_currency_amount_off_is_whole_units(self, mock_session, mock_coupon):
+        mock_session.return_value = FakeStripeSession()
+        mock_coupon.return_value = FakeCoupon()
+        # ¥5000 tier x2 = ¥10000 gross; ¥500 off.
+        hold = self._build_ga_hold_in("JPY", "5000.00")
+        hold = self._apply(hold, value="500", currency="JPY")
+
+        services.create_checkout_session(hold, self.request)
+
+        _, ckwargs = mock_coupon.call_args
+        self.assertEqual(ckwargs["amount_off"], 500)  # whole yen, NOT 50000
+        self.assertEqual(ckwargs["currency"], "jpy")
+
+    @patch("payments.services.stripe.Coupon.create")
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_three_decimal_currency_amount_off_is_thousandths_multiple_of_ten(
+        self, mock_session, mock_coupon
+    ):
+        mock_session.return_value = FakeStripeSession()
+        mock_coupon.return_value = FakeCoupon()
+        # 50.000 KWD tier x2 = 100 KWD gross; 5.00 KWD off.
+        hold = self._build_ga_hold_in("KWD", "50.00")
+        hold = self._apply(hold, value="5", currency="KWD")
+
+        services.create_checkout_session(hold, self.request)
+
+        _, ckwargs = mock_coupon.call_args
+        # 5.00 KWD -> 5000 thousandths (x1000, NOT x100's 500); a multiple of 10.
+        self.assertEqual(ckwargs["amount_off"], 5000)
+        self.assertEqual(ckwargs["amount_off"] % 10, 0)
+        self.assertEqual(ckwargs["currency"], "kwd")
+
+
+class DiscountedFulfillmentTests(OrdersFixtureMixin, TestCase):
+    """fulfill_hold (via the Stripe webhook AND the shared core the test path
+    uses) records the NET total, snapshots the promo onto the Order, and bumps
+    redemption_count exactly once -- and NEVER rejects a paid order for promo
+    state (soft cap)."""
+
+    def _build_discounted_ga_hold(self, *, value="10", kind=PromoCode.Kind.FIXED, quantity=2, code="TENOFF"):
+        self.build_ga_performance()  # 2 x $35 = $70 gross
+        hold = order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=quantity,
+        )
+        self.promo = _add_promo(self.org, code=code, kind=kind, value=value)
+        return order_services.apply_promo_code(
+            organization=self.org, session_key="sess-a", hold_id=hold.pk, code=code
+        )
+
+    def _session(self, hold, session_id="cs_test_promo"):
+        return {
+            "id": session_id,
+            "payment_intent": "pi_test_promo",
+            "metadata": {"hold_id": str(hold.pk), "organization_id": str(hold.organization_id)},
+            "customer_details": {"email": "buyer@example.com", "name": "Buyer Person"},
+        }
+
+    def test_webhook_fulfillment_records_net_total_and_snapshots_promo(self):
+        hold = self._build_discounted_ga_hold(value="10")  # $10 off $70 -> $60 net
+
+        order, created = services.fulfill_checkout_session(self.org, self._session(hold))
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("60.00"))  # NET, not the $70 gross
+        self.assertEqual(order.discount_amount, Decimal("10.00"))
+        self.assertEqual(order.promo_code_text, "TENOFF")
+        self.assertEqual(Payment.objects.get(order=order).amount, Decimal("60.00"))
+        self.promo.refresh_from_db()
+        self.assertEqual(self.promo.redemption_count, 1)  # bumped exactly once
+
+    def test_redemption_counted_only_once(self):
+        hold = self._build_discounted_ga_hold(value="10")
+        services.fulfill_checkout_session(self.org, self._session(hold))
+        # Replaying the same session is idempotent -> must NOT double-count.
+        services.fulfill_checkout_session(self.org, self._session(hold))
+        self.promo.refresh_from_db()
+        self.assertEqual(self.promo.redemption_count, 1)
+
+    def test_maxed_out_between_apply_and_fulfill_still_fulfills_and_increments(self):
+        """A paid order is NEVER rejected for promo state: the code may have hit
+        its cap in the window between apply-to-cart and payment, but the buyer
+        already paid the discounted amount -- fulfillment does not re-validate,
+        and still records the redemption."""
+        hold = self._build_discounted_ga_hold(value="10")
+        # The code maxes out after it was applied but before this payment lands.
+        self.promo.max_redemptions = 5
+        self.promo.redemption_count = 5
+        self.promo.save(update_fields=["max_redemptions", "redemption_count"])
+
+        order, created = services.fulfill_checkout_session(self.org, self._session(hold))
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("60.00"))
+        self.promo.refresh_from_db()
+        self.assertEqual(self.promo.redemption_count, 6)  # still incremented, over cap
+
+    def test_test_provider_path_records_net_and_increments(self):
+        """The env-gated test-checkout path shares fulfill_hold, so it nets and
+        counts identically -- driven here by calling fulfill_hold directly with
+        provider='test' (the same way that path does)."""
+        hold = self._build_discounted_ga_hold(value="10")
+
+        order = services.fulfill_hold(
+            hold,
+            buyer_email="buyer@example.com",
+            buyer_name="Buyer",
+            payment_ref="test-abc",
+            provider="test",
+        )
+
+        self.assertEqual(order.total, Decimal("60.00"))
+        self.assertEqual(order.discount_amount, Decimal("10.00"))
+        self.assertEqual(order.promo_code_text, "TENOFF")
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(payment.provider, "test")
+        self.assertEqual(payment.amount, Decimal("60.00"))
+        self.promo.refresh_from_db()
+        self.assertEqual(self.promo.redemption_count, 1)
+
+    def test_refund_reverses_the_net_amount(self):
+        """A refund reverses what Stripe actually collected -- the NET total --
+        so the refund Payment.amount == order.total (net), not the gross."""
+        hold = self._build_discounted_ga_hold(value="10")
+        order = services.fulfill_hold(
+            hold,
+            buyer_email="buyer@example.com",
+            buyer_name="Buyer",
+            payment_ref="test-abc",
+            provider="test",  # no real charge -> refund records without calling Stripe
+        )
+        self.assertEqual(order.total, Decimal("60.00"))
+
+        performed = services.refund_order(order)
+
+        self.assertTrue(performed)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDED)
+        refund_payment = Payment.objects.get(order=order, status="refunded")
+        self.assertEqual(refund_payment.amount, Decimal("60.00"))  # net, == order.total
+
+    def test_hold_without_promo_fulfills_with_zero_discount(self):
+        self.build_ga_performance()
+        hold = order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=2,
+        )
+        order, created = services.fulfill_checkout_session(self.org, self._session(hold))
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("70.00"))  # gross == net, unchanged
+        self.assertEqual(order.discount_amount, Decimal("0.00"))
+        self.assertEqual(order.promo_code_text, "")

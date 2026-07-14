@@ -666,10 +666,26 @@ def ticket_detail(request, token):
         .select_related("donation_campaign")
         .first()
     )
+    # Phase 3: a pass-PURCHASE order (performance is null, same as a
+    # donation-only order -- see Order.performance's docstring) has no
+    # tickets and no donation_item, just a single kind=PASS OrderItem. Note
+    # this reads OrderItem.Kind.PASS and OrderItem.pass_product -- both
+    # defined on orders.models itself -- so it resolves the pass's name/kind/
+    # credit_count off the related PassProduct row without this module
+    # importing the passes app (orders must not -- see passes.services'
+    # dependency-direction docstring).
+    pass_item = (
+        order.items.filter(kind=OrderItem.Kind.PASS).select_related("pass_product").first()
+    )
     return render(
         request,
         "orders/ticket_detail.html",
-        {"order": order, "ticket_rows": ticket_rows, "donation_item": donation_item},
+        {
+            "order": order,
+            "ticket_rows": ticket_rows,
+            "donation_item": donation_item,
+            "pass_item": pass_item,
+        },
     )
 
 

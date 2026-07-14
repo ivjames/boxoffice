@@ -13,6 +13,7 @@ from accounts.models import Membership
 from donations.models import DonationCampaign
 from events.models import Event, GAAllocation, Performance, PriceTier
 from orders.services import get_seating_chart
+from passes.models import PassProduct
 from promotions.models import PromoCode
 from venues.models import SeatingChart, Section, Venue
 
@@ -326,6 +327,66 @@ class PromoCodeForm(forms.ModelForm):
 # settings form against the org's one campaign row, dashboard.views.
 # donation_settings loads it via get_or_create_general_fund and saves this
 # form onto it.
+
+
+class PassProductForm(forms.ModelForm):
+    """Dashboard CRUD for passes.PassProduct -- see its docstring for the
+    kind/credit_count/valid-window/events semantics. `organization` is taken
+    explicitly (never trusted from POST data), purely to scope the `events`
+    field's queryset to this tenant's own events -- the view is what actually
+    stamps instance.organization on create (mirrors PromoCodeForm/EventForm),
+    this form never writes it itself."""
+
+    class Meta:
+        model = PassProduct
+        fields = [
+            "name", "kind", "price", "credit_count",
+            "valid_from", "valid_until", "events", "is_active",
+        ]
+        widgets = {
+            "valid_from": forms.DateTimeInput(
+                attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"
+            ),
+            "valid_until": forms.DateTimeInput(
+                attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"
+            ),
+            "events": forms.CheckboxSelectMultiple,
+        }
+        help_texts = {
+            "credit_count": "Flex passes only -- how many admission credits the pass grants. Leave blank for a season pass.",
+            "events": "Leave every box unchecked for an all-access pass (covers every event). Check specific events to restrict coverage to just those.",
+        }
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+        self.fields["valid_from"].input_formats = ["%Y-%m-%dT%H:%M"]
+        self.fields["valid_until"].input_formats = ["%Y-%m-%dT%H:%M"]
+        self.fields["events"].queryset = Event.objects.filter(organization=organization).order_by(
+            "title"
+        )
+        self.fields["events"].required = False
+        self.fields["credit_count"].required = False
+
+    def clean(self):
+        # The flex/season credit_count shape mirrors the DB's own
+        # passproduct_credit_shape CheckConstraint (PassProduct.Meta) -- caught
+        # here as a clean field error instead of a raw IntegrityError at save().
+        cleaned = super().clean()
+        kind = cleaned.get("kind")
+        credit_count = cleaned.get("credit_count")
+        price = cleaned.get("price")
+        if kind == PassProduct.Kind.FLEX:
+            if not credit_count or credit_count <= 0:
+                self.add_error("credit_count", "A flex pass needs a positive credit count.")
+        elif kind == PassProduct.Kind.SEASON:
+            if credit_count:
+                self.add_error(
+                    "credit_count", "A season pass doesn't use credits -- leave this blank."
+                )
+        if price is not None and price < 0:
+            self.add_error("price", "Price can't be negative.")
+        return cleaned
 
 
 class DonationSettingsForm(forms.ModelForm):

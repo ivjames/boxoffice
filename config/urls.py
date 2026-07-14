@@ -18,6 +18,7 @@ urlpatterns = [
     path("", include("events.urls")),
     path("", include("orders.urls")),
     path("", include("donations.urls")),
+    path("", include("passes.urls")),
     path("", include("payments.urls")),
     path("", include("dashboard.urls")),
     path("", include("scanning.urls")),

@@ -15,6 +15,50 @@
     </div>
     <p class="muted">Signed in as {{ guest.email }}.</p>
 
+    <h2>My passes</h2>
+    {% if pass_rows %}
+        <div class="pass-list">
+            {% for row in pass_rows %}
+                <div class="pass-card">
+                    <h3>{{ row.pass_purchase.product.name|default:"Pass" }}</h3>
+                    <p class="muted">
+                        {% if row.pass_purchase.kind == 'season' %}
+                            One admission per show
+                        {% else %}
+                            {{ row.pass_purchase.credit_count }} credit pass
+                        {% endif %}
+                    </p>
+                    <p>
+                        {% if row.remaining is None %}
+                            Unlimited shows
+                        {% else %}
+                            {{ row.remaining }} remaining
+                        {% endif %}
+                    </p>
+                    {% if row.pass_purchase.valid_from or row.pass_purchase.valid_until %}
+                        <p class="muted">
+                            Valid {{ row.pass_purchase.valid_from|date:"M j Y"|default:"now" }} &ndash; {{ row.pass_purchase.valid_until|date:"M j Y"|default:"…" }}
+                        </p>
+                    {% endif %}
+                    <p><span class="badge badge--{{ row.pass_purchase.status }}">{{ row.pass_purchase.get_status_display }}</span></p>
+                    {% if row.redeemable %}
+                        <form method="post" action="{% url 'pass_redeem_start' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="pass_id" value="{{ row.pass_purchase.pk }}">
+                            <button type="submit" class="button button--secondary button--sm">Redeem</button>
+                        </form>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No passes on this account yet.</p>
+            <p class="muted"><a href="{% url 'passes' %}">Browse passes</a> to buy one.</p>
+        </div>
+    {% endif %}
+
+    <h2>My tickets</h2>
     {% if order_rows %}
         <div class="order-list">
             {% for row in order_rows %}

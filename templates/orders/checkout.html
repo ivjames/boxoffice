@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load showtimes %}
+{% load showtimes pass_tags %}
 
 {% block title %}Checkout — {{ organization.name }}{% endblock %}
 
@@ -9,6 +9,7 @@
 
     {% if items %}
         {% for item in items %}
+            {% redeemable_with_pass item.hold redeeming_pass as item_pass_redeemable %}
             <div class="checkout-item">
                 <h2>{{ item.hold.performance.event.title }}</h2>
                 <p>{% showtime item.hold.performance.starts_at item.hold.performance.venue.timezone "D, M j Y — g:i A" %} · {{ item.hold.performance.venue.name }}</p>
@@ -33,28 +34,41 @@
                 <p><strong>Total: ${{ item.net_total }}</strong></p>
                 <p class="muted">Held until {{ item.hold.expires_at|date:"g:i:s A" }}.</p>
 
-                <form method="post">
-                    {% csrf_token %}
-                    <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
-                    <button type="submit" class="button">Proceed to payment</button>
-                </form>
-                <p class="muted">You'll be redirected to Stripe's secure checkout to pay — your hold stays reserved until it expires above.</p>
-
-                {% if test_checkout_enabled %}
-                    <form method="post" action="{% url 'checkout_test' %}" class="checkout-item__test-form">
+                {% if redeeming_pass and item_pass_redeemable %}
+                    <div class="cart-item__pass-redeem">
+                        <form method="post" action="{% url 'pass_redeem' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <button type="submit" class="button">Redeem with pass</button>
+                        </form>
+                    </div>
+                {% else %}
+                    {% if redeeming_pass %}
+                        <p class="muted">Not covered by your pass.</p>
+                    {% endif %}
+                    <form method="post">
                         {% csrf_token %}
                         <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
-                        <p class="muted"><strong>Test mode:</strong> skip Stripe entirely and fulfill this order with a simulated payment.</p>
-                        <div class="field">
-                            <label for="test-buyer-name-{{ item.hold.pk }}">Name</label>
-                            <input type="text" id="test-buyer-name-{{ item.hold.pk }}" name="buyer_name" autocomplete="name">
-                        </div>
-                        <div class="field">
-                            <label for="test-buyer-email-{{ item.hold.pk }}">Email</label>
-                            <input type="email" id="test-buyer-email-{{ item.hold.pk }}" name="buyer_email" autocomplete="email" value="{{ prefill_email|default:'' }}" required>
-                        </div>
-                        <button type="submit" class="button button--test">Pay (TEST — no real charge)</button>
+                        <button type="submit" class="button">Proceed to payment</button>
                     </form>
+                    <p class="muted">You'll be redirected to Stripe's secure checkout to pay — your hold stays reserved until it expires above.</p>
+
+                    {% if test_checkout_enabled %}
+                        <form method="post" action="{% url 'checkout_test' %}" class="checkout-item__test-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <p class="muted"><strong>Test mode:</strong> skip Stripe entirely and fulfill this order with a simulated payment.</p>
+                            <div class="field">
+                                <label for="test-buyer-name-{{ item.hold.pk }}">Name</label>
+                                <input type="text" id="test-buyer-name-{{ item.hold.pk }}" name="buyer_name" autocomplete="name">
+                            </div>
+                            <div class="field">
+                                <label for="test-buyer-email-{{ item.hold.pk }}">Email</label>
+                                <input type="email" id="test-buyer-email-{{ item.hold.pk }}" name="buyer_email" autocomplete="email" value="{{ prefill_email|default:'' }}" required>
+                            </div>
+                            <button type="submit" class="button button--test">Pay (TEST — no real charge)</button>
+                        </form>
+                    {% endif %}
                 {% endif %}
             </div>
         {% endfor %}

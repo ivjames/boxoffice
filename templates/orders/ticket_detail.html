@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load showtimes %}
 
-{% block title %}{% if order.performance %}Your tickets{% else %}Your donation receipt{% endif %} — {{ organization.name }}{% endblock %}
+{% block title %}{% if order.performance %}Your tickets{% elif pass_item %}Your pass{% else %}Your donation receipt{% endif %} — {{ organization.name }}{% endblock %}
 
 {% block content %}
     <a class="back-link" href="{% url 'home' %}">&larr; Back to {{ organization.name }}</a>
@@ -12,6 +12,9 @@
             {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ·
             {{ order.performance.venue.name }}
         </p>
+    {% elif pass_item %}
+        <h1>Your pass</h1>
+        <h2>{{ pass_item.pass_product.name|default:"Pass" }}</h2>
     {% else %}
         <h1>Donation receipt</h1>
         <h2>Thank you for supporting {{ organization.name }}</h2>
@@ -19,7 +22,19 @@
     <p>Order total: ${{ order.total }} · Status: <span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
     <p class="muted">Order confirmation: {{ order.token }}</p>
 
-    {% if not order.performance %}
+    {% if pass_item %}
+        <div class="pass-receipt">
+            <p><strong>{{ pass_item.pass_product.name|default:"Pass" }}</strong> — ${{ pass_item.unit_amount }}</p>
+            <p class="muted">
+                {% if pass_item.pass_product.kind == 'season' %}
+                    One admission per covered show{% if pass_item.pass_product.events.exists %} in this lineup{% else %} across the whole season{% endif %}.
+                {% else %}
+                    {{ pass_item.pass_product.credit_count }} credit{{ pass_item.pass_product.credit_count|pluralize }} — 1 credit = 1 admission to any covered show.
+                {% endif %}
+            </p>
+            <p><a class="button button--secondary" href="{% url 'guest_portal' %}">View in my account</a></p>
+        </div>
+    {% elif not order.performance %}
         <div class="donation-receipt">
             <p>
                 <strong>Donation: ${{ donation_item.unit_amount|default:order.total }}</strong>

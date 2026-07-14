@@ -53,6 +53,8 @@
             <td>
                 {% if item.kind == 'donation' %}
                     Donation{% if item.donation_campaign %} — {{ item.donation_campaign.name }}{% endif %}
+                {% elif item.kind == 'pass' %}
+                    {{ item.pass_product.get_kind_display|default:"Pass" }} — {{ item.pass_product.name|default:"Pass" }}
                 {% elif item.pricing_zone %}
                     {{ item.pricing_zone.name }}{% if item.seat %} — {{ item.seat.row_label }}{{ item.seat.number }}{% endif %}
                 {% elif item.price_tier %}
@@ -70,6 +72,18 @@
     </tbody>
 </table>
 </div>
+
+{% if pass_redemption_summary %}
+<h2>Pass redemptions</h2>
+<ul>
+    {% for group in pass_redemption_summary %}
+        <li>
+            Redeemed with {{ group.product.name|default:"a pass" }}: {{ group.count }} ticket{{ group.count|pluralize }}
+            {% if group.credits %}({{ group.credits }} credit{{ group.credits|pluralize }} used){% endif %}
+        </li>
+    {% endfor %}
+</ul>
+{% endif %}
 
 {% if tickets %}
 <h2>Tickets</h2>

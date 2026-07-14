@@ -29,6 +29,8 @@ from events.zone_export import ZoneExportError, render_zone_map
 from orders.emails import send_order_receipt
 from orders.models import Order, OrderItem, PerformanceSeatBlock, Ticket
 from orders.services import get_seating_chart, performance_seats, void_order
+from passes.models import PassProduct, PassPurchase
+from passes.services import remaining_admissions, restore_redemptions_for_order
 from payments.services import RefundError, refund_order
 from promotions.models import PromoCode
 from venues import generation
@@ -38,6 +40,7 @@ from .forms import (
     DonationSettingsForm,
     EventForm,
     InviteMemberForm,
+    PassProductForm,
     PerformanceForm,
     PriceTierForm,
     PromoCodeForm,
@@ -731,6 +734,175 @@ def donations_report(request):
     )
 
 
+# --- passes (manager+) ------------------------------------------------------
+#
+# Mirrors the promo-code CRUD shape above: flat list/create/edit, is_active
+# doubles as the archive/enable flag (a PassProduct is never hard-deleted --
+# its `purchases` PROTECT the row, same stance as PromoCode), pass_toggle is
+# the one flip-both-ways mutation endpoint. See passes.models.PassProduct's
+# docstring.
+
+
+class PassProductListView(ManagerRequiredMixin, ListView):
+    template_name = "dashboard/pass_list.html"
+    context_object_name = "products"
+
+    def get_queryset(self):
+        return PassProduct.objects.filter(organization=self.request.organization).order_by(
+            "-created_at"
+        )
+
+
+class PassProductCreateView(ManagerRequiredMixin, CreateView):
+    model = PassProduct
+    form_class = PassProductForm
+    template_name = "dashboard/pass_form.html"
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        form.instance.organization = self.request.organization
+        messages.success(self.request, f"Created “{form.instance.name}”.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_pass_list")
+
+
+class PassProductUpdateView(ManagerRequiredMixin, UpdateView):
+    form_class = PassProductForm
+    template_name = "dashboard/pass_form.html"
+
+    def get_queryset(self):
+        return PassProduct.objects.filter(organization=self.request.organization)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        messages.success(self.request, f"Updated “{form.instance.name}”.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_pass_list")
+
+
+@manager_required
+@require_POST
+def pass_toggle(request, pk):
+    """Toggle a pass product's is_active flag -- doubles as BOTH "deactivate"
+    (hide from the storefront, block new sales) and "reactivate". Mirrors
+    promo_deactivate exactly; past PassPurchases are untouched either way
+    (their entitlement terms were already snapshotted at purchase -- see
+    PassPurchase's docstring)."""
+    product = get_object_or_404(PassProduct, pk=pk, organization=request.organization)
+    product.is_active = not product.is_active
+    product.save(update_fields=["is_active"])
+    if product.is_active:
+        messages.success(request, f"Reactivated {product.name}.")
+    else:
+        messages.success(request, f"Deactivated {product.name}.")
+    return redirect("dashboard_pass_list")
+
+
+@manager_required
+def pass_report(request):
+    """Sold passes (paid PASS OrderItems), date-filterable + CSV export --
+    same shape as donations_report above -- plus OUTSTANDING LIABILITY: how
+    many admissions the theater still owes against live (ACTIVE) purchases,
+    and roughly what they're worth. A REFUNDED purchase, or a flex purchase
+    that's run dry (EXHAUSTED), owes nothing more, so only ACTIVE purchases
+    count.
+
+    flex_value_outstanding is computed in PYTHON per purchase (fine at v1
+    scale, per the roadmap note) as credits_remaining * (price paid /
+    credit_count). "Price paid" is purchase.order.total: fulfill_pass_purchase
+    always creates exactly one Order with total=product.price for a pass sale
+    (no promo/donation can attach to it), so the order total IS the price paid
+    for that pass -- no second query into its OrderItems needed."""
+    organization = request.organization
+    items = (
+        OrderItem.objects.filter(
+            organization=organization, kind=OrderItem.Kind.PASS, order__status=Order.Status.PAID
+        )
+        .select_related("order", "order__guest", "pass_product")
+        .order_by("-order__created_at")
+    )
+
+    start = request.GET.get("start", "").strip()
+    end = request.GET.get("end", "").strip()
+    if start:
+        items = items.filter(order__created_at__date__gte=start)
+    if end:
+        items = items.filter(order__created_at__date__lte=end)
+
+    total = items.aggregate(total=Sum("unit_amount"))["total"] or Decimal("0.00")
+
+    if request.GET.get("format") == "csv":
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="passes.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Date", "Order token", "Buyer email", "Product", "Amount"])
+        for item in items:
+            writer.writerow(
+                [
+                    item.order.created_at.strftime("%Y-%m-%d %H:%M"),
+                    item.order.token,
+                    item.order.buyer_email,
+                    item.pass_product.name if item.pass_product_id else "",
+                    item.unit_amount,
+                ]
+            )
+        return response
+
+    active_purchases = PassPurchase.objects.filter(
+        organization=organization, status=PassPurchase.Status.ACTIVE
+    ).select_related("order")
+
+    flex_credits_outstanding = 0
+    flex_value_outstanding = Decimal("0.00")
+    season_admissions_outstanding = 0
+    # All-events (empty covered_events) season passes are unbounded -- see
+    # passes.services.remaining_admissions's docstring -- so they're counted
+    # separately rather than folded into the numeric admissions total.
+    unbounded_season_count = 0
+    for purchase in active_purchases:
+        if purchase.kind == PassProduct.Kind.FLEX:
+            remaining = purchase.credits_remaining or 0
+            flex_credits_outstanding += remaining
+            if purchase.credit_count and remaining:
+                price_paid = purchase.order.total if purchase.order_id else Decimal("0.00")
+                flex_value_outstanding += (price_paid / purchase.credit_count) * remaining
+        else:
+            remaining = remaining_admissions(purchase)
+            if remaining is None:
+                unbounded_season_count += 1
+            else:
+                season_admissions_outstanding += remaining
+
+    flex_value_outstanding = flex_value_outstanding.quantize(Decimal("0.01"))
+
+    return render(
+        request,
+        "dashboard/pass_report.html",
+        {
+            "items": items,
+            "total": total,
+            "start": start,
+            "end": end,
+            "flex_credits_outstanding": flex_credits_outstanding,
+            "flex_value_outstanding": flex_value_outstanding,
+            "season_admissions_outstanding": season_admissions_outstanding,
+            "unbounded_season_count": unbounded_season_count,
+        },
+    )
+
+
 # --- orders (box_office+) -------------------------------------------------
 
 
@@ -786,8 +958,24 @@ class OrderDetailView(BoxOfficeRequiredMixin, DetailView):
         # tickets table. select_related covers every FK a line item's kind
         # might read from, so the template never N+1s per row.
         context["items"] = self.object.items.select_related(
-            "price_tier", "pricing_zone", "seat", "donation_campaign"
+            "price_tier", "pricing_zone", "seat", "donation_campaign", "pass_product"
         ).order_by("id")
+        # Phase 3: a REDEMPTION order (one that spent a pass on seats) carries
+        # PassRedemption rows -- summarize them per pass so the detail page can
+        # show "Redeemed with <product>: N ticket(s) (N credit(s))" without a
+        # row-per-ticket table. Grouped in Python (not a template {% regroup %}
+        # sum) since credits_used needs summing, not just counting.
+        redemption_groups = {}
+        for redemption in self.object.pass_redemptions.select_related(
+            "pass_purchase__product"
+        ):
+            group = redemption_groups.setdefault(
+                redemption.pass_purchase_id,
+                {"product": redemption.pass_purchase.product, "count": 0, "credits": 0},
+            )
+            group["count"] += 1
+            group["credits"] += redemption.credits_used
+        context["pass_redemption_summary"] = list(redemption_groups.values())
         return context
 
 
@@ -838,6 +1026,15 @@ def order_cancel(request, token):
         messages.info(request, "That order is already cancelled.")
         return redirect("dashboard_order_detail", token=order.token)
     voided = void_order(order)
+    # Phase 3: a cancelled PASS-REDEMPTION order comped its tickets against a
+    # PassPurchase's entitlement (season event slot / flex credits) -- voiding
+    # the tickets alone doesn't give that entitlement back. restore_redemptions_
+    # for_order deletes the order's PassRedemption rows (freeing a season event
+    # slot) and restores any burned flex credits. A no-op (returns 0) for the
+    # common case of an order that never redeemed a pass. dashboard may import
+    # passes; orders may not (see passes.services' dependency-direction note),
+    # which is why this lives here rather than in orders.services.void_order.
+    restore_redemptions_for_order(order)
     order.status = Order.Status.CANCELLED
     order.save(update_fields=["status"])
     messages.success(

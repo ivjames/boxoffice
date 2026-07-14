@@ -21,7 +21,7 @@ from tenants.decorators import require_tenant
 from . import services
 from .forms import GuestEmailForm
 from .models import GuestAccount, normalize_email
-from .tokens import read_login_token
+from .tokens import read_login_token, read_unsubscribe_token
 
 logger = logging.getLogger(__name__)
 
@@ -170,3 +170,74 @@ def guest_logout(request):
     services.logout_guest(request)
     messages.info(request, "Signed out.")
     return redirect("guest_portal")
+
+
+# --- marketing preferences (Phase 4 CRM) -----------------------------------
+
+
+@require_tenant
+@require_POST
+def guest_preferences(request):
+    """The portal's email-preferences toggle -- a signed-in guest flipping
+    their own marketing consent on/off. Requires sign-in (unlike
+    guest_unsubscribe below, which deliberately doesn't): this is reached
+    from inside the portal itself, not a bare emailed link, so there's
+    already a guest in the session to act on. Uses set_marketing_opt_in (the
+    two-way setter), not record_marketing_opt_in (checkout's one-way-only
+    setter) -- from the portal a guest can turn consent OFF just as easily as
+    on."""
+    guest = services.get_current_guest(request)
+    if guest is None:
+        messages.error(request, "Sign in to your account to update your email preferences.")
+        return redirect("guest_portal")
+
+    opted_in = request.POST.get("marketing_opt_in") in ("on", "1", "true")
+    services.set_marketing_opt_in(guest, opted_in)
+    if opted_in:
+        messages.success(request, "You're subscribed to email updates.")
+    else:
+        messages.success(request, "You've been unsubscribed from email updates.")
+    return redirect("guest_portal")
+
+
+@require_tenant
+def guest_unsubscribe(request):
+    """One-click unsubscribe from a campaign email's footer link (GET,
+    ?token=...) -- deliberately NOT sign-in gated, since the whole point of a
+    one-click unsubscribe link is that it works straight from the inbox with
+    no portal session. Also handles the confirm page's re-subscribe control
+    (POST, same token carried in a hidden field) so re-subscribing doesn't
+    need sign-in either -- the token is exactly as much proof of "this is
+    that guest's inbox" as the original unsubscribe click was.
+
+    read_unsubscribe_token re-checks the token's embedded org id against
+    request.organization (see guests.tokens), so a token minted for one
+    theater can't be replayed to opt a guest in/out on another. An invalid,
+    expired, or wrong-tenant token renders the same template's friendly
+    "invalid" branch rather than a 404/500 -- a stale or mis-copied link is
+    an expected case for an email footer link, not an error."""
+    token = request.POST.get("token", "") if request.method == "POST" else request.GET.get("token", "")
+    guest_id = read_unsubscribe_token(token, request.organization)
+    guest = None
+    if guest_id is not None:
+        guest = (
+            GuestAccount.objects.for_organization(request.organization)
+            .filter(pk=guest_id)
+            .first()
+        )
+
+    if guest is None:
+        return render(request, "guests/unsubscribe_confirm.html", {"invalid": True})
+
+    if request.method == "POST":
+        services.set_marketing_opt_in(guest, True)
+        resubscribed = True
+    else:
+        services.set_marketing_opt_in(guest, False)
+        resubscribed = False
+
+    return render(
+        request,
+        "guests/unsubscribe_confirm.html",
+        {"guest": guest, "token": token, "resubscribed": resubscribed},
+    )

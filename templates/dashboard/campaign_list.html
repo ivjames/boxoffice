@@ -1,0 +1,41 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Email campaigns — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_audience_list' %}">&larr; Audience</a>
+<div class="dash-header">
+    <h1>Email campaigns</h1>
+    <a class="button" href="{% url 'dashboard_campaign_create' %}">New campaign</a>
+</div>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Subject</th>
+            <th>Segment</th>
+            <th>Status</th>
+            <th>Recipients</th>
+            <th>Created</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for campaign in campaigns %}
+        <tr>
+            <td><a href="{% url 'dashboard_campaign_detail' campaign.pk %}">{{ campaign.name }}</a></td>
+            <td>{{ campaign.subject }}</td>
+            <td>{{ campaign.get_segment_kind_display }}</td>
+            <td><span class="badge badge--{{ campaign.status }}">{{ campaign.get_status_display }}</span></td>
+            <td>{{ campaign.recipient_count }}</td>
+            <td>{{ campaign.created_at|date:"M j Y" }}</td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="6" class="muted">No campaigns yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}{% if object %}Edit campaign{% else %}New campaign{% endif %} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_campaign_list' %}">&larr; All campaigns</a>
+<h1>{% if object %}Edit {{ object.name }}{% else %}New campaign{% endif %}</h1>
+
+<form method="post" class="dash-form">
+    {% csrf_token %}
+    {% for field in form %}
+        <div class="field">
+            {{ field.label_tag }}
+            {{ field }}
+            {{ field.errors }}
+            {% if field.help_text %}<p class="muted">{{ field.help_text }}</p>{% endif %}
+        </div>
+    {% endfor %}
+    <button type="submit" class="button">Save</button>
+</form>
+
+{% if object %}
+    <div class="campaign-preview" x-data="{ count: null, loading: true }"
+         x-init="fetch('{% url 'dashboard_campaign_preview' object.pk %}').then(r => r.json()).then(d => { count = d.count; loading = false })">
+        <p class="muted">
+            Recipients for the currently saved segment:
+            <strong><span x-show="loading">…</span><span x-show="!loading" x-text="count"></span></strong>
+            <button type="button" class="button button--secondary button--sm"
+                    @click="loading = true; fetch('{% url 'dashboard_campaign_preview' object.pk %}').then(r => r.json()).then(d => { count = d.count; loading = false })">
+                Refresh
+            </button>
+        </p>
+        <p class="muted">Save any segment changes above first — this counts the segment as last saved.</p>
+    </div>
+    <p><a href="{% url 'dashboard_campaign_detail' object.pk %}">Back to campaign — send a test, or send it for real.</a></p>
+{% endif %}
+{% endblock %}

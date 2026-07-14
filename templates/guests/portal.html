@@ -15,6 +15,25 @@
     </div>
     <p class="muted">Signed in as {{ guest.email }}.</p>
 
+    <div class="portal-preferences">
+        <p class="muted">
+            Email updates:
+            {% if guest.marketing_opt_in %}
+                <span class="badge badge--active">Subscribed</span>
+            {% else %}
+                <span class="badge badge--inactive">Not subscribed</span>
+            {% endif %}
+        </p>
+        <form method="post" action="{% url 'guest_preferences' %}" class="portal-preferences__form">
+            {% csrf_token %}
+            <label>
+                <input type="checkbox" name="marketing_opt_in" value="on" {% if guest.marketing_opt_in %}checked{% endif %}>
+                Email me about upcoming shows and events
+            </label>
+            <button type="submit" class="button button--secondary button--sm">Save preferences</button>
+        </form>
+    </div>
+
     <h2>My passes</h2>
     {% if pass_rows %}
         <div class="pass-list">

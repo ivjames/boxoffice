@@ -74,6 +74,13 @@ def _send_receipt_best_effort(order, request):
         )
 
 
+def _marketing_opt_in(request):
+    """Whether the buyer ticked the marketing-consent checkbox on this POST
+    (templates/orders/_marketing_consent.html) -- mirrors orders.views.
+    _marketing_opt_in / donations.views._marketing_opt_in exactly."""
+    return request.POST.get("marketing_opt_in") in ("on", "1", "true")
+
+
 def _active_products(organization):
     return pass_services.get_active_products(organization)
 
@@ -120,6 +127,8 @@ def pass_detail(request, pk):
                 },
             )
 
+        marketing_opt_in = _marketing_opt_in(request)
+
         if not organization.stripe_charges_enabled and settings.ENABLE_TEST_CHECKOUT:
             order = payment_services.fulfill_pass_purchase(
                 organization,
@@ -128,6 +137,7 @@ def pass_detail(request, pk):
                 buyer_name=buyer_name,
                 provider="test",
                 payment_ref=f"test-{uuid.uuid4()}",
+                marketing_opt_in=marketing_opt_in,
             )
             _sign_in_buyer(order, request)
             _send_receipt_best_effort(order, request)
@@ -139,6 +149,7 @@ def pass_detail(request, pk):
             buyer_email=buyer_email,
             buyer_name=buyer_name,
             request=request,
+            marketing_opt_in=marketing_opt_in,
         )
         return redirect(url)
 
@@ -183,6 +194,7 @@ def pass_stub(request):
             buyer_name=buyer_name,
             provider="stub",
             payment_ref=f"stub-{uuid.uuid4()}",
+            marketing_opt_in=_marketing_opt_in(request),
         )
         _sign_in_buyer(order, request)
         _send_receipt_best_effort(order, request)

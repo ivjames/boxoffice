@@ -49,6 +49,7 @@
                     <form method="post">
                         {% csrf_token %}
                         <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                        {% include "orders/_marketing_consent.html" %}
                         <button type="submit" class="button">Proceed to payment</button>
                     </form>
                     <p class="muted">You'll be redirected to Stripe's secure checkout to pay — your hold stays reserved until it expires above.</p>
@@ -66,6 +67,7 @@
                                 <label for="test-buyer-email-{{ item.hold.pk }}">Email</label>
                                 <input type="email" id="test-buyer-email-{{ item.hold.pk }}" name="buyer_email" autocomplete="email" value="{{ prefill_email|default:'' }}" required>
                             </div>
+                            {% include "orders/_marketing_consent.html" %}
                             <button type="submit" class="button button--test">Pay (TEST — no real charge)</button>
                         </form>
                     {% endif %}

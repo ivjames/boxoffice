@@ -1413,6 +1413,30 @@ textarea:focus-visible,
     margin: 0;
 }
 
+.portal-preferences {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 0.5rem 0 1rem;
+}
+
+.portal-preferences__form {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.portal-preferences__form label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.portal-preferences__form input[type="checkbox"] {
+    width: auto;
+}
+
 .order-list {
     display: flex;
     flex-direction: column;
@@ -1736,6 +1760,57 @@ table.dash-table th {
     margin-top: 0.25rem;
     color: #b91c1c;
     font-size: 0.8125rem;
+}
+
+/* Buyer marketing-consent checkbox (Phase 4 CRM), reused across checkout/
+   donate/pass buyer forms (templates/orders/_marketing_consent.html) --
+   generic (no per-form scoping needed) so it drops into any of them.
+   Overrides each host form's own `input { width: 100% }` rule (e.g.
+   .checkout-item__test-form, .checkout-stub__form), which would otherwise
+   stretch a checkbox input to fill the row. */
+.field--checkbox label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-weight: 400;
+}
+
+.field--checkbox input[type="checkbox"] {
+    width: auto;
+    max-width: none;
+    flex: 0 0 auto;
+}
+
+/* Campaign detail's action row (edit / send test / send now) -- same
+   inline-form idea as .dash-table__actions form, just at the page level
+   instead of inside a table cell. */
+.campaign-detail__actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 1rem 0;
+}
+
+.campaign-detail__actions form {
+    display: inline;
+}
+
+.campaign-detail__counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    list-style: none;
+    padding: 0;
+    margin: 0.5rem 0 1.5rem;
+}
+
+.campaign-preview {
+    margin: 1rem 0;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: #f9fafb;
 }
 
 .sr-only {

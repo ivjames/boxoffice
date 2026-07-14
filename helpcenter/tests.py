@@ -118,6 +118,66 @@ class BuiltinTests(TestCase):
         self.assertTrue(a.get_category_display())
         self.assertTrue(a.is_builtin)
 
+    # -- Phase 5: patron-revenue help content -------------------------------
+
+    def _slugs(self, membership_role):
+        membership = Membership(role=membership_role)
+        return {a.slug for a in builtins.readable_by(membership)}
+
+    def test_new_revenue_builtins_present_and_unique(self):
+        slugs = [a.slug for a in builtins.BUILTIN_ARTICLES]
+        self.assertEqual(len(slugs), len(set(slugs)))
+        for slug in (
+            "discounts-and-promo-codes",
+            "season-and-flex-passes",
+            "donations",
+            "email-marketing-and-your-audience",
+            "getting-your-box-office-set-up",
+        ):
+            self.assertIn(slug, slugs)
+
+    def test_manager_sees_all_new_revenue_guides(self):
+        slugs = self._slugs(Membership.Role.MANAGER)
+        self.assertIn("discounts-and-promo-codes", slugs)
+        self.assertIn("season-and-flex-passes", slugs)
+        self.assertIn("donations", slugs)
+        self.assertIn("email-marketing-and-your-audience", slugs)
+        self.assertIn("getting-your-box-office-set-up", slugs)
+
+    def test_box_office_does_not_see_manager_only_revenue_guides(self):
+        # All five revenue guides describe manager-gated authoring workflows
+        # (promo/pass/donation/campaign CRUD, box-office setup), so none are
+        # box_office-visible -- a box-office reader would be pointed at pages
+        # their role can't open.
+        slugs = self._slugs(Membership.Role.BOX_OFFICE)
+        self.assertNotIn("discounts-and-promo-codes", slugs)
+        self.assertNotIn("season-and-flex-passes", slugs)
+        self.assertNotIn("donations", slugs)
+        self.assertNotIn("email-marketing-and-your-audience", slugs)
+        self.assertNotIn("getting-your-box-office-set-up", slugs)
+
+    def test_scanner_does_not_see_new_revenue_guides(self):
+        slugs = self._slugs(Membership.Role.SCANNER)
+        for slug in (
+            "discounts-and-promo-codes",
+            "season-and-flex-passes",
+            "donations",
+            "email-marketing-and-your-audience",
+            "getting-your-box-office-set-up",
+        ):
+            self.assertNotIn(slug, slugs)
+
+    def test_new_revenue_builtins_are_not_public(self):
+        public_slugs = {a.slug for a in builtins.public()}
+        for slug in (
+            "discounts-and-promo-codes",
+            "season-and-flex-passes",
+            "donations",
+            "email-marketing-and-your-audience",
+            "getting-your-box-office-set-up",
+        ):
+            self.assertNotIn(slug, public_slugs)
+
 
 class StaffHelpViewTests(StaffFixtureMixin, TestCase):
     def setUp(self):
@@ -146,6 +206,28 @@ class StaffHelpViewTests(StaffFixtureMixin, TestCase):
         resp = self.client.get("/dashboard/help/", HTTP_HOST=self.host)
         self.assertContains(resp, "Ops runbook")
         self.assertContains(resp, "Manage articles")
+
+    def test_manager_sees_new_patron_revenue_guides_rendered(self):
+        user, _ = self.make_staff(self.org, Membership.Role.MANAGER)
+        self.client.force_login(user)
+        resp = self.client.get("/dashboard/help/", HTTP_HOST=self.host)
+        self.assertContains(resp, "Discounts &amp; promo codes")
+        self.assertContains(resp, "Season &amp; flex passes")
+        self.assertContains(resp, "Donations")
+        self.assertContains(resp, "Email marketing &amp; your audience")
+        self.assertContains(resp, "Getting your box office set up")
+
+    def test_box_office_does_not_see_manager_only_revenue_guides_rendered(self):
+        # The revenue guides all describe manager-gated authoring flows, so a
+        # box-office login sees none of them (it would otherwise be pointed at
+        # pages its role can't open).
+        user, _ = self.make_staff(self.org, Membership.Role.BOX_OFFICE)
+        self.client.force_login(user)
+        resp = self.client.get("/dashboard/help/", HTTP_HOST=self.host)
+        self.assertNotContains(resp, "Discounts &amp; promo codes")
+        self.assertNotContains(resp, "Season &amp; flex passes")
+        self.assertNotContains(resp, "Donations")
+        self.assertNotContains(resp, "Email marketing &amp; your audience")
 
     def test_scanner_cannot_open_manage(self):
         user, _ = self.make_staff(self.org, Membership.Role.SCANNER)

@@ -80,6 +80,121 @@ def overview(request):
     now = timezone.now()
     show_revenue = request.membership.can_manage_events()
 
+    # "Getting started" checklist -- manager+ only (same gate as show_revenue
+    # above: box office runs the door, it doesn't need setup nagging). Each
+    # step is a cheap .exists() query (~10 total), fine for a manager landing
+    # page. Auto-hides once every step is done (show_onboarding below) so an
+    # established theater never sees it again.
+    onboarding_steps = []
+    onboarding_done_count = 0
+    onboarding_total = 0
+    onboarding_all_done = False
+    if show_revenue:
+        onboarding_steps = [
+            {
+                "key": "stripe",
+                "label": "Connect Stripe payments",
+                "done": organization.stripe_charges_enabled,
+                # connect_start (payments.views) begins Stripe onboarding, but
+                # it's @billing_required + @require_POST -- narrower than this
+                # card's manager+ gate. So instead of a plain link (which would
+                # 403 a non-billing manager), the step carries a POST action the
+                # TEMPLATE renders as a button ONLY for a can_manage_billing
+                # user (owners); everyone else sees plain text. The billing role
+                # is exactly who can actually finish Stripe, so this is the one
+                # actionable path the setup guide points them to.
+                "url": None,
+                "post_url": reverse("connect_start"),
+                "help": "Payouts run through Stripe Connect.",
+            },
+            {
+                "key": "venue",
+                "label": "Add a venue",
+                "done": Venue.objects.filter(organization=organization).exists(),
+                "url": reverse("dashboard_venue_list"),
+                "help": "Where your shows happen.",
+            },
+            {
+                "key": "seating_chart",
+                "label": "Build a seating chart",
+                "done": SeatingChart.objects.filter(organization=organization).exists(),
+                "url": reverse("dashboard_venue_list"),
+                "help": "Charts live under each venue.",
+            },
+            {
+                "key": "event",
+                "label": "Create an event",
+                "done": Event.objects.filter(organization=organization).exists(),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "publish_event",
+                "label": "Publish an event",
+                "done": Event.objects.filter(
+                    organization=organization, status=Event.Status.PUBLISHED
+                ).exists(),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "price_tier",
+                "label": "Set ticket prices",
+                # A reserved-seat show can be priced entirely with PricingZones
+                # (the pricing resolver checks zones first and a seat needs no
+                # PriceTier at all), so a zone-only theater has prices set even
+                # with zero PriceTier rows -- count either as evidence, or this
+                # step would stay undone and the card never auto-hide for them.
+                "done": (
+                    PriceTier.objects.filter(organization=organization).exists()
+                    or PricingZone.objects.filter(organization=organization).exists()
+                ),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "performance_on_sale",
+                "label": "Put a performance on sale",
+                "done": Performance.objects.filter(
+                    organization=organization, status=Performance.Status.PUBLISHED
+                ).exists(),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "teammate",
+                "label": "Invite a teammate",
+                "done": Membership.objects.filter(organization=organization)
+                .exclude(role=Membership.Role.OWNER)
+                .exists(),
+                "url": reverse("dashboard_team"),
+                "help": "",
+            },
+            {
+                "key": "branding",
+                "label": "Add your logo & colors",
+                "done": bool(organization.logo),
+                # No dedicated branding/settings page in the dashboard yet.
+                "url": None,
+                "help": "",
+            },
+            {
+                "key": "first_sale",
+                "label": "Make your first sale",
+                "done": Order.objects.filter(
+                    organization=organization, status=Order.Status.PAID
+                ).exists(),
+                # Informational only -- happens on the storefront, not a
+                # dashboard page.
+                "url": None,
+                "help": "Happens on your storefront once you're set up.",
+            },
+        ]
+        onboarding_total = len(onboarding_steps)
+        onboarding_done_count = sum(1 for step in onboarding_steps if step["done"])
+        onboarding_all_done = onboarding_done_count == onboarding_total
+    show_onboarding = show_revenue and not onboarding_all_done
+
     upcoming_performances = list(
         Performance.objects.filter(organization=organization, starts_at__gte=now)
         .select_related("event", "venue")
@@ -165,6 +280,11 @@ def overview(request):
         "gross_revenue": gross_revenue,
         "event_revenue_rows": event_revenue_rows,
         "performance_rows": performance_rows,
+        "show_onboarding": show_onboarding,
+        "onboarding_steps": onboarding_steps,
+        "onboarding_done_count": onboarding_done_count,
+        "onboarding_total": onboarding_total,
+        "onboarding_all_done": onboarding_all_done,
     }
     return render(request, "dashboard/overview.html", context)
 

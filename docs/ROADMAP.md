@@ -5,8 +5,12 @@ Where this comes from: a competitive read against Ludus. Our core ticketing engi
 solid — arguably more carefully engineered than the competition's. What loses a
 competitive theater sale is breadth of the **patron-revenue suite**: discounts,
 passes, donations, and turning ticket buyers into a mailing list. This document is
-the build order for closing those gaps. All five areas are greenfield today (no
-models, stubs, or TODOs exist for any of them).
+the build order for closing those gaps.
+
+**Status: all five phases shipped to `staging`/beta.** Phase 1 promo codes, Phase 2
+order foundation + donations, Phase 3 season/flex passes, Phase 4 CRM + email
+marketing, and Phase 5 support posture are each merged (one PR per phase). The
+per-phase sections below are the design of record.
 
 Sequencing is dependency-optimized rather than strictly business-priority ordered:
 donations and passes both need a "non-ticket line item" concept (`Order.performance`
@@ -18,7 +22,7 @@ on beta.boxo.show before promotion to `main`.
 
 ---
 
-## Phase 1 — Discounts / promo codes  *(in progress)*
+## Phase 1 — Discounts / promo codes  *(shipped)*
 
 Table-stakes; the cheapest high-value add. One new `promotions` app plus wiring
 into the existing money path.
@@ -95,7 +99,7 @@ already linked to every order at fulfillment) is the anchor.
 - Dashboard: audience list with purchase history, campaign composer + preview,
   sent/failed counts.
 
-## Phase 5 — Support posture (docs & self-serve, the anti-Ludus trade)
+## Phase 5 — Support posture (docs & self-serve, the anti-Ludus trade)  *(shipped)*
 
 We won't match Ludus's human support as a lean product, so lean the opposite
 way: great self-serve, and price as the trade.

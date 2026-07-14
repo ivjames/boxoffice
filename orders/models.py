@@ -120,6 +120,32 @@ class Hold(TenantScopedModel):
     # coalesces null -> 0.00 for the money math.
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
+    # --- Donation add-on snapshot (same freeze-at-add-time pattern as
+    # ga_unit_amount / discount_amount above) -------------------------------
+    # A buyer may add ONE donation to the cart alongside their tickets
+    # (orders.services.set_hold_donation). The gift amount is SNAPSHOTTED here
+    # at add time so the money paths (hold_grand_total, the Stripe donation
+    # line item, fulfill_hold's donation OrderItem) all charge/record the amount
+    # the buyer chose, immune to anything else. Null = no donation added
+    # (distinct from a $0.00 gift, which set_hold_donation forbids);
+    # hold_donation() coalesces null -> 0.00 for the math. The donation rides
+    # OUTSIDE the promo/discount math on purpose -- see hold_grand_total's
+    # docstring for why (a donation is never discounted and never counts toward
+    # a code's min_order).
+    donation_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Which campaign the pending gift is for -- provenance carried onto the
+    # fulfilled OrderItem.donation_campaign. Nullable + SET_NULL for the same
+    # reason as OrderItem.donation_campaign: retiring/deleting a campaign
+    # mid-checkout must never orphan or delete a hold. donation_amount stays the
+    # authoritative snapshot regardless.
+    donation_campaign = models.ForeignKey(
+        "donations.DonationCampaign",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="holds",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta(TenantScopedModel.Meta):
@@ -237,7 +263,19 @@ class Order(TenantScopedModel):
         CANCELLED = "cancelled", "Cancelled"
         REFUNDED = "refunded", "Refunded"
 
-    performance = models.ForeignKey(Performance, on_delete=models.PROTECT, related_name="orders")
+    # Phase 2 foundation makes this NULLABLE (was a required FK). v1 RULE: set
+    # whenever the order has any ticket line, so a ticketed order still points
+    # at its performance exactly as before; NULL only for a donation-only order
+    # (and, later, a pass-only order) -- kinds of order that reserve no
+    # performance inventory and mint no ticket, so there's no performance to
+    # attach. Kept PROTECT: a performance with real (ticketed) orders still
+    # can't be hard-deleted out from under them; a donation-only order simply
+    # isn't among what PROTECT guards, because its FK is null. Every read of
+    # order.performance on a money/inventory path is now guarded for null (see
+    # order_services.void_order's GA branch and payments.services).
+    performance = models.ForeignKey(
+        Performance, on_delete=models.PROTECT, null=True, blank=True, related_name="orders"
+    )
     buyer_email = models.EmailField()
     buyer_name = models.CharField(max_length=255, blank=True)
     # The buyer's per-theater guest account, keyed off buyer_email at
@@ -322,23 +360,62 @@ class Order(TenantScopedModel):
 
 
 class OrderItem(TenantScopedModel):
-    """Phase C note: `price_tier` is nullable -- a zone-priced reserved
-    seat's OrderItem carries `pricing_zone` instead (whichever of the two
-    priced it at fulfillment time, mirroring HoldSeat -- see its docstring,
-    including why there's deliberately no check constraint requiring one of
-    them to stay set: a zone can be deleted after an order that used it was
-    already fulfilled, SET_NULLing `pricing_zone` here too). `unit_amount`
-    is copied verbatim from the fulfilled HoldSeat's own snapshot
+    """A single line on an Order. Phase 2 foundation makes OrderItem
+    poly-KIND: `kind` discriminates a ticket line from a donation line (and,
+    later, a pass line -- see docs/ROADMAP.md Phase 2/3), so donations and
+    passes ride the same Order/OrderItem/Payment shape the ticket money path
+    already uses instead of bolting on parallel tables. A donation line
+    carries kind=DONATION, quantity=1, unit_amount=<gift amount>, and no
+    seat/tier/zone; a ticket line is kind=TICKET (the historical default,
+    which is why the column db_default-backfills existing rows to "ticket").
+
+    Phase C note: `price_tier` is nullable -- a zone-priced reserved seat's
+    OrderItem carries `pricing_zone` instead (whichever of the two priced it
+    at fulfillment time, mirroring HoldSeat -- see its docstring, including
+    why there's deliberately no check constraint requiring one of them to
+    stay set: a zone can be deleted after an order that used it was already
+    fulfilled, SET_NULLing `pricing_zone` here too). `unit_amount` is copied
+    verbatim from the fulfilled HoldSeat's own snapshot
     (payments.services._fulfill_reserved), so an OrderItem's price is fixed
     the moment payment is fulfilled and immune to any later zone/template/
-    tier edit -- or the zone/tier being deleted outright."""
+    tier edit -- or the zone/tier being deleted outright. A donation line's
+    unit_amount is the same kind of snapshot: the gift amount frozen at
+    fulfillment, never re-read off the campaign."""
+
+    class Kind(models.TextChoices):
+        TICKET = "ticket", "Ticket"
+        DONATION = "donation", "Donation"
+        PASS = "pass", "Pass"
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
+    # What this line IS. Defaults to TICKET both in Python and at the DB
+    # level (db_default) so the column backfills every pre-Phase-2 row to
+    # "ticket" without a data migration -- same pattern as
+    # Organization.infra_status (tenants/models.py). Widening to PASS is a
+    # Phase 3 concern; the choice is defined now so the discriminator is
+    # stable from the foundation on.
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.TICKET, db_default="ticket"
+    )
     price_tier = models.ForeignKey(
         PriceTier, on_delete=models.PROTECT, null=True, blank=True, related_name="order_items"
     )
     pricing_zone = models.ForeignKey(
         PricingZone, on_delete=models.SET_NULL, null=True, blank=True, related_name="order_items"
+    )
+    # Provenance for a donation line: which campaign the gift was for. Nullable
+    # + SET_NULL for exactly the same reason as pricing_zone above -- a campaign
+    # can be retired/deleted after an order that gave to it was already
+    # fulfilled, and that must never orphan or delete the paid OrderItem.
+    # unit_amount stays the AUTHORITATIVE snapshot of what was charged; this FK
+    # is provenance/reporting only and is never re-read to derive the amount
+    # (same stance as price_tier/pricing_zone for a ticket line).
+    donation_campaign = models.ForeignKey(
+        "donations.DonationCampaign",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="order_items",
     )
     seat = models.ForeignKey(
         Seat, on_delete=models.PROTECT, null=True, blank=True, related_name="order_items"
@@ -350,6 +427,9 @@ class OrderItem(TenantScopedModel):
         indexes = TenantScopedModel.Meta.indexes + [models.Index(fields=["order"])]
 
     def __str__(self):
+        if self.kind == self.Kind.DONATION:
+            label = self.donation_campaign.name if self.donation_campaign_id else "Donation"
+            return f"Donation ${self.unit_amount} ({label}) on order {self.order_id}"
         if self.pricing_zone_id:
             label = self.pricing_zone.name
         elif self.price_tier_id:

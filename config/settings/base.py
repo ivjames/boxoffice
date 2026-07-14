@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "venues",
     "events",
     "promotions",
+    "donations",
     "orders",
     "payments",
     "dashboard",
@@ -97,6 +98,9 @@ TEMPLATES = [
                 "guests.context_processors.guest_account",
                 # Exposes the session's live cart item count as `cart_count`.
                 "orders.context_processors.cart_count",
+                # Exposes whether donations are switched on for this tenant as
+                # `donations_enabled` (nav link, cart add-on gating).
+                "donations.context_processors.donation_nav",
                 # Exposes settings.ENABLE_TEST_CHECKOUT as `test_checkout_enabled`.
                 "payments.context_processors.test_checkout_enabled",
                 # Exposes the resolved deploy stamp as `app_version` (footer).

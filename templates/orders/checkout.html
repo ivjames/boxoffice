@@ -26,10 +26,11 @@
                 {% if item.discount %}
                     <p>Subtotal: ${{ item.total }}</p>
                     <p class="muted">&minus; ${{ item.discount }} ({{ item.hold.promo_code_text }})</p>
-                    <p><strong>Total: ${{ item.net_total }}</strong></p>
-                {% else %}
-                    <p><strong>Total: ${{ item.total }}</strong></p>
                 {% endif %}
+                {% if item.donation %}
+                    <p class="muted">Donation: ${{ item.donation }}</p>
+                {% endif %}
+                <p><strong>Total: ${{ item.net_total }}</strong></p>
                 <p class="muted">Held until {{ item.hold.expires_at|date:"g:i:s A" }}.</p>
 
                 <form method="post">

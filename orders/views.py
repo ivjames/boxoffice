@@ -10,6 +10,8 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from donations.models import DonationCampaign
+from donations.services import get_or_create_general_fund
 from events.models import Performance, PriceTier
 from guests import services as guest_services
 from guests.models import normalize_email
@@ -17,8 +19,8 @@ from payments import services as payment_services
 from tenants.decorators import require_tenant
 
 from . import services
-from .emails import send_ticket_email
-from .models import Hold, Order
+from .emails import send_order_receipt
+from .models import Hold, Order, OrderItem
 from .qr import ticket_qr_data_uri
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,20 @@ def _parse_int(value, default=0):
         return default
 
 
+def _donation_suggested_amounts(organization):
+    """The org's active donation campaign's quick-pick preset amounts (see
+    DonationCampaign.suggested_amount_list), or [] if none is active. Reads
+    only -- never calls get_or_create_general_fund -- so rendering the cart
+    page never has the side effect of switching donations on for an org that
+    hasn't (mirrors donations.context_processors.donation_nav)."""
+    campaign = (
+        DonationCampaign.objects.filter(organization=organization, is_active=True)
+        .order_by("created_at", "pk")
+        .first()
+    )
+    return campaign.suggested_amount_list() if campaign is not None else []
+
+
 def _sign_in_buyer(order, request):
     """Sign the buyer into their guest account on this same request, so a
     first-time buyer lands on their tickets already able to see (and later
@@ -58,23 +74,24 @@ def _sign_in_buyer(order, request):
 
 
 def _send_tickets_best_effort(order, request):
-    """Email the tickets, but NEVER let a mail-transport failure 500 the
-    buyer. By the time this runs the Order is already paid and created and
-    the tickets are viewable at /tickets/<order.token>/ regardless of email,
-    so a broken/unconfigured SMTP host must not turn a successful purchase
-    into an error page.
+    """Email the order's receipt (tickets, or -- Phase 2 -- a donation
+    acknowledgment for a donation-only order; see emails.send_order_receipt's
+    dispatch), but NEVER let a mail-transport failure 500 the buyer. By the
+    time this runs the Order is already paid and created and viewable at
+    /tickets/<order.token>/ regardless of email, so a broken/unconfigured
+    SMTP host must not turn a successful purchase into an error page.
 
     The stub and test checkout paths call this from the buyer's own "Pay"
     request (unlike the real Stripe path, which emails from the webhook, out
     of band) -- so without this guard an SMTP failure surfaces as a 500 on
     the buyer's click even though nothing about the order failed. We log it
-    and move on; the buyer still lands on their tickets."""
+    and move on; the buyer still lands on their receipt."""
     try:
-        send_ticket_email(order, request)
+        send_order_receipt(order, request)
     except Exception:
         logger.exception(
-            "Ticket email for order %s could not be sent; the order is still "
-            "valid and viewable at its tickets page.",
+            "Receipt email for order %s could not be sent; the order is still "
+            "valid and viewable at its receipt page.",
             order.pk,
         )
 
@@ -256,12 +273,27 @@ def cart_view(request):
             "hold": h,
             "total": services.hold_total(h),
             "discount": services.hold_discount(h),
+            "donation": services.hold_donation(h),
             "net_total": services.hold_grand_total(h),
         }
         for h in holds
     ]
     grand_total = sum((item["net_total"] for item in items), Decimal("0.00"))
-    return render(request, "orders/cart.html", {"items": items, "grand_total": grand_total})
+    return render(
+        request,
+        "orders/cart.html",
+        {
+            "items": items,
+            "grand_total": grand_total,
+            # Preset "add a donation" buttons -- the org's single active
+            # campaign's quick-pick amounts (DonationCampaign.suggested_
+            # amount_list). Read-only lookup, same "don't lazily create the
+            # campaign on every page view" stance as donation_nav (this page
+            # only renders the donation block at all when donations_enabled
+            # is already True, i.e. an active campaign already exists).
+            "donation_suggested_amounts": _donation_suggested_amounts(request.organization),
+        },
+    )
 
 
 @require_tenant
@@ -321,6 +353,53 @@ def promo_remove(request):
 
 
 @require_tenant
+@require_POST
+def donation_add(request):
+    """Add (or replace) a donation on the session's targeted hold -- the cart
+    add-on's "add a donation" control. Scoped exactly like promo_apply above
+    (org + session_key + hold_id from POST): a request can no more add a
+    donation to another session's or another tenant's hold than it can apply
+    a promo code to one. Always gives to the org's single general-fund
+    campaign (donations.services.get_or_create_general_fund -- v1 has no
+    per-campaign picker on the storefront, see DonationCampaign's docstring).
+    Always redirects to the cart: on success the hold's snapshot
+    (Hold.donation_amount) now reflects the gift, which cart_view already
+    reads to render the donation line; on failure services.set_hold_donation
+    raises HoldError with a buyer-safe message, flashed instead of a 500/404."""
+    session_key = services.get_session_key(request)
+    try:
+        services.set_hold_donation(
+            organization=request.organization,
+            session_key=session_key,
+            hold_id=request.POST.get("hold_id"),
+            amount=request.POST.get("amount"),
+            campaign=get_or_create_general_fund(request.organization),
+        )
+    except services.HoldError as exc:
+        messages.error(request, str(exc))
+        return redirect("cart")
+    messages.success(request, "Thank you for adding a donation.")
+    return redirect("cart")
+
+
+@require_tenant
+@require_POST
+def donation_remove(request):
+    """Clear any donation off the session's targeted hold. Same org/session/
+    hold_id scoping as donation_add/promo_remove. Silently no-ops if the hold
+    is already gone -- see services.clear_hold_donation -- so this never
+    surfaces an error for a cart that's already vanished."""
+    session_key = services.get_session_key(request)
+    services.clear_hold_donation(
+        organization=request.organization,
+        session_key=session_key,
+        hold_id=request.POST.get("hold_id"),
+    )
+    messages.info(request, "Donation removed.")
+    return redirect("cart")
+
+
+@require_tenant
 def checkout_view(request):
     """GET renders the current hold(s) as an order summary. POST creates a
     Stripe Checkout Session for the targeted hold (using THIS org's own
@@ -354,6 +433,7 @@ def checkout_view(request):
             "hold": h,
             "total": services.hold_total(h),
             "discount": services.hold_discount(h),
+            "donation": services.hold_donation(h),
             "net_total": services.hold_grand_total(h),
         }
         for h in holds
@@ -506,6 +586,7 @@ def checkout_stub(request):
             "hold": hold,
             "total": total,
             "discount": services.hold_discount(hold),
+            "donation": services.hold_donation(hold),
             "grand_total": services.hold_grand_total(hold),
             "prefill_email": _prefill_email(request),
         },
@@ -533,9 +614,21 @@ def checkout_success(request):
     # this success landing is where we sign the buyer into their guest
     # account for the Stripe path -- once the order has appeared. If it hasn't
     # yet (webhook lag), the template auto-refreshes and we catch it next load.
+    donation_item = None
     if order is not None:
         _sign_in_buyer(order, request)
-    return render(request, "orders/checkout_success.html", {"order": order})
+        if order.performance_id is None:
+            # Donation-only order: no performance/tickets to show, just the
+            # gift amount + its campaign's acknowledgment blurb (see the
+            # template's kind-aware branch).
+            donation_item = (
+                order.items.filter(kind=OrderItem.Kind.DONATION)
+                .select_related("donation_campaign")
+                .first()
+            )
+    return render(
+        request, "orders/checkout_success.html", {"order": order, "donation_item": donation_item}
+    )
 
 
 @require_tenant
@@ -550,7 +643,12 @@ def checkout_cancel(request):
 def ticket_detail(request, token):
     """Public order confirmation + tickets page, scoped to this org and
     reachable only by the unguessable Order.token (no login required) --
-    the link sent in the ticket email and shown on /checkout/success/."""
+    the link sent in the ticket email and shown on /checkout/success/.
+
+    Also the receipt page for a donation-only order (Order.performance null,
+    no Ticket rows): the template renders a "Donation receipt" section
+    instead of the ticket grid when `ticket_rows` is empty -- see
+    donation_item below, which carries the campaign acknowledgment blurb."""
     order = get_object_or_404(
         Order.objects.for_organization(request.organization).select_related(
             "performance", "performance__event", "performance__venue"
@@ -563,7 +661,16 @@ def ticket_detail(request, token):
         )
     )
     ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket)} for ticket in tickets]
-    return render(request, "orders/ticket_detail.html", {"order": order, "ticket_rows": ticket_rows})
+    donation_item = (
+        order.items.filter(kind=OrderItem.Kind.DONATION)
+        .select_related("donation_campaign")
+        .first()
+    )
+    return render(
+        request,
+        "orders/ticket_detail.html",
+        {"order": order, "ticket_rows": ticket_rows, "donation_item": donation_item},
+    )
 
 
 @require_tenant
@@ -572,7 +679,12 @@ def ticket_pdf(request, token):
     ticket_detail: scoped to this org and reachable only by the unguessable
     Order.token (the token IS the capability -- no login required), so the
     link works straight from the confirmation page, the ticket email, and
-    the guest portal alike. See orders.pdf.render_order_pdf."""
+    the guest portal alike. See orders.pdf.render_order_pdf.
+
+    404s for a donation-only order -- there's nothing to render (no tickets,
+    no performance, no seats); ticket_detail's own template hides the PDF
+    link for exactly this case (see its guard), this is the server-side
+    backstop against a stale/guessed link."""
     from django.http import HttpResponse
 
     from .pdf import render_order_pdf
@@ -583,6 +695,8 @@ def ticket_pdf(request, token):
         ),
         token=token,
     )
+    if not order.tickets.exists():
+        raise Http404("This order has no tickets to download.")
     pdf_bytes = render_order_pdf(order)
     response = HttpResponse(pdf_bytes, content_type="application/pdf")
     response["Content-Disposition"] = f'attachment; filename="tickets-{order.token}.pdf"'

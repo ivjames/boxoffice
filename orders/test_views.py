@@ -380,7 +380,7 @@ class GAHoldFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         hold = Hold.objects.get(performance=self.performance)
 
         with patch(
-            "orders.views.send_ticket_email", side_effect=Exception("smtp unavailable")
+            "orders.views.send_order_receipt", side_effect=Exception("smtp unavailable")
         ):
             resp = self.post_as(
                 "org-a",
@@ -809,3 +809,444 @@ class PromoApplyRemoveViewTests(TenantClientMixin, StorefrontFixtureMixin, TestC
     def test_remove_get_not_allowed(self):
         resp = self.get_as("org-a", "/cart/promo/remove/")
         self.assertEqual(resp.status_code, 405)
+
+
+class DonationCartFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """orders.views.donation_add / donation_remove -- the cart-facing wrapper
+    around orders.services.set_hold_donation/clear_hold_donation (the money-
+    path logic is covered in orders/test_services.py by the other test
+    agent). These tests exercise the HTTP layer: scoping, messages,
+    redirects, and that cart/checkout/stub totals reflect a donation."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue, capacity=5)
+
+    def _hold(self):
+        self.post_as(
+            "org-a",
+            f"/performances/{self.performance.pk}/hold/",
+            {"price_tier": self.tier.pk, "quantity": 2},
+        )
+        return Hold.objects.get(performance=self.performance)
+
+    def _make_promo(self, code="SAVE10", **kwargs):
+        defaults = dict(
+            organization=self.org,
+            code=code,
+            kind=PromoCode.Kind.PERCENT,
+            value=Decimal("10.00"),
+        )
+        defaults.update(kwargs)
+        return PromoCode.objects.create(**defaults)
+
+    def test_add_valid_donation_snapshots_it_and_redirects_to_cart(self):
+        hold = self._hold()
+
+        resp = self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "15"})
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertEqual(hold.donation_amount, Decimal("15.00"))
+        self.assertIsNotNone(hold.donation_campaign_id)
+
+        from donations.models import DonationCampaign
+
+        campaign = DonationCampaign.objects.get(organization=self.org)
+        self.assertEqual(hold.donation_campaign_id, campaign.pk)
+
+    def test_add_creates_general_fund_campaign_if_none_exists(self):
+        from donations.models import DonationCampaign
+
+        self.assertFalse(DonationCampaign.objects.filter(organization=self.org).exists())
+        hold = self._hold()
+        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
+        self.assertEqual(DonationCampaign.objects.filter(organization=self.org).count(), 1)
+
+    def test_add_bad_amount_shows_error_and_leaves_hold_undonated(self):
+        hold = self._hold()
+
+        resp = self.post_as(
+            "org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "not-a-number"}, follow=True
+        )
+
+        self.assertRedirects(resp, "/cart/")
+        self.assertContains(resp, "valid donation amount")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
+
+    def test_add_zero_amount_rejected(self):
+        hold = self._hold()
+        resp = self.post_as(
+            "org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "0"}, follow=True
+        )
+        self.assertContains(resp, "greater than zero")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
+
+    def test_add_over_cap_amount_rejected(self):
+        hold = self._hold()
+        resp = self.post_as(
+            "org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "999999"}, follow=True
+        )
+        self.assertContains(resp, "capped")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
+
+    def test_remove_clears_the_snapshot(self):
+        hold = self._hold()
+        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "20"})
+        hold.refresh_from_db()
+        self.assertIsNotNone(hold.donation_amount)
+
+        resp = self.post_as("org-a", "/cart/donation/remove/", {"hold_id": hold.pk})
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
+        self.assertIsNone(hold.donation_campaign_id)
+
+    def test_remove_on_an_already_gone_hold_does_not_crash(self):
+        resp = self.post_as("org-a", "/cart/donation/remove/", {"hold_id": 999999})
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+
+    def test_add_to_another_sessions_hold_is_rejected_not_a_crash(self):
+        hold = self._hold()
+
+        other_client = self.client_class()
+        resp = other_client.post(
+            "/cart/donation/add/",
+            {"hold_id": hold.pk, "amount": "10"},
+            HTTP_HOST=host_for("org-a"),
+        )
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
+
+    def test_add_to_another_tenants_hold_is_rejected_not_a_crash(self):
+        hold = self._hold()
+        self.build_org("org-b")
+
+        resp = self.post_as("org-b", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
+
+        self.assertRedirects(resp, "/cart/", fetch_redirect_response=False)
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
+
+    def test_add_get_not_allowed(self):
+        resp = self.get_as("org-a", "/cart/donation/add/")
+        self.assertEqual(resp.status_code, 405)
+
+    def test_remove_get_not_allowed(self):
+        resp = self.get_as("org-a", "/cart/donation/remove/")
+        self.assertEqual(resp.status_code, 405)
+
+    def test_cart_shows_donation_line_and_grand_total_includes_it(self):
+        hold = self._hold()  # 2 x $20 = $40
+        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
+
+        resp = self.get_as("org-a", "/cart/")
+        self.assertContains(resp, "Donation: $10.00")
+        self.assertContains(resp, "$50.00")  # net total: 40 tickets + 10 donation
+
+    def test_checkout_get_totals_include_donation(self):
+        hold = self._hold()
+        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
+
+        resp = self.get_as("org-a", "/checkout/")
+        self.assertContains(resp, "Donation: $10.00")
+        self.assertContains(resp, "$50.00")
+
+    def test_stub_checkout_get_totals_include_donation(self):
+        hold = self._hold()
+        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
+
+        resp = self.get_as("org-a", f"/checkout/stub/?hold_id={hold.pk}")
+        self.assertContains(resp, "Donation: $10.00")
+        self.assertContains(resp, "$50.00")
+
+    def test_stub_checkout_post_fulfills_ticket_order_with_donation_item(self):
+        from orders.models import Order, OrderItem
+
+        hold = self._hold()
+        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
+
+        resp = self.post_as(
+            "org-a",
+            "/checkout/stub/",
+            {"hold_id": hold.pk, "buyer_name": "Donor", "buyer_email": "donor@example.com"},
+        )
+
+        order = Order.objects.get()
+        self.assertRedirects(resp, f"/tickets/{order.token}/", fetch_redirect_response=False)
+        self.assertEqual(order.total, Decimal("50.00"))  # 40 tickets + 10 donation
+        self.assertEqual(order.tickets.count(), 2)
+        donation_items = order.items.filter(kind=OrderItem.Kind.DONATION)
+        self.assertEqual(donation_items.count(), 1)
+        self.assertEqual(donation_items.get().unit_amount, Decimal("10.00"))
+
+    def test_promo_and_donation_coexist_net_tickets_plus_full_donation(self):
+        """A promo discounts only the ticket subtotal; the donation rides on
+        top untouched -- orders.services.hold_grand_total's contract."""
+        from orders.models import Order
+
+        hold = self._hold()  # 2 x $20 = $40 gross
+        self._make_promo()  # 10% off
+        self.post_as("org-a", "/cart/promo/apply/", {"hold_id": hold.pk, "code": "SAVE10"})
+        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
+
+        resp = self.post_as(
+            "org-a",
+            "/checkout/stub/",
+            {"hold_id": hold.pk, "buyer_email": "buyer@example.com"},
+        )
+        order = Order.objects.get()
+        self.assertRedirects(resp, f"/tickets/{order.token}/", fetch_redirect_response=False)
+        # net tickets = 40 - 4 (10%) = 36, plus the full $10 donation = $46
+        self.assertEqual(order.total, Decimal("46.00"))
+
+
+class DonationOnlyOrderRenderingTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """A donation-only Order (Order.performance null, no Ticket rows) must
+    render everywhere a ticketed order does, without 500ing."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+
+    def _donation_order(self, amount=Decimal("25.00")):
+        from donations.services import get_or_create_general_fund
+        from orders.models import Order, OrderItem
+
+        campaign = get_or_create_general_fund(self.org)
+        order = Order.objects.create(
+            organization=self.org,
+            performance=None,
+            buyer_email="donor@example.com",
+            buyer_name="Donor Person",
+            total=amount,
+            status=Order.Status.PAID,
+        )
+        OrderItem.objects.create(
+            organization=self.org,
+            order=order,
+            kind=OrderItem.Kind.DONATION,
+            quantity=1,
+            unit_amount=amount,
+            donation_campaign=campaign,
+        )
+        return order
+
+    def test_ticket_detail_renders_donation_receipt_without_500(self):
+        order = self._donation_order()
+        resp = self.get_as("org-a", f"/tickets/{order.token}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Donation receipt")
+        self.assertContains(resp, "$25.00")
+
+    def test_checkout_success_shows_donation_thank_you_without_500(self):
+        from orders.models import Order
+
+        order = self._donation_order()
+        order.stripe_checkout_session_id = "cs_test_donation"
+        order.save(update_fields=["stripe_checkout_session_id"])
+
+        resp = self.get_as("org-a", "/checkout/success/?session_id=cs_test_donation")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Thank you for your donation")
+
+    def test_ticket_pdf_404s_on_donation_only_order(self):
+        order = self._donation_order()
+        resp = self.get_as("org-a", f"/tickets/{order.token}/pdf/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_dashboard_order_list_and_detail_render_without_500(self):
+        # Sanity check at the storefront layer that nothing about a donation-
+        # only order's shape (null performance) breaks Django's template
+        # resolution for the public receipt page under a second campaign-less
+        # variant (donation_campaign None).
+        from orders.models import Order, OrderItem
+
+        order = Order.objects.create(
+            organization=self.org,
+            performance=None,
+            buyer_email="donor2@example.com",
+            total=Decimal("5.00"),
+            status=Order.Status.PAID,
+        )
+        OrderItem.objects.create(
+            organization=self.org,
+            order=order,
+            kind=OrderItem.Kind.DONATION,
+            quantity=1,
+            unit_amount=Decimal("5.00"),
+            donation_campaign=None,
+        )
+        resp = self.get_as("org-a", f"/tickets/{order.token}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "$5.00")
+
+
+class DonateStandaloneFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """The standalone /donate/ page: 404 when donations aren't on, stub
+    fulfillment end to end when they are (donations/views.py, owned by this
+    agent -- donations/tests.py itself belongs to the other test agent)."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+
+    def test_404s_when_donations_not_enabled(self):
+        resp = self.get_as("org-a", "/donate/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_renders_when_enabled(self):
+        from donations.services import get_or_create_general_fund
+
+        get_or_create_general_fund(self.org)
+        resp = self.get_as("org-a", "/donate/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Support")
+
+    def test_post_without_stripe_connected_redirects_to_stub(self):
+        from donations.services import get_or_create_general_fund
+
+        get_or_create_general_fund(self.org)
+        self.assertFalse(self.org.stripe_charges_enabled)
+
+        resp = self.post_as(
+            "org-a",
+            "/donate/",
+            {"amount": "25", "buyer_name": "Donor", "buyer_email": "donor@example.com"},
+        )
+        self.assertRedirects(
+            resp, "http://org-a.localhost/donate/stub/?amount=25.00", fetch_redirect_response=False
+        )
+
+    def test_post_with_stripe_connected_creates_checkout_session(self):
+        from unittest.mock import patch
+
+        from donations.services import get_or_create_general_fund
+        from orders.models import Order
+
+        get_or_create_general_fund(self.org)
+        self.org.stripe_account_id = "acct_org_a"
+        self.org.stripe_charges_enabled = True
+        self.org.save(update_fields=["stripe_account_id", "stripe_charges_enabled"])
+
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = type(
+                "FakeSession", (), {"url": "https://checkout.stripe.com/pay/cs_test_donate"}
+            )()
+            resp = self.post_as(
+                "org-a", "/donate/", {"amount": "25", "buyer_email": "donor@example.com"}
+            )
+
+        self.assertRedirects(
+            resp, "https://checkout.stripe.com/pay/cs_test_donate", fetch_redirect_response=False
+        )
+        self.assertEqual(Order.objects.count(), 0)  # fulfillment is the webhook's job
+
+    def test_post_bad_amount_shows_error_and_creates_no_order(self):
+        from donations.services import get_or_create_general_fund
+        from orders.models import Order
+
+        get_or_create_general_fund(self.org)
+        resp = self.post_as(
+            "org-a", "/donate/", {"amount": "0", "buyer_email": "donor@example.com"}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "greater than zero")
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_post_requires_email(self):
+        from donations.services import get_or_create_general_fund
+        from orders.models import Order
+
+        get_or_create_general_fund(self.org)
+        resp = self.post_as("org-a", "/donate/", {"amount": "25"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Enter an email")
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_stub_get_404s_when_donations_not_enabled(self):
+        resp = self.get_as("org-a", "/donate/stub/?amount=25")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_stub_get_renders_simulated_payment_page(self):
+        from donations.services import get_or_create_general_fund
+
+        get_or_create_general_fund(self.org)
+        resp = self.get_as("org-a", "/donate/stub/?amount=25")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Simulated payment")
+        self.assertContains(resp, "$25")
+
+    def test_stub_post_fulfills_donation_order_without_stripe(self):
+        from donations.services import get_or_create_general_fund
+        from orders.models import Order, OrderItem, Payment
+
+        campaign = get_or_create_general_fund(self.org)
+        resp = self.post_as(
+            "org-a",
+            "/donate/stub/",
+            {"amount": "25", "buyer_name": "Donor", "buyer_email": "donor@example.com"},
+        )
+
+        order = Order.objects.get()
+        self.assertRedirects(resp, f"/tickets/{order.token}/", fetch_redirect_response=False)
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertIsNone(order.performance)
+        self.assertEqual(order.total, Decimal("25.00"))
+        self.assertEqual(order.tickets.count(), 0)
+        item = order.items.get()
+        self.assertEqual(item.kind, OrderItem.Kind.DONATION)
+        self.assertEqual(item.donation_campaign_id, campaign.pk)
+        self.assertEqual(Payment.objects.get(order=order).provider, "stub")
+        # The buyer is signed in on this same request, like the ticket stub path.
+        self.assertEqual(self.client.session.get("guest_account_id") is not None, True)
+
+    def test_stub_post_requires_email(self):
+        from donations.services import get_or_create_general_fund
+        from orders.models import Order
+
+        get_or_create_general_fund(self.org)
+        resp = self.post_as("org-a", "/donate/stub/", {"amount": "25"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Enter an email")
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_stub_404s_once_stripe_connected(self):
+        from donations.services import get_or_create_general_fund
+
+        get_or_create_general_fund(self.org)
+        self.org.stripe_account_id = "acct_org_a"
+        self.org.stripe_charges_enabled = True
+        self.org.save(update_fields=["stripe_account_id", "stripe_charges_enabled"])
+
+        resp = self.get_as("org-a", "/donate/stub/?amount=25")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_post_with_test_checkout_enabled_and_no_stripe_fulfills_immediately(self):
+        """When ENABLE_TEST_CHECKOUT is on and the org can't charge yet, the
+        main /donate/ POST direct-fulfills (skipping even the stub redirect
+        hop) with provider="test" -- mirrors orders.views.checkout_test's own
+        env-gated shortcut for the ticket path."""
+        from django.test import override_settings
+
+        from donations.services import get_or_create_general_fund
+        from orders.models import Order, Payment
+
+        get_or_create_general_fund(self.org)
+        self.assertFalse(self.org.stripe_charges_enabled)
+
+        with override_settings(ENABLE_TEST_CHECKOUT=True):
+            resp = self.post_as(
+                "org-a",
+                "/donate/",
+                {"amount": "25", "buyer_name": "Donor", "buyer_email": "donor@example.com"},
+            )
+
+        order = Order.objects.get()
+        self.assertRedirects(resp, f"/tickets/{order.token}/", fetch_redirect_response=False)
+        self.assertEqual(order.total, Decimal("25.00"))
+        self.assertEqual(Payment.objects.get(order=order).provider, "test")

@@ -45,6 +45,17 @@ urlpatterns = [
         views.promo_deactivate,
         name="dashboard_promo_toggle",
     ),
+    # -- donations (manager+) ------------------------------------------------
+    path(
+        "dashboard/donations/",
+        views.donations_report,
+        name="dashboard_donation_report",
+    ),
+    path(
+        "dashboard/donations/settings/",
+        views.donation_settings,
+        name="dashboard_donation_settings",
+    ),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),

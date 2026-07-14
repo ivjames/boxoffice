@@ -22,6 +22,10 @@
         <a href="{% url 'dashboard_promo_list' %}"
            class="{% if url_name == 'dashboard_promo_list' or url_name == 'dashboard_promo_create' or url_name == 'dashboard_promo_update' %}is-active{% endif %}">Promos</a>
     {% endif %}
+    {% if request.membership.can_manage_events %}
+        <a href="{% url 'dashboard_donation_report' %}"
+           class="{% if url_name == 'dashboard_donation_report' or url_name == 'dashboard_donation_settings' %}is-active{% endif %}">Donations</a>
+    {% endif %}
     {% if request.membership.can_sell_tickets %}
         <a href="{% url 'dashboard_order_list' %}"
            class="{% if url_name == 'dashboard_order_list' or url_name == 'dashboard_order_detail' %}is-active{% endif %}">Orders</a>

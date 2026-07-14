@@ -14,13 +14,15 @@ from django.db import IntegrityError, transaction
 from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
+from donations.models import DonationCampaign
 from events.models import PricingZone, ZoneTemplate
 from orders import services as order_services
-from orders.models import Hold, Order, Payment, Ticket
+from orders.models import Hold, Order, OrderItem, Payment, Ticket
 from orders.tests import OrdersFixtureMixin
 from payments import services
 from promotions.models import PromoCode
 from venues.models import Seat
+from venues.tests import make_org
 
 # The platform key every Connect call authenticates with, and a stand-in
 # connected-account id for the test org. create_checkout_session passes the
@@ -1052,3 +1054,519 @@ class DiscountedFulfillmentTests(OrdersFixtureMixin, TestCase):
         self.assertEqual(order.total, Decimal("70.00"))  # gross == net, unchanged
         self.assertEqual(order.discount_amount, Decimal("0.00"))
         self.assertEqual(order.promo_code_text, "")
+
+
+# --- Donation add-on money path (line item, mixed fulfillment, standalone) ----
+#
+# The Phase 2 donation add-on: _line_items_for_hold appends one GROSS donation
+# line on both GA and reserved paths; fulfill_hold records a kind=DONATION
+# OrderItem alongside the tickets with a donation-inclusive Order.total (GA
+# allocation bumped by tickets only); fulfill_donation turns a standalone
+# (hold-less) gift into a null-performance paid Order; create_donation_checkout_
+# session builds the standalone Stripe session; fulfill_checkout_session's
+# donation metadata branch fulfills / replays / rejects malformed data; and a
+# refund reverses a donation-only order cleanly.
+
+
+def _add_donation(org, hold, *, amount="20", campaign=None):
+    return order_services.set_hold_donation(
+        organization=org,
+        session_key=hold.session_key,
+        hold_id=hold.pk,
+        amount=amount,
+        campaign=campaign,
+    )
+
+
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
+class DonationLineItemTests(OrdersFixtureMixin, TestCase):
+    """_line_items_for_hold appends exactly one GROSS donation line -- quantity
+    1, correct minor units, name "Donation — <org name>" -- on BOTH the GA and
+    reserved paths, and adds no extra line when the hold carries no gift."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        enable_connect(self.org)
+        self.campaign = DonationCampaign.objects.create(organization=self.org)
+        self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
+
+    def _ga_hold(self):
+        return order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=2,
+        )
+
+    def _line_items(self, hold):
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = FakeStripeSession()
+            services.create_checkout_session(hold, self.request)
+            _, kwargs = mock_create.call_args
+        return kwargs["line_items"]
+
+    def test_no_donation_means_no_extra_line(self):
+        line_items = self._line_items(self._ga_hold())
+        self.assertEqual(len(line_items), 1)  # ticket line only
+
+    def test_ga_path_appends_one_gross_donation_line(self):
+        hold = self._ga_hold()
+        hold = _add_donation(self.org, hold, amount="20", campaign=self.campaign)
+
+        line_items = self._line_items(hold)
+
+        self.assertEqual(len(line_items), 2)  # ticket + donation
+        donation_line = line_items[-1]
+        self.assertEqual(donation_line["quantity"], 1)
+        self.assertEqual(donation_line["price_data"]["unit_amount"], 2000)  # $20.00 -> 2000
+        self.assertIsInstance(donation_line["price_data"]["unit_amount"], int)
+        self.assertEqual(donation_line["price_data"]["currency"], "usd")
+        self.assertEqual(
+            donation_line["price_data"]["product_data"]["name"],
+            f"Donation — {self.org.name}",
+        )
+
+    def test_reserved_path_appends_one_gross_donation_line(self):
+        # A fresh reserved org (build_reserved_performance would clash with the
+        # GA "roxy" org already built in setUp, so use a separate one).
+        from venues.models import SeatingChart, Section, Venue
+        from events.models import Event, Performance, PriceTier
+
+        org = make_org("reserved-org")
+        enable_connect(org)
+        venue = Venue.objects.create(organization=org, name="Hall")
+        event = Event.objects.create(organization=org, title="Reserved Show", slug="rshow")
+        perf = Performance.objects.create(
+            organization=org,
+            event=event,
+            venue=venue,
+            starts_at=timezone.now(),
+            seating_mode=Performance.SeatingMode.RESERVED,
+        )
+        chart = SeatingChart.objects.create(organization=org, venue=venue, name="Standard")
+        section = Section.objects.create(organization=org, chart=chart, name="Orchestra")
+        seat = Seat.objects.create(organization=org, section=section, row_label="A", number="1")
+        PriceTier.objects.create(
+            organization=org, section=section, name="Orchestra", amount=Decimal("65.00")
+        )
+        campaign = DonationCampaign.objects.create(organization=org)
+        hold = order_services.set_reserved_hold(
+            organization=org,
+            performance=perf,
+            session_key="sess-r",
+            user=None,
+            seat_ids=[seat.id],
+        )
+        hold = order_services.set_hold_donation(
+            organization=org, session_key="sess-r", hold_id=hold.pk, amount="15", campaign=campaign
+        )
+        request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(org.subdomain))
+
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = FakeStripeSession()
+            services.create_checkout_session(hold, request)
+            _, kwargs = mock_create.call_args
+
+        line_items = kwargs["line_items"]
+        self.assertEqual(len(line_items), 2)  # one seat + donation
+        donation_line = line_items[-1]
+        self.assertEqual(donation_line["quantity"], 1)
+        self.assertEqual(donation_line["price_data"]["unit_amount"], 1500)  # $15.00
+        self.assertEqual(donation_line["price_data"]["product_data"]["name"], f"Donation — {org.name}")
+
+
+class MixedTicketAndDonationFulfillmentTests(OrdersFixtureMixin, TestCase):
+    """fulfill_hold on a cart with tickets AND a donation: N tickets + the
+    ticket OrderItem + one kind=DONATION OrderItem; Order.total is donation-
+    inclusive; GAAllocation.sold is bumped by the TICKETS only (a donation
+    reserves no inventory); Payment.amount == total."""
+
+    def setUp(self):
+        self.build_ga_performance()  # 2 x $35 = $70 tickets
+        self.campaign = DonationCampaign.objects.create(organization=self.org)
+        self.hold = order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=2,
+        )
+        _add_donation(self.org, self.hold, amount="20", campaign=self.campaign)
+
+    def _session(self, hold, session_id="cs_test_mixed"):
+        return {
+            "id": session_id,
+            "payment_intent": "pi_test_mixed",
+            "metadata": {"hold_id": str(hold.pk), "organization_id": str(hold.organization_id)},
+            "customer_details": {"email": "buyer@example.com", "name": "Buyer Person"},
+        }
+
+    def test_mixed_order_shape_totals_and_inventory(self):
+        order, created = services.fulfill_checkout_session(self.org, self._session(self.hold))
+
+        self.assertTrue(created)
+        # Donation-inclusive total: 2 x $35 + $20 gift = $90.
+        self.assertEqual(order.total, Decimal("90.00"))
+        self.assertEqual(Payment.objects.get(order=order).amount, Decimal("90.00"))
+
+        # One ticket line + one donation line.
+        self.assertEqual(order.items.count(), 2)
+        ticket_item = order.items.get(kind=OrderItem.Kind.TICKET)
+        self.assertEqual(ticket_item.quantity, 2)
+        self.assertEqual(ticket_item.unit_amount, Decimal("35.00"))
+
+        donation_item = order.items.get(kind=OrderItem.Kind.DONATION)
+        self.assertEqual(donation_item.quantity, 1)
+        self.assertEqual(donation_item.unit_amount, Decimal("20.00"))
+        self.assertEqual(donation_item.donation_campaign_id, self.campaign.pk)
+        self.assertIsNone(donation_item.seat_id)
+        self.assertIsNone(donation_item.price_tier_id)
+
+        # Two tickets minted (donation mints none), and GA sold bumped by 2 only.
+        self.assertEqual(order.tickets.count(), 2)
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 2)
+        self.assertFalse(Hold.objects.filter(pk=self.hold.pk).exists())
+
+
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
+class PromoPlusDonationMoneyPathTests(OrdersFixtureMixin, TestCase):
+    """Promo and donation together: the coupon's amount_off is the TICKET
+    discount only, the application fee base is hold_grand_total (net tickets +
+    donation), and Order.total reconciles at fulfillment."""
+
+    def setUp(self):
+        self.build_ga_performance()  # 2 x $35 = $70 ticket gross
+        enable_connect(self.org)
+        self.campaign = DonationCampaign.objects.create(organization=self.org)
+        self.hold = order_services.set_ga_hold(
+            organization=self.org,
+            performance=self.performance,
+            session_key="sess-a",
+            user=None,
+            price_tier=self.price_tier,
+            quantity=2,
+        )
+        _add_donation(self.org, self.hold, amount="20", campaign=self.campaign)
+        PromoCode.objects.create(
+            organization=self.org, code="TENOFF", kind=PromoCode.Kind.FIXED, value=Decimal("10")
+        )
+        self.hold = order_services.apply_promo_code(
+            organization=self.org, session_key="sess-a", hold_id=self.hold.pk, code="TENOFF"
+        )
+        self.request = RequestFactory().post("/checkout/", HTTP_HOST=host_for(self.org.subdomain))
+
+    @override_settings(PLATFORM_FEE_PERCENT=10, PLATFORM_FEE_FIXED_CENTS=0)
+    @patch("payments.services.stripe.Coupon.create")
+    @patch("payments.services.stripe.checkout.Session.create")
+    def test_coupon_discounts_only_tickets_and_fee_is_on_the_net_grand_total(
+        self, mock_session, mock_coupon
+    ):
+        mock_session.return_value = FakeStripeSession()
+        mock_coupon.return_value = FakeCoupon()
+
+        services.create_checkout_session(self.hold, self.request)
+
+        # Coupon amount_off = the $10 TICKET discount only (never the gift).
+        _, ckwargs = mock_coupon.call_args
+        self.assertEqual(ckwargs["amount_off"], 1000)
+
+        _, skwargs = mock_session.call_args
+        # Two gross line items: $70 tickets + $20 donation.
+        line_items = skwargs["line_items"]
+        self.assertEqual(len(line_items), 2)
+        self.assertEqual(line_items[0]["price_data"]["unit_amount"], 3500)  # gross ticket
+        self.assertEqual(line_items[-1]["price_data"]["unit_amount"], 2000)  # gross donation
+        # Fee base = hold_grand_total = (70 - 10) + 20 = $80 -> 10% -> 800 minor.
+        self.assertEqual(skwargs["payment_intent_data"]["application_fee_amount"], 800)
+
+    def test_fulfillment_total_reconciles_net_tickets_plus_donation(self):
+        session = {
+            "id": "cs_test_promo_donation",
+            "payment_intent": "pi_test_pd",
+            "metadata": {
+                "hold_id": str(self.hold.pk),
+                "organization_id": str(self.org.pk),
+            },
+            "customer_details": {"email": "buyer@example.com", "name": "Buyer"},
+        }
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("80.00"))  # (70 - 10) + 20
+        self.assertEqual(order.discount_amount, Decimal("10.00"))
+        self.assertEqual(order.promo_code_text, "TENOFF")
+        self.assertEqual(Payment.objects.get(order=order).amount, Decimal("80.00"))
+        donation_item = order.items.get(kind=OrderItem.Kind.DONATION)
+        self.assertEqual(donation_item.unit_amount, Decimal("20.00"))
+
+
+class FulfillDonationTests(OrdersFixtureMixin, TestCase):
+    """fulfill_donation turns a standalone (hold-less) gift into a paid Order
+    with performance=None, exactly one kind=DONATION OrderItem, a linked guest,
+    and a succeeded Payment -- no tickets minted and no GA inventory touched."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        self.campaign = DonationCampaign.objects.create(organization=self.org)
+
+    def test_creates_null_performance_paid_order_with_one_donation_item(self):
+        order = services.fulfill_donation(
+            self.org,
+            amount=Decimal("50.00"),
+            campaign=self.campaign,
+            buyer_email="Donor@Example.com",
+            buyer_name="Generous Donor",
+            provider="test",
+            payment_ref="test-donation-1",
+        )
+
+        self.assertIsNone(order.performance_id)
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(order.total, Decimal("50.00"))
+        self.assertEqual(order.buyer_email, "Donor@Example.com")
+
+        # Exactly one donation item, no tickets.
+        self.assertEqual(order.items.count(), 1)
+        item = order.items.get()
+        self.assertEqual(item.kind, OrderItem.Kind.DONATION)
+        self.assertEqual(item.quantity, 1)
+        self.assertEqual(item.unit_amount, Decimal("50.00"))
+        self.assertEqual(item.donation_campaign_id, self.campaign.pk)
+        self.assertEqual(order.tickets.count(), 0)
+
+        # Guest linked (email normalized) and a succeeded Payment recorded.
+        self.assertIsNotNone(order.guest_id)
+        self.assertEqual(order.guest.email, "donor@example.com")
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(payment.status, "succeeded")
+        self.assertEqual(payment.amount, Decimal("50.00"))
+        self.assertEqual(payment.provider, "test")
+
+        # No GA inventory moved.
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)
+
+    def test_campaign_may_be_none(self):
+        order = services.fulfill_donation(
+            self.org,
+            amount=Decimal("15.00"),
+            campaign=None,
+            buyer_email="d@example.com",
+            buyer_name="",
+            provider="test",
+            payment_ref="test-donation-2",
+        )
+        self.assertIsNone(order.items.get().donation_campaign_id)
+
+
+@override_settings(STRIPE_SECRET_KEY=PLATFORM_KEY)
+class CreateDonationCheckoutSessionTests(OrdersFixtureMixin, TestCase):
+    """create_donation_checkout_session builds a standalone donation session:
+    one line item at correct minor units, metadata carrying everything
+    fulfillment needs (kind/amount/campaign/org), customer_email prefilled, the
+    platform fee on the gift, and the session on the connected account."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        enable_connect(self.org)
+        self.campaign = DonationCampaign.objects.create(organization=self.org)
+        self.request = RequestFactory().post("/donate/", HTTP_HOST=host_for(self.org.subdomain))
+
+    def _create(self, **overrides):
+        kwargs = dict(
+            amount=Decimal("30.00"),
+            campaign=self.campaign,
+            buyer_email="donor@example.com",
+            buyer_name="Donor",
+            request=self.request,
+        )
+        kwargs.update(overrides)
+        with patch("payments.services.stripe.checkout.Session.create") as mock_create:
+            mock_create.return_value = FakeStripeSession()
+            url = services.create_donation_checkout_session(self.org, **kwargs)
+            _, call_kwargs = mock_create.call_args
+        return url, call_kwargs
+
+    def test_single_line_item_metadata_email_and_connected_account(self):
+        url, kwargs = self._create()
+
+        self.assertEqual(url, "https://checkout.stripe.com/pay/cs_test_123")
+        # Direct charge on the connected account with the platform key.
+        self.assertEqual(kwargs["api_key"], PLATFORM_KEY)
+        self.assertEqual(kwargs["stripe_account"], TEST_ACCT)
+        self.assertEqual(kwargs["mode"], "payment")
+
+        line_items = kwargs["line_items"]
+        self.assertEqual(len(line_items), 1)
+        item = line_items[0]
+        self.assertEqual(item["quantity"], 1)
+        self.assertEqual(item["price_data"]["unit_amount"], 3000)  # $30.00 -> 3000
+        self.assertIsInstance(item["price_data"]["unit_amount"], int)
+        self.assertEqual(item["price_data"]["product_data"]["name"], f"Donation — {self.org.name}")
+
+        self.assertEqual(kwargs["metadata"]["kind"], "donation")
+        self.assertEqual(kwargs["metadata"]["organization_id"], str(self.org.pk))
+        self.assertEqual(kwargs["metadata"]["donation_campaign_id"], str(self.campaign.pk))
+        self.assertEqual(kwargs["metadata"]["donation_amount"], "30.00")
+        self.assertEqual(kwargs["customer_email"], "donor@example.com")
+
+    def test_no_campaign_leaves_blank_campaign_id_metadata(self):
+        _, kwargs = self._create(campaign=None)
+        self.assertEqual(kwargs["metadata"]["donation_campaign_id"], "")
+
+    def test_no_buyer_email_omits_customer_email(self):
+        _, kwargs = self._create(buyer_email="")
+        self.assertNotIn("customer_email", kwargs)
+
+    @override_settings(PLATFORM_FEE_PERCENT=10, PLATFORM_FEE_FIXED_CENTS=0)
+    def test_application_fee_is_charged_on_the_gift_amount(self):
+        _, kwargs = self._create(amount=Decimal("30.00"))
+        # 10% of $30 -> $3.00 -> 300 minor units.
+        self.assertEqual(kwargs["payment_intent_data"]["application_fee_amount"], 300)
+
+    def test_no_fee_when_rate_is_zero(self):
+        _, kwargs = self._create()
+        self.assertNotIn("payment_intent_data", kwargs)
+
+    def test_per_org_fee_override_wins(self):
+        self.org.platform_fee_percent = Decimal("5")
+        self.org.save(update_fields=["platform_fee_percent"])
+        _, kwargs = self._create(amount=Decimal("30.00"))
+        # 5% of $30 -> 150 minor units.
+        self.assertEqual(kwargs["payment_intent_data"]["application_fee_amount"], 150)
+
+
+class FulfillDonationCheckoutSessionTests(OrdersFixtureMixin, TestCase):
+    """fulfill_checkout_session's donation metadata branch: creates via
+    fulfill_donation, replays idempotently, rejects missing/garbled
+    donation_amount with DonationDataError (writing nothing), and still enforces
+    the tenant-mismatch check."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        self.campaign = DonationCampaign.objects.create(organization=self.org)
+
+    def _session(self, *, session_id="cs_don", amount="45.00", campaign_id=None, org_id=None, email="donor@example.com"):
+        metadata = {
+            "kind": "donation",
+            "organization_id": str(self.org.pk if org_id is None else org_id),
+            "donation_amount": amount,
+        }
+        if campaign_id is not None:
+            metadata["donation_campaign_id"] = campaign_id
+        return {
+            "id": session_id,
+            "payment_intent": "pi_don",
+            "metadata": metadata,
+            "customer_details": {"email": email, "name": "Donor"},
+        }
+
+    def test_creates_a_donation_order_from_metadata(self):
+        session = self._session(amount="45.00", campaign_id=str(self.campaign.pk))
+
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertIsNone(order.performance_id)
+        self.assertEqual(order.total, Decimal("45.00"))
+        self.assertEqual(order.status, Order.Status.PAID)
+        item = order.items.get()
+        self.assertEqual(item.kind, OrderItem.Kind.DONATION)
+        self.assertEqual(item.unit_amount, Decimal("45.00"))
+        self.assertEqual(item.donation_campaign_id, self.campaign.pk)
+        self.assertEqual(order.tickets.count(), 0)
+        self.assertEqual(order.stripe_checkout_session_id, "cs_don")
+        # payment_ref is the PaymentIntent when present.
+        self.assertEqual(Payment.objects.get(order=order).provider_ref, "pi_don")
+
+    def test_replaying_the_same_donation_session_is_idempotent(self):
+        session = self._session(campaign_id=str(self.campaign.pk))
+
+        order1, created1 = services.fulfill_checkout_session(self.org, session)
+        order2, created2 = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created1)
+        self.assertFalse(created2)
+        self.assertEqual(order1.pk, order2.pk)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(OrderItem.objects.count(), 1)
+
+    def test_missing_donation_amount_raises_and_writes_nothing(self):
+        session = self._session()
+        del session["metadata"]["donation_amount"]
+
+        with self.assertRaises(services.DonationDataError):
+            services.fulfill_checkout_session(self.org, session)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(OrderItem.objects.count(), 0)
+        self.assertEqual(Payment.objects.count(), 0)
+
+    def test_garbled_donation_amount_raises_and_writes_nothing(self):
+        session = self._session(amount="not-a-number")
+
+        with self.assertRaises(services.DonationDataError):
+            services.fulfill_checkout_session(self.org, session)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_donation_data_error_is_a_fulfillment_error(self):
+        # The webhook view acks 200 on any FulfillmentError; DonationDataError
+        # must be one so a session that can never heal isn't retried for 3 days.
+        self.assertTrue(issubclass(services.DonationDataError, services.FulfillmentError))
+
+    def test_deleted_campaign_still_fulfills_with_null_campaign_fk(self):
+        session = self._session(campaign_id=str(self.campaign.pk))
+        self.campaign.delete()
+
+        order, created = services.fulfill_checkout_session(self.org, session)
+
+        self.assertTrue(created)
+        self.assertEqual(order.total, Decimal("45.00"))
+        self.assertIsNone(order.items.get().donation_campaign_id)
+
+    def test_tenant_mismatch_still_applies_to_a_donation_session(self):
+        other_org = make_org("org-mismatch")
+        session = self._session(org_id=other_org.pk)
+
+        with self.assertRaises(services.TenantMismatchError):
+            services.fulfill_checkout_session(self.org, session)
+        self.assertEqual(Order.objects.count(), 0)
+
+
+class RefundDonationOnlyOrderTests(OrdersFixtureMixin, TestCase):
+    """refund_order on a paid donation-only order (no tickets, null
+    performance): succeeds, void_order returns 0 (nothing to void, no GA
+    decrement), status flips to REFUNDED, and the refund Payment.amount ==
+    order.total."""
+
+    def setUp(self):
+        self.build_ga_performance()
+        self.campaign = DonationCampaign.objects.create(organization=self.org)
+
+    def test_refund_of_a_donation_only_order(self):
+        order = services.fulfill_donation(
+            self.org,
+            amount=Decimal("50.00"),
+            campaign=self.campaign,
+            buyer_email="donor@example.com",
+            buyer_name="Donor",
+            provider="test",  # no real charge -> refund records without calling Stripe
+            payment_ref="test-donation",
+        )
+
+        # void_order itself is a no-op returning 0 on this ticketless order.
+        self.assertEqual(order_services.void_order(order), 0)
+
+        performed = services.refund_order(order)
+
+        self.assertTrue(performed)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDED)
+        refund_payment = Payment.objects.get(order=order, status="refunded")
+        self.assertEqual(refund_payment.amount, Decimal("50.00"))  # == order.total
+        # No GA inventory was ever involved.
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)

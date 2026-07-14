@@ -1,46 +1,61 @@
 {% extends "base.html" %}
 {% load showtimes %}
 
-{% block title %}Your tickets — {{ organization.name }}{% endblock %}
+{% block title %}{% if order.performance %}Your tickets{% else %}Your donation receipt{% endif %} — {{ organization.name }}{% endblock %}
 
 {% block content %}
     <a class="back-link" href="{% url 'home' %}">&larr; Back to {{ organization.name }}</a>
-    <h1>Your tickets</h1>
-    <h2>{{ order.performance.event.title }}</h2>
-    <p>
-        {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ·
-        {{ order.performance.venue.name }}
-    </p>
+    {% if order.performance %}
+        <h1>Your tickets</h1>
+        <h2>{{ order.performance.event.title }}</h2>
+        <p>
+            {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ·
+            {{ order.performance.venue.name }}
+        </p>
+    {% else %}
+        <h1>Donation receipt</h1>
+        <h2>Thank you for supporting {{ organization.name }}</h2>
+    {% endif %}
     <p>Order total: ${{ order.total }} · Status: <span class="badge badge--{{ order.status }}">{{ order.get_status_display }}</span></p>
     <p class="muted">Order confirmation: {{ order.token }}</p>
 
-    {% if ticket_rows %}
-        <div class="ticket-actions ticket-actions--no-print">
-            <a class="button button--secondary" href="{% url 'ticket_pdf' token=order.token %}">Download PDF</a>
-            <button type="button" class="button button--secondary" onclick="window.print()">Print</button>
-            <a class="button button--secondary" href="{% url 'guest_portal' %}">All my tickets</a>
+    {% if not order.performance %}
+        <div class="donation-receipt">
+            <p>
+                <strong>Donation: ${{ donation_item.unit_amount|default:order.total }}</strong>
+                {% if donation_item.donation_campaign %} to {{ donation_item.donation_campaign.name }}{% endif %}
+            </p>
+            {% if donation_item.donation_campaign.acknowledgment %}
+                <p class="muted">{{ donation_item.donation_campaign.acknowledgment|linebreaksbr }}</p>
+            {% endif %}
         </div>
-    {% endif %}
-
-    {% if not ticket_rows %}
-        <div class="empty-state">
-            <p>No tickets on this order yet — if you just paid, check back in a moment.</p>
-        </div>
-    {% endif %}
-
-    <div class="ticket-grid">
-        {% for row in ticket_rows %}
-            <div class="ticket">
-                <h3>
-                    Ticket {{ forloop.counter }}
-                    {% if row.ticket.seat %}
-                        — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}
-                    {% endif %}
-                </h3>
-                <p><span class="badge badge--{{ row.ticket.status }}">{{ row.ticket.get_status_display }}</span></p>
-                <img src="{{ row.qr_data_uri }}" alt="Ticket QR code" width="220" height="220" class="ticket__qr">
-                <p class="muted ticket__code">{{ row.ticket.token }}</p>
+    {% else %}
+        {% if ticket_rows %}
+            <div class="ticket-actions ticket-actions--no-print">
+                <a class="button button--secondary" href="{% url 'ticket_pdf' token=order.token %}">Download PDF</a>
+                <button type="button" class="button button--secondary" onclick="window.print()">Print</button>
+                <a class="button button--secondary" href="{% url 'guest_portal' %}">All my tickets</a>
             </div>
-        {% endfor %}
-    </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No tickets on this order yet — if you just paid, check back in a moment.</p>
+            </div>
+        {% endif %}
+
+        <div class="ticket-grid">
+            {% for row in ticket_rows %}
+                <div class="ticket">
+                    <h3>
+                        Ticket {{ forloop.counter }}
+                        {% if row.ticket.seat %}
+                            — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}
+                        {% endif %}
+                    </h3>
+                    <p><span class="badge badge--{{ row.ticket.status }}">{{ row.ticket.get_status_display }}</span></p>
+                    <img src="{{ row.qr_data_uri }}" alt="Ticket QR code" width="220" height="220" class="ticket__qr">
+                    <p class="muted ticket__code">{{ row.ticket.token }}</p>
+                </div>
+            {% endfor %}
+        </div>
+    {% endif %}
 {% endblock %}

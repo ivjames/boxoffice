@@ -5,11 +5,12 @@ another tenant's data no matter what a form POST contains -- see
 docs/ARCHITECTURE.md "Tenant isolation is non-negotiable."
 """
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django import forms
 
 from accounts.models import Membership
+from donations.models import DonationCampaign
 from events.models import Event, GAAllocation, Performance, PriceTier
 from orders.services import get_seating_chart
 from promotions.models import PromoCode
@@ -316,3 +317,53 @@ class PromoCodeForm(forms.ModelForm):
             elif kind == PromoCode.Kind.FIXED and value <= Decimal("0"):
                 self.add_error("value", "A fixed amount must be greater than 0.")
         return cleaned
+
+
+# --- donations (manager+) --------------------------------------------------
+#
+# v1 is a single org-wide campaign (see DonationCampaign's docstring), so
+# there's no create/list CRUD here the way promo codes get one -- just a
+# settings form against the org's one campaign row, dashboard.views.
+# donation_settings loads it via get_or_create_general_fund and saves this
+# form onto it.
+
+
+class DonationSettingsForm(forms.ModelForm):
+    """Dashboard settings form for the org's single DonationCampaign.
+    `is_active` doubles as the donations on/off switch for the whole tenant
+    (storefront nav link, cart add-on, /donate/ page -- see
+    DonationCampaign's docstring); `suggested_amounts` is the quick-pick CSV
+    validated below against DonationCampaign.suggested_amount_list's own
+    lenient parse, so a manager gets a clean field error instead of silently
+    losing a mistyped entry the model would just skip."""
+
+    class Meta:
+        model = DonationCampaign
+        fields = ["is_active", "name", "suggested_amounts", "acknowledgment"]
+        widgets = {
+            "acknowledgment": forms.Textarea(attrs={"rows": 4}),
+        }
+
+    def clean_suggested_amounts(self):
+        # Mirrors DonationCampaign.suggested_amount_list's own parse (comma-
+        # split, strip, Decimal, positive) so a manager who fat-fingers this
+        # field (blank, non-numeric, negative -- or an all-blank/empty CSV
+        # that would leave the storefront with NO preset buttons) sees a
+        # clear validation error here instead of the model silently skipping
+        # the bad entries at render time.
+        raw = self.cleaned_data.get("suggested_amounts", "")
+        amounts = []
+        for chunk in raw.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                value = Decimal(chunk)
+            except InvalidOperation:
+                raise forms.ValidationError(f"“{chunk}” isn't a valid amount.")
+            if value <= 0:
+                raise forms.ValidationError(f"“{chunk}” must be a positive amount.")
+            amounts.append(chunk)
+        if not amounts:
+            raise forms.ValidationError("Enter at least one positive amount, e.g. 10,25,50,100.")
+        return ",".join(amounts)

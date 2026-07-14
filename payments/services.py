@@ -38,7 +38,7 @@ buyer_name/payment_ref come from.
 """
 
 import logging
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -47,6 +47,7 @@ from django.utils import timezone
 
 import stripe
 
+from donations.models import DonationCampaign
 from events.models import GAAllocation
 from guests.models import GuestAccount
 from orders import services as order_services
@@ -80,6 +81,15 @@ class AvailabilityChangedError(FulfillmentError):
     every *other* hold -- but re-checked defensively with the same
     lock-then-recheck pattern orders/services.py uses, per
     docs/ARCHITECTURE.md's "re-validate the hold" instruction."""
+
+
+class DonationDataError(FulfillmentError):
+    """A donation checkout session's metadata is missing or malformed (no
+    parseable `donation_amount`) by the time payment completed. A
+    FulfillmentError like HoldGoneError, so the webhook view acks 200 and logs
+    rather than making Stripe retry a session that can never fulfill (the
+    metadata won't heal on redelivery); a human reconciles the stray charge
+    from the Stripe dashboard."""
 
 
 class RefundError(Exception):
@@ -340,6 +350,86 @@ def create_checkout_session(hold, request):
     return session.url
 
 
+def create_donation_checkout_session(organization, *, amount, campaign, buyer_email, buyer_name, request):
+    """Create a Stripe Checkout Session for a STANDALONE donation (the
+    /donate/ page -- a gift with no hold, no tickets) and return its hosted
+    payment page URL. The donation analogue of create_checkout_session: one
+    donation line item, the same direct-charge shape (session created ON the
+    connected account with the platform key, the platform's cut attached as
+    application_fee_amount), and the same success/cancel URLs. Does NOT create
+    an Order -- fulfill_checkout_session does that on the
+    checkout.session.completed webhook, branching on metadata["kind"] ==
+    "donation" to call fulfill_donation.
+
+    The session carries everything fulfillment needs on the Order in metadata
+    (there's no Hold to look up, unlike the ticket path): kind="donation", the
+    org id (tenant re-check), the campaign id (provenance -- looked up org-
+    scoped at fulfillment, tolerated as None if the campaign was deleted
+    meanwhile), and the amount as a string (the authoritative figure, parsed
+    back to Decimal at fulfillment). customer_email pre-fills the buyer's email
+    on the hosted page when we have one.
+
+    STUB MODE (charges not enabled -- same pre-launch case as the ticket path):
+    a real Stripe call would fail, so return an internal stub URL instead. The
+    named `donate_stub` route lands with the donations UI layer (donations/
+    urls.py); reverse() is called lazily inside this branch only, so this
+    function is importable/usable on the charges-enabled path before that URL
+    exists."""
+    currency = (organization.currency or "usd").lower()
+
+    if not organization.stripe_charges_enabled:
+        logger.info(
+            "Organization %s can't take payments yet (Connect charges not "
+            "enabled); using the simulated donation stub instead of calling "
+            "Stripe.",
+            organization.pk,
+        )
+        # `donate_stub` is added by the donations UI layer (donations/urls.py);
+        # resolved lazily here so the charges-enabled path doesn't need it.
+        return request.build_absolute_uri(reverse("donate_stub")) + f"?amount={amount}"
+
+    success_url = request.build_absolute_uri(reverse("checkout_success")) + "?session_id={CHECKOUT_SESSION_ID}"
+    cancel_url = request.build_absolute_uri(reverse("checkout_cancel"))
+
+    line_items = [
+        {
+            "quantity": 1,
+            "price_data": {
+                "currency": currency,
+                "unit_amount": _to_minor_units(amount, currency),
+                "product_data": {"name": f"Donation — {organization.name}"},
+            },
+        }
+    ]
+
+    params = {
+        "mode": "payment",
+        "line_items": line_items,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "metadata": {
+            "kind": "donation",
+            "organization_id": str(organization.pk),
+            "donation_campaign_id": str(campaign.pk) if campaign is not None else "",
+            "donation_amount": str(amount),
+        },
+    }
+    if buyer_email:
+        params["customer_email"] = buyer_email
+
+    # The platform's cut is a percentage of the gift actually collected.
+    fee = application_fee_amount(organization, amount, currency=currency)
+    if fee is not None:
+        params["payment_intent_data"] = {"application_fee_amount": fee}
+
+    session = stripe.checkout.Session.create(
+        **params,
+        api_key=settings.STRIPE_SECRET_KEY,
+        stripe_account=organization.stripe_account_id,
+    )
+    return session.url
+
+
 def _hold_currency(hold):
     """The single charge currency for `hold`. Now a thin delegate to
     orders.services.hold_currency -- the definition moved there so the promo
@@ -355,10 +445,22 @@ def _line_items_for_hold(hold):
     line item PER HoldSeat at its own price_tier.amount (seats can span
     sections/tiers within one hold, so they can't be collapsed into one
     line). Ad-hoc `price_data` is used instead of pre-created Stripe Price
-    objects since tiers are defined and priced entirely on our side."""
+    objects since tiers are defined and priced entirely on our side.
+
+    Phase 2 donation add-on: BOTH paths append one extra donation line when
+    the hold carries a gift (order_services.hold_donation > 0). The donation
+    line is GROSS -- it is added at full value and is deliberately NOT
+    discounted by the Stripe coupon. That reconciles exactly because the
+    coupon's amount_off is bounded by the TICKET subtotal (validate_code
+    forbids a discount reaching/exceeding hold_total, which excludes the
+    donation -- see order_services.hold_grand_total), so a `duration="once"`
+    coupon applied across the whole session can never reach past the ticket
+    lines into the donation. Sum of these line items == hold_grand_total ==
+    Order.total, gross-ticket + donation, minus the coupon = the exact net
+    charge."""
     if hold.price_tier_id and hold.quantity:
         tier = hold.price_tier
-        return [
+        line_items = [
             {
                 "quantity": hold.quantity,
                 "price_data": {
@@ -373,6 +475,8 @@ def _line_items_for_hold(hold):
                 },
             }
         ]
+        _append_donation_line_item(hold, line_items)
+        return line_items
 
     line_items = []
     for hold_seat in hold.hold_seats.select_related("seat__section", "price_tier", "pricing_zone"):
@@ -397,7 +501,33 @@ def _line_items_for_hold(hold):
                 },
             }
         )
+    _append_donation_line_item(hold, line_items)
     return line_items
+
+
+def _append_donation_line_item(hold, line_items):
+    """Append the hold's donation to `line_items` in place when there's one to
+    add (hold_donation > 0). Shared by both branches of _line_items_for_hold so
+    the GA early-return and the reserved path add an identical GROSS donation
+    line (see that function's docstring for why the donation stays gross). The
+    donation is denominated in the hold's single charge currency (the same one
+    the coupon and platform fee use)."""
+    donation = order_services.hold_donation(hold)
+    if donation <= Decimal("0.00"):
+        return
+    currency = order_services.hold_currency(hold)
+    line_items.append(
+        {
+            "quantity": 1,
+            "price_data": {
+                "currency": currency.lower(),
+                "unit_amount": _to_minor_units(donation, currency),
+                "product_data": {
+                    "name": f"Donation — {hold.organization.name}",
+                },
+            },
+        }
+    )
 
 
 # Currencies Stripe expects in whole units, NOT cents (amount * 1, no minor
@@ -528,6 +658,23 @@ def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe
     else:
         _fulfill_reserved(organization, hold, order)
 
+    # Phase 2 donation add-on: if the buyer added a gift to this cart, record
+    # it as its own kind=DONATION OrderItem -- quantity 1, unit_amount the
+    # snapshotted gift, no ticket minted and no inventory touched. Order.total
+    # is already hold_grand_total (donation-inclusive, computed above), so
+    # nothing changes there; this line is what makes the donation show up on
+    # the order, feed the donations report, and carry its campaign provenance.
+    donation = order_services.hold_donation(hold)
+    if donation > Decimal("0.00"):
+        OrderItem.objects.create(
+            organization=organization,
+            order=order,
+            kind=OrderItem.Kind.DONATION,
+            quantity=1,
+            unit_amount=donation,
+            donation_campaign=hold.donation_campaign,
+        )
+
     Payment.objects.create(
         organization=organization,
         order=order,
@@ -554,6 +701,78 @@ def fulfill_hold(hold, *, buyer_email, buyer_name, payment_ref, provider, stripe
         promotions_services.record_redemption(hold.promo_code)
 
     hold.delete()  # HoldSeat rows cascade-delete with it.
+    return order
+
+
+@transaction.atomic
+def fulfill_donation(
+    organization,
+    *,
+    amount,
+    campaign,
+    buyer_email,
+    buyer_name,
+    provider,
+    payment_ref,
+    stripe_checkout_session_id=None,
+):
+    """Turn a standalone (hold-less) donation into a paid Order + one
+    kind=DONATION OrderItem + a Payment. The sibling of fulfill_hold for the
+    /donate/ path (a gift with no tickets, so no cart/hold ever existed).
+
+    WHY A SIBLING, NOT A BRANCH OF fulfill_hold: fulfill_hold is organized
+    entirely around a Hold -- it re-checks the hold's expiry, locks and
+    re-validates the hold's inventory (GAAllocation / Seat rows), mints
+    tickets from the held seats, and deletes the hold at the end. A standalone
+    donation has NONE of that: no hold, no performance, no inventory, no
+    ticket. Threading a "maybe there's no hold" flag through every one of those
+    steps would riddle the ticket money path with donation-only special cases
+    for no shared benefit. Keeping this a small independent transaction that
+    creates exactly the three rows a donation needs is clearer and keeps the
+    ticket path honest. The pieces they DO share (guest get_or_create, the
+    donation OrderItem shape, the Payment row) are small and identical by
+    construction.
+
+    Order.performance is left NULL -- a donation reserves no performance (see
+    Order.performance's v1 rule). Order.total is the gift amount; the promo
+    fields are untouched (a standalone gift has no code). Idempotency is the
+    caller's job, exactly as for fulfill_hold: the Stripe caller
+    (fulfill_checkout_session) pre-checks the session id and wraps this in the
+    same IntegrityError->winner fallback, which is why
+    stripe_checkout_session_id is written in this same Order.objects.create().
+
+    Sending the acknowledgment/receipt email is the caller's job, done AFTER
+    this commits."""
+    guest, _ = GuestAccount.objects.get_or_create_for_email(
+        organization, buyer_email, name=buyer_name
+    )
+
+    order = Order.objects.create(
+        organization=organization,
+        performance=None,
+        buyer_email=buyer_email,
+        buyer_name=buyer_name,
+        guest=guest,
+        total=amount,
+        status=Order.Status.PAID,
+        stripe_checkout_session_id=stripe_checkout_session_id,
+    )
+    OrderItem.objects.create(
+        organization=organization,
+        order=order,
+        kind=OrderItem.Kind.DONATION,
+        quantity=1,
+        unit_amount=amount,
+        donation_campaign=campaign,
+    )
+    Payment.objects.create(
+        organization=organization,
+        order=order,
+        provider=provider,
+        amount=amount,
+        status="succeeded",
+        provider_ref=payment_ref,
+    )
     return order
 
 
@@ -593,6 +812,55 @@ def fulfill_checkout_session(organization, session):
             f"the organization ({organization.pk}) resolved from the event's connected account."
         )
 
+    customer_details = session.get("customer_details") or {}
+    buyer_email = customer_details.get("email") or ""
+    buyer_name = customer_details.get("name") or ""
+
+    # DONATION path: a standalone gift carries no Hold -- everything
+    # fulfillment needs is in metadata (see create_donation_checkout_session).
+    # Branch here, after the idempotency + tenant-mismatch checks (which apply
+    # identically), and hand off to fulfill_donation inside the SAME
+    # IntegrityError->winner fallback the hold path uses, so two concurrent
+    # deliveries of one donation session collide on Order.objects.create()
+    # rather than double-fulfilling.
+    if metadata.get("kind") == "donation":
+        try:
+            amount = Decimal(metadata["donation_amount"])
+        except (KeyError, TypeError, InvalidOperation) as exc:
+            raise DonationDataError(
+                f"Donation session {session_id} has a missing/malformed donation_amount "
+                f"({metadata.get('donation_amount')!r}); payment succeeded but nothing was "
+                "fulfilled."
+            ) from exc
+        # Provenance only -- a campaign deleted between checkout and this
+        # webhook resolves to None (the gift still fulfills; the OrderItem
+        # simply carries no campaign FK, same SET_NULL stance as a live one).
+        campaign_id = metadata.get("donation_campaign_id") or None
+        campaign = None
+        if campaign_id:
+            campaign = DonationCampaign.objects.filter(
+                organization=organization, pk=campaign_id
+            ).first()
+        try:
+            order = fulfill_donation(
+                organization,
+                amount=amount,
+                campaign=campaign,
+                buyer_email=buyer_email,
+                buyer_name=buyer_name,
+                payment_ref=session.get("payment_intent") or session_id,
+                provider="stripe",
+                stripe_checkout_session_id=session_id,
+            )
+        except IntegrityError as exc:
+            winner = Order.objects.filter(
+                organization=organization, stripe_checkout_session_id=session_id
+            ).first()
+            if winner is not None:
+                return winner, False
+            raise
+        return order, True
+
     hold = (
         Hold.objects.select_related("performance", "price_tier")
         .filter(organization=organization, pk=hold_id)
@@ -603,10 +871,6 @@ def fulfill_checkout_session(organization, session):
             f"Hold {hold_id!r} for session {session_id} is missing or expired; payment succeeded "
             "but nothing was fulfilled."
         )
-
-    customer_details = session.get("customer_details") or {}
-    buyer_email = customer_details.get("email") or ""
-    buyer_name = customer_details.get("name") or ""
 
     # The `existing` check above is correct in sequence but isn't itself
     # locked -- two truly concurrent deliveries for the same session_id can

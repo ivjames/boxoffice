@@ -1,10 +1,12 @@
-"""Ticket confirmation email: HTML + text, one inline QR per ticket, and a
-link to the public /tickets/<order-token>/ page. Sent by the Stripe webhook
-handler (payments/services.py) right after the order-creating transaction
-commits -- see that module's docstring for why email goes outside the
-transaction. Uses Django's configured EMAIL_BACKEND (console in dev, SMTP in
-prod -- config/settings/{dev,prod}.py), so nothing here is Stripe- or
-transport-specific.
+"""Order receipt emails: the ticket confirmation (HTML + text, one inline QR
+per ticket) and -- Phase 2 -- the donation acknowledgment for a donation-only
+order, plus `send_order_receipt`, the one dispatcher every caller should use
+so they never have to know which kind of order they're emailing. Sent by the
+Stripe webhook handler (payments/services.py) right after the order-creating
+transaction commits -- see that module's docstring for why email goes
+outside the transaction. Uses Django's configured EMAIL_BACKEND (console in
+dev, SMTP in prod -- config/settings/{dev,prod}.py), so nothing here is
+Stripe- or transport-specific.
 """
 
 from django.conf import settings
@@ -12,7 +14,31 @@ from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.urls import reverse
 
+from .models import OrderItem
 from .qr import ticket_qr_data_uri
+
+
+def send_order_receipt(order, request):
+    """The ONE entry point callers should use to email an order's receipt --
+    dispatches to send_ticket_email for an order with tickets, or (Phase 2)
+    send_donation_receipt_email for a donation-only order (Order.performance
+    is null, no Ticket rows). Every fulfillment path (the Stripe webhook,
+    the stub/test checkout "Pay" request, a staff resend) now calls this
+    instead of send_ticket_email directly, so a donation-only order gets its
+    acknowledgment email through the exact same call sites a ticket order's
+    confirmation always has, with no per-caller branching.
+
+    `order.tickets.exists()` (not `order.performance_id`) is the dispatch
+    key: performance is the authoritative "does this order reserve
+    inventory" flag, but tickets are what the ticket email actually needs
+    to render, and the two are equivalent in practice for every order kind
+    this app creates today (a ticketed order always has both; a donation-only
+    order has neither) -- keying off tickets reads more directly as "which
+    email am I about to build" than re-deriving it from the FK."""
+    if order.tickets.exists():
+        send_ticket_email(order, request)
+    else:
+        send_donation_receipt_email(order, request)
 
 
 def send_ticket_email(order, request):
@@ -37,16 +63,77 @@ def send_ticket_email(order, request):
         request.build_absolute_uri(organization.logo.url) if organization.logo else None
     )
 
+    # Phase 2: a ticket order can ALSO carry a donation added at the cart
+    # (orders.services.set_hold_donation) -- surface that as an extra line +
+    # its campaign's acknowledgment blurb on the SAME ticket email, rather
+    # than a second message. None when this order has no donation item (the
+    # common case), which tickets.html/.txt treat as "omit the section".
+    donation_item = (
+        order.items.filter(kind=OrderItem.Kind.DONATION)
+        .select_related("donation_campaign")
+        .first()
+    )
+
     context = {
         "order": order,
         "organization": organization,
         "logo_url": logo_url,
         "ticket_rows": ticket_rows,
         "tickets_url": tickets_url,
+        "donation_item": donation_item,
     }
     subject = f"Your tickets for {order.performance.event.title} — {order.organization.name}"
     text_body = render_to_string("orders/email/tickets.txt", context)
     html_body = render_to_string("orders/email/tickets.html", context)
+
+    email = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[order.buyer_email],
+    )
+    email.attach_alternative(html_body, "text/html")
+    email.send(fail_silently=False)
+
+
+def send_donation_receipt_email(order, request):
+    """Email `order.buyer_email` their donation receipt -- the Phase 2
+    analogue of send_ticket_email for a donation-only order (Order.performance
+    null, no Ticket rows): no tickets/QR/performance to show, just the
+    amount given, the campaign's nonprofit acknowledgment blurb (when set),
+    and a link to the same public receipt page a ticket order gets
+    (/tickets/<order.token>/ -- orders.views.ticket_detail already renders a
+    donation-only order's receipt view, see its template's guard).
+
+    `request` supplies the tenant host for the absolute receipt URL, exactly
+    like send_ticket_email -- the Stripe webhook's in-flight request, or the
+    stub/test donation "Pay" request."""
+    donation_item = (
+        order.items.filter(kind=OrderItem.Kind.DONATION)
+        .select_related("donation_campaign")
+        .first()
+    )
+    campaign = donation_item.donation_campaign if donation_item is not None else None
+    amount = donation_item.unit_amount if donation_item is not None else order.total
+
+    receipt_url = request.build_absolute_uri(reverse("ticket_detail", args=[order.token]))
+
+    organization = order.organization
+    logo_url = (
+        request.build_absolute_uri(organization.logo.url) if organization.logo else None
+    )
+
+    context = {
+        "order": order,
+        "organization": organization,
+        "logo_url": logo_url,
+        "campaign": campaign,
+        "amount": amount,
+        "receipt_url": receipt_url,
+    }
+    subject = f"Thank you for your donation — {organization.name}"
+    text_body = render_to_string("orders/email/donation_receipt.txt", context)
+    html_body = render_to_string("orders/email/donation_receipt.html", context)
 
     email = EmailMultiAlternatives(
         subject=subject,

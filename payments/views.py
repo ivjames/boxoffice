@@ -11,7 +11,7 @@ from django.views.decorators.http import require_POST
 import stripe
 
 from accounts.permissions import billing_required
-from orders.emails import send_ticket_email
+from orders.emails import send_order_receipt
 from tenants.models import Organization
 
 from . import services
@@ -89,7 +89,7 @@ def stripe_webhook(request):
             return HttpResponse(status=200)
 
         if created:
-            send_ticket_email(order, request)
+            send_order_receipt(order, request)
 
     return HttpResponse(status=200)
 

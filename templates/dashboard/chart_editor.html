@@ -338,6 +338,98 @@
             </form>
         </div>
 
+<!-- AI re-parse (background ChartParseJob): upload a photo/PDF of the house
+     and REPLACE this chart's sections with the parse when it finishes. Kept
+     as plain JS outside the Alpine app -- it talks to its own endpoints
+     (dashboard_chart_parse + dashboard_chart_parse_status) and reloads the
+     page on success rather than splicing into editor state. -->
+        <div class="chart-editor__import chart-parse-panel">
+            <h3>Import from image / PDF</h3>
+            <p class="muted">
+                Re-parse this chart from a picture of the house. When it finishes it
+                <strong>replaces every section and seat on this chart</strong> (refused if any
+                seat has a live ticket). Runs in the background — usually a couple of minutes.
+            </p>
+            <form id="chart-parse-form"
+                  data-upload-url="{% url 'dashboard_chart_parse' chart.venue_id %}"
+                  data-chart-id="{{ chart.pk }}">
+                <input type="file" name="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" required>
+                <button type="submit" class="button button--secondary">Parse &amp; replace</button>
+            </form>
+            <p class="parse-job__state" id="chart-parse-state" hidden></p>
+        </div>
+        <script>
+        (function () {
+            var form = document.getElementById("chart-parse-form");
+            var stateEl = document.getElementById("chart-parse-state");
+            var polling = false;
+
+            function csrfToken() {
+                var match = document.cookie.match(/(?:^|; )csrftoken=([^;]*)/);
+                return match ? decodeURIComponent(match[1]) : "";
+            }
+
+            function show(text, failed) {
+                stateEl.hidden = false;
+                stateEl.textContent = text;
+                stateEl.classList.toggle("parse-job__state--failed", !!failed);
+            }
+
+            function poll(statusUrl) {
+                fetch(statusUrl, { credentials: "same-origin" })
+                    .then(function (resp) { return resp.json(); })
+                    .then(function (data) {
+                        if (data.status === "succeeded") {
+                            show("Done" + (data.detail ? " — " + data.detail : "") + ". Reloading…");
+                            window.location.reload();
+                        } else if (data.status === "failed") {
+                            show(data.error || "Parsing failed.", true);
+                            polling = false;
+                        } else {
+                            show("Parsing… " + (data.progress ? "(" + data.progress + ")" : ""));
+                            setTimeout(function () { poll(statusUrl); }, 4000);
+                        }
+                    })
+                    .catch(function () { setTimeout(function () { poll(statusUrl); }, 8000); });
+            }
+
+            form.addEventListener("submit", function (event) {
+                event.preventDefault();
+                if (polling) return;
+                var fileInput = form.querySelector("input[type=file]");
+                if (!fileInput.files.length) return;
+                if (!window.confirm(
+                    "Replace ALL of this chart's sections and seats with the parsed result " +
+                    "when it finishes? Unsaved editor changes will be lost."
+                )) return;
+                var body = new FormData();
+                body.append("file", fileInput.files[0]);
+                body.append("chart", form.dataset.chartId);
+                polling = true;
+                show("Uploading…");
+                fetch(form.dataset.uploadUrl, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "X-CSRFToken": csrfToken(), "X-Requested-With": "XMLHttpRequest" },
+                    body: body,
+                })
+                    .then(function (resp) { return resp.json(); })
+                    .then(function (data) {
+                        if (data.ok) {
+                            poll(data.status_url);
+                        } else {
+                            show(data.error || "Upload failed.", true);
+                            polling = false;
+                        }
+                    })
+                    .catch(function () {
+                        show("Upload failed — check your connection and try again.", true);
+                        polling = false;
+                    });
+            });
+        })();
+        </script>
+
         <template x-if="selected">
             <div class="chart-editor__section-panel">
                 <h3 x-text="selected.name"></h3>

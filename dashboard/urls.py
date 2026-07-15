@@ -161,6 +161,11 @@ urlpatterns = [
         name="dashboard_chart_parse",
     ),
     path(
+        "dashboard/parse-jobs/<int:pk>/status/",
+        views.chart_parse_status,
+        name="dashboard_chart_parse_status",
+    ),
+    path(
         "dashboard/venues/<int:venue_pk>/charts/new/",
         views.SeatingChartCreateView.as_view(),
         name="dashboard_chart_create",

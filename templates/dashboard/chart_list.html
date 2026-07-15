@@ -41,5 +41,58 @@
         <input type="text" name="name" placeholder="Chart name (optional)" maxlength="255">
         <button type="submit" class="button">Parse &amp; build chart</button>
     </form>
+
+    {% if parse_jobs %}
+    <ul class="parse-job-list">
+        {% for job in parse_jobs %}
+        <li class="parse-job"
+            data-status-url="{% url 'dashboard_chart_parse_status' job.pk %}"
+            data-status="{{ job.effective_status }}">
+            <span class="parse-job__file">{{ job.upload.name|cut:"chart_parse_uploads/"|truncatechars:40 }}</span>
+            <span class="parse-job__when muted">{{ job.created_at|date:"M j, H:i" }}</span>
+            <span class="parse-job__state"
+                  data-state>{% if job.effective_status == "failed" and job.error %}{{ job.error }}{% else %}{{ job.get_status_display }}{% endif %}</span>
+            <span class="parse-job__link" data-link>
+                {% if job.chart_id and job.effective_status == "succeeded" %}
+                    <a href="{% url 'dashboard_chart_editor' job.chart_id %}">Review in editor &rarr;</a>
+                {% endif %}
+            </span>
+        </li>
+        {% endfor %}
+    </ul>
+    <script>
+    (function () {
+        // Poll unfinished parse jobs (chart_parse_status) and update their
+        // row in place; when one succeeds, drop in the editor link. Plain
+        // JS on purpose -- this page has no Alpine app to hang state on.
+        document.querySelectorAll(".parse-job").forEach(function (row) {
+            if (row.dataset.status !== "pending" && row.dataset.status !== "running") return;
+            var stateEl = row.querySelector("[data-state]");
+            var linkEl = row.querySelector("[data-link]");
+            function poll() {
+                fetch(row.dataset.statusUrl, { credentials: "same-origin" })
+                    .then(function (resp) { return resp.json(); })
+                    .then(function (data) {
+                        if (data.status === "succeeded") {
+                            stateEl.textContent = "Done" + (data.detail ? " — " + data.detail : "") +
+                                (data.usage ? " (" + data.usage + ")" : "");
+                            if (data.editor_url) {
+                                linkEl.innerHTML = '<a href="' + data.editor_url + '">Review in editor &rarr;</a>';
+                            }
+                        } else if (data.status === "failed") {
+                            stateEl.textContent = data.error || "Failed";
+                            row.classList.add("parse-job--failed");
+                        } else {
+                            stateEl.textContent = "Parsing… " + (data.progress ? "(" + data.progress + ")" : "");
+                            setTimeout(poll, 4000);
+                        }
+                    })
+                    .catch(function () { setTimeout(poll, 8000); });
+            }
+            poll();
+        });
+    })();
+    </script>
+    {% endif %}
 </div>
 {% endblock %}

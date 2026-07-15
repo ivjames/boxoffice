@@ -1,7 +1,7 @@
 """Re-sync the built-in presets after the Feature Accent column was revised to
 muted/desaturated tones across all 24 schemes (tenants.color_schemes.
 BUILTIN_SCHEMES). Same idempotent upsert (+ prune) as the earlier seeds; only
-the metallic/Feature Accent values move. Custom (org-owned) schemes untouched.
+the feature_accent values move. Custom (org-owned) schemes untouched.
 """
 
 from django.db import migrations

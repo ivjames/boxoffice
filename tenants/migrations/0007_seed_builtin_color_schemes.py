@@ -8,14 +8,12 @@ management command that shares the logic can both be run safely any time.
 
 from django.db import migrations
 
-from tenants.color_schemes import BUILTIN_SCHEMES, roles_for_model
+from tenants.color_schemes import BUILTIN_SCHEMES
 
 
 def seed_presets(apps, schema_editor):
     ColorScheme = apps.get_model("tenants", "ColorScheme")
     for index, (slug, name, roles) in enumerate(BUILTIN_SCHEMES):
-        # roles_for_model translates the current feature_accent key back to this
-        # historical model's `metallic` column (the rename is migration 0011).
         ColorScheme.objects.update_or_create(
             organization=None,
             slug=slug,
@@ -23,7 +21,7 @@ def seed_presets(apps, schema_editor):
                 "name": name,
                 "is_preset": True,
                 "ordering": index,
-                **roles_for_model(ColorScheme, roles),
+                **roles,
             },
         )
 

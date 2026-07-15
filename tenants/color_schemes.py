@@ -18,11 +18,9 @@ storefront keeps rendering with no CSS rename:
 The `feature_accent` role is the eye-catching call-to-action / highlight pop
 (buttons, links) -- exactly the role app.css's --accent-color has always
 played -- so it maps onto the existing `accent_color` field rather than adding a
-redundant one. (The ColorScheme column and this role key were originally named
-`metallic`; renamed to `feature_accent` to match the function -- see migration
-0011.) Everything downstream (the ColorScheme model, the branding form, the
-derive agent) speaks in these six role keys; ROLE_TO_ORG_FIELD is the single
-place the mapping to storage lives.
+redundant one. Everything downstream (the ColorScheme model, the branding form,
+the derive agent) speaks in these six role keys; ROLE_TO_ORG_FIELD is the
+single place the mapping to storage lives.
 """
 
 # (role key, human label, Organization field it applies onto). Order matches
@@ -129,20 +127,6 @@ BUILTIN_SCHEMES = [
 ]
 
 
-def roles_for_model(ColorScheme, roles):
-    """Map a roles dict (current role keys) onto the given model's actual field
-    names. The feature-accent role's column was originally named `metallic`
-    (renamed in migration 0011); the seed/re-sync migrations run against
-    historical model states that may still have the old name, so translate
-    `feature_accent` -> `metallic` when the model predates the rename. A no-op
-    against the current model."""
-    field_names = {f.name for f in ColorScheme._meta.get_fields()}
-    mapped = dict(roles)
-    if "feature_accent" in mapped and "feature_accent" not in field_names and "metallic" in field_names:
-        mapped["metallic"] = mapped.pop("feature_accent")
-    return mapped
-
-
 def sync_presets(ColorScheme):
     """Make the built-in preset rows exactly match BUILTIN_SCHEMES: upsert every
     scheme (keyed on organization=NULL + slug) and delete any preset whose slug
@@ -157,10 +141,7 @@ def sync_presets(ColorScheme):
         _obj, was_created = ColorScheme.objects.update_or_create(
             organization=None,
             slug=slug,
-            defaults={
-                "name": name, "is_preset": True, "ordering": index,
-                **roles_for_model(ColorScheme, roles),
-            },
+            defaults={"name": name, "is_preset": True, "ordering": index, **roles},
         )
         created += was_created
         updated += not was_created

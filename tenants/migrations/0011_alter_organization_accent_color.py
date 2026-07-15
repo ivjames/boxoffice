@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("tenants", "0011_rename_metallic_to_feature_accent"),
+        ("tenants", "0010_update_feature_accent_colors"),
     ]
 
     operations = [

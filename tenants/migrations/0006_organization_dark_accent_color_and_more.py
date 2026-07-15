@@ -151,7 +151,7 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "metallic",
+                    "feature_accent",
                     models.CharField(
                         max_length=7,
                         validators=[

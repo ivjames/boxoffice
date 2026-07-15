@@ -1409,6 +1409,35 @@ textarea:focus-visible,
     margin-bottom: 1.5rem;
 }
 
+/* "Import from image/PDF" panel on the chart list (dashboard/chart_list.html
+   -- AI chart parsing, venues/chart_parsing.py). Tenant-agnostic: borders/
+   text ride the shared vars like every other dashboard panel. */
+.chart-parse-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.chart-parse-panel h2 {
+    font-size: 1rem;
+    margin: 0 0 0.5rem;
+}
+
+.chart-parse-form {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.chart-parse-form input[type="text"] {
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    font: inherit;
+}
+
 table.dash-table {
     width: 100%;
     min-width: 480px;

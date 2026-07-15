@@ -20,7 +20,7 @@ from events.models import Event, Performance, PriceTier, PricingZone, ZoneTempla
 from events.zone_export import ZoneExportError, render_zone_map
 from orders.models import Order, Ticket
 from orders.services import get_seating_chart, performance_seats
-from venues import generation
+from venues import chart_parsing, generation
 from venues.models import Seat, SeatingChart, Section, Venue
 
 from .forms import EventForm, InviteMemberForm, PerformanceForm, PriceTierForm, SeatingChartForm, SectionForm
@@ -491,6 +491,51 @@ class SeatingChartListView(ManagerRequiredMixin, ListView):
         context = super().get_context_data(**kwargs)
         context["venue"] = self.venue
         return context
+
+
+@manager_required
+@require_POST
+def chart_parse_upload(request, venue_pk):
+    """POST target of the chart list page's "Import from image/PDF" form:
+    runs the uploaded file through venues.chart_parsing (Claude vision ->
+    parametric section spec -> generated seats) and drops staff into the
+    live chart editor to review/refine the result. Manager-gated and
+    venue-scoped like every other chart mutation; every failure mode comes
+    back as a flash message on the chart list rather than a 500."""
+    venue = get_object_or_404(Venue, pk=venue_pk, organization=request.organization)
+    back = redirect("dashboard_chart_list", venue.pk)
+
+    upload = request.FILES.get("file")
+    if upload is None:
+        messages.error(request, "Choose an image or PDF of your seating chart first.")
+        return back
+    media_type = chart_parsing.media_type_for_upload(upload.name, upload.content_type)
+    if media_type is None:
+        messages.error(request, "Unsupported file type. Upload a PNG, JPEG, GIF, WebP image or a PDF.")
+        return back
+    if upload.size > chart_parsing.MAX_UPLOAD_BYTES:
+        messages.error(request, "File is too large (20 MB max).")
+        return back
+
+    try:
+        chart = chart_parsing.parse_and_build_chart(
+            venue,
+            upload.read(),
+            media_type,
+            name=(request.POST.get("name") or "").strip() or None,
+        )
+    except chart_parsing.ChartParsingError as exc:
+        messages.error(request, str(exc))
+        return back
+
+    seat_count = Seat.objects.filter(organization=request.organization, section__chart=chart).count()
+    messages.success(
+        request,
+        f"Parsed {chart.sections.count()} section(s) / {seat_count} seat(s) from "
+        f"{upload.name}. Review the layout below -- the parse is a starting point, "
+        "so check counts and positions before selling against it.",
+    )
+    return redirect("dashboard_chart_editor", chart.pk)
 
 
 class SeatingChartCreateView(ManagerRequiredMixin, CreateView):

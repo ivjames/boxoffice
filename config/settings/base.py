@@ -183,3 +183,13 @@ ENABLE_TEST_CHECKOUT = env.bool("ENABLE_TEST_CHECKOUT", default=False)
 # SHOW_ADMIN_LINK=true so operators can reach the admin from its landing page.
 # /admin/ itself is always reachable directly regardless of this flag.
 SHOW_ADMIN_LINK = env.bool("SHOW_ADMIN_LINK", default=False)
+
+# --- AI SEATING-CHART PARSING (venues/chart_parsing.py) --------------------
+# The dashboard's "Import from image/PDF" flow and the parse_seating_chart
+# management command send the uploaded chart to the Claude API (vision) and
+# build a parametric SeatingChart from the result. Both fail with a clear
+# "not configured" error when no API key is available -- every other part of
+# the app works without one. When ANTHROPIC_API_KEY is unset here, the
+# anthropic SDK's own environment resolution is the fallback.
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+CHART_PARSING_MODEL = env("CHART_PARSING_MODEL", default="claude-opus-4-8")

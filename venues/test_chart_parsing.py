@@ -254,6 +254,31 @@ class ValidateChartSpecTests(TestCase):
         )
         self.assertEqual(spec["sections"][0]["row_x_offset"], -0.5)
 
+    def test_center_alignment_attempts_nothing_without_a_clear_taper(self):
+        # Oscillating widths (5, 4, 6, 3, 5 in a 6-wide grid) fit no linear
+        # taper -- the derivation declines rather than applying an offset
+        # that would merely look deliberate. Same when the section uses
+        # ALTERNATING stagger, which is its own mechanism.
+        removed = [["A", "6"], ["B", "5"], ["B", "6"], ["D", "4"], ["D", "5"], ["D", "6"], ["E", "6"]]
+        spec = validate_chart_spec(
+            chart_spec(
+                section_spec(
+                    rows=5, seats_per_row=6, row_alignment="center", removed_seats=removed
+                )
+            )
+        )
+        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
+
+        spec = validate_chart_spec(
+            chart_spec(
+                section_spec(
+                    rows=3, seats_per_row=6, row_alignment="center",
+                    offset_mode="alternating", alt_row_seat_delta=-1,
+                )
+            )
+        )
+        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
+
     def test_edge_alignment_and_explicit_offsets_are_untouched(self):
         # Default/edge alignment never derives an offset...
         spec = validate_chart_spec(
@@ -548,9 +573,11 @@ class RealWorldChartTests(TestCase):
         self.assertEqual(
             offsets,
             {
-                "Orchestra Center": -0.3,  # A=9 -> L=15 over 10 rows
-                "Parterre Center": -0.3,   # N=18 -> T=21 over 5 rows
-                "Balcony Center": -0.25,   # V=14 -> X=15 over 2 rows
+                "Orchestra Center": -0.3,  # steady taper A=9 -> L=15 over 10 rows
+                "Parterre Center": -0.3,   # steady taper N=18 -> T=21 over 5 rows
+                # Balcony widths oscillate (14, 13, 15, 13, 14) -- no clear
+                # taper, so the derivation declines and attempts nothing.
+                "Balcony Center": 0.0,
             },
         )
         # Side blocks stay edge-aligned with no offset.

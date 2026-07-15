@@ -416,6 +416,16 @@ def _seat_identity_list(value):
     return identities
 
 
+# _derived_center_offset only trusts its linear fit when the row widths
+# actually follow it: at least this fraction of occupied rows must sit
+# within the tolerance (in seats) of the fitted taper. One weird row (a
+# mix-desk cut-out) is tolerated; an erratic distribution isn't -- better
+# to leave a centered block visibly un-centered for staff to fix than to
+# apply an offset that merely LOOKS deliberate.
+_CENTER_FIT_TOLERANCE_SEATS = 1.25
+_CENTER_FIT_MIN_FRACTION = 0.75
+
+
 def _derived_center_offset(section):
     """The row_x_offset (REPEATED mode) that approximately re-CENTERS a
     section's ragged rows, derived from the per-row widths its removed_seats
@@ -426,8 +436,16 @@ def _derived_center_offset(section):
     row_x_offset is one linear term for the whole section, the slope is
     anchored on the front row vs the WIDEST row (robust against a single
     odd back row, e.g. a mix-desk cut-out) with a last-row fallback when the
-    front row IS the widest. Exact when the widening is uniform; a close
-    approximation staff can nudge in the editor otherwise."""
+    front row IS the widest.
+
+    Conservative by design: a linear offset can only center a steady taper,
+    so when the width distribution doesn't fit the implied line (see
+    _CENTER_FIT_* above) -- oscillating widths, several irregular rows --
+    this returns 0.0 and attempts nothing, leaving the block edge-aligned
+    for staff to shape in the editor. Same for ALTERNATING offset_mode,
+    whose stagger is its own mechanism."""
+    if section["offset_mode"] == Section.OffsetMode.ALTERNATING:
+        return 0.0
     labels = generate_row_labels(
         section["rows"], section["row_label_scheme"], section["row_label_start"]
     )
@@ -443,6 +461,16 @@ def _derived_center_offset(section):
     if anchor_index == first_index:  # front row is the widest -- narrowing block
         anchor_index, anchor_width = occupied[-1]
     slope = (anchor_width - first_width) / (anchor_index - first_index)
+
+    fitting = sum(
+        1
+        for index, width in occupied
+        if abs(width - (first_width + slope * (index - first_index)))
+        <= _CENTER_FIT_TOLERANCE_SEATS
+    )
+    if fitting < _CENTER_FIT_MIN_FRACTION * len(occupied):
+        return 0.0
+
     # Same +/-2 cap the editor's slider and chart_editor_save enforce.
     return max(-2.0, min(2.0, -section["seat_pitch"] * slope / 2.0))
 

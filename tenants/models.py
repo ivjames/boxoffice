@@ -38,8 +38,8 @@ class Organization(models.Model):
 
     # Six-role brand palette (see tenants/color_schemes.py for the role model).
     # `primary_color` and `accent_color` predate the six-role scheme and stay
-    # the load-bearing pair app.css keys on -- `accent_color` IS the "metallic"
-    # highlight/CTA role. The other four were added with the scheme feature and
+    # the load-bearing pair app.css keys on -- `accent_color` IS the Feature
+    # Accent highlight/CTA role. The other four were added with the scheme and
     # are exposed as extra CSS variables in templates/base.html. Applying a
     # ColorScheme copies its six roles onto these fields (see apply_color_scheme).
     primary_color = models.CharField(
@@ -48,7 +48,7 @@ class Organization(models.Model):
     )
     accent_color = models.CharField(
         max_length=7, default="#e11d48", validators=[validate_hex_color],
-        help_text="Metallic / accent highlight (buttons, links). Hex, e.g. #e11d48.",
+        help_text="Feature Accent highlight (buttons, links). Hex, e.g. #e11d48.",
     )
     secondary_color = models.CharField(
         max_length=7, default="#374151", validators=[validate_hex_color],
@@ -192,8 +192,8 @@ class ColorScheme(models.Model):
     # query like any other color field.
     primary = models.CharField(max_length=7, validators=[validate_hex_color])
     secondary = models.CharField(max_length=7, validators=[validate_hex_color])
+    feature_accent = models.CharField(max_length=7, validators=[validate_hex_color])
     dark_accent = models.CharField(max_length=7, validators=[validate_hex_color])
-    metallic = models.CharField(max_length=7, validators=[validate_hex_color])
     light_neutral = models.CharField(max_length=7, validators=[validate_hex_color])
     neutral = models.CharField(max_length=7, validators=[validate_hex_color])
 

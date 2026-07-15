@@ -550,8 +550,8 @@ class ColorSchemeForm(forms.ModelForm):
 
     class Meta:
         model = ColorScheme
-        # Feature Accent (metallic) precedes Dark Accent, matching COLOR_ROLES.
-        fields = ["name", "primary", "secondary", "metallic", "dark_accent", "light_neutral", "neutral"]
+        # Feature Accent precedes Dark Accent, matching COLOR_ROLES.
+        fields = ["name", "primary", "secondary", "feature_accent", "dark_accent", "light_neutral", "neutral"]
         widgets = {
             role: forms.TextInput(attrs={"type": "color", "data-role": role})
             for role, _label, _field in COLOR_ROLES

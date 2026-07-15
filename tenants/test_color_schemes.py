@@ -46,7 +46,7 @@ class PresetSeedingTests(TestCase):
 class ApplySchemeTests(TestCase):
     def test_palette_reads_off_the_org_fields(self):
         org = make_org()
-        self.assertEqual(org.palette["metallic"], org.accent_color)
+        self.assertEqual(org.palette["feature_accent"], org.accent_color)
         self.assertEqual(set(org.palette), set(ROLE_KEYS))
 
     def test_apply_copies_every_role_onto_the_org(self):
@@ -56,8 +56,8 @@ class ApplySchemeTests(TestCase):
         org.refresh_from_db()
         for role, field in ROLE_TO_ORG_FIELD.items():
             self.assertEqual(getattr(org, field), scheme.roles[role])
-        # 'metallic' lands on the legacy accent_color field specifically.
-        self.assertEqual(org.accent_color, scheme.metallic)
+        # 'feature_accent' lands on the legacy accent_color field specifically.
+        self.assertEqual(org.accent_color, scheme.feature_accent)
 
     def test_apply_is_a_snapshot_not_a_live_link(self):
         # Editing the source scheme after applying must NOT re-theme the org.
@@ -76,7 +76,7 @@ class ColorSchemeModelTests(TestCase):
         scheme = ColorScheme.objects.create(
             organization=org, name="Sunset Boulevard",
             primary="#111111", secondary="#222222", dark_accent="#000000",
-            metallic="#d4af37", light_neutral="#eeeeee", neutral="#101010",
+            feature_accent="#d4af37", light_neutral="#eeeeee", neutral="#101010",
         )
         self.assertEqual(scheme.slug, "sunset-boulevard")
 
@@ -84,7 +84,7 @@ class ColorSchemeModelTests(TestCase):
         org = make_org()
         scheme = ColorScheme(
             organization=org, name="Bad", primary="not-a-color",
-            secondary="#222222", dark_accent="#000000", metallic="#d4af37",
+            secondary="#222222", dark_accent="#000000", feature_accent="#d4af37",
             light_neutral="#eeeeee", neutral="#101010",
         )
         with self.assertRaises(ValidationError):
@@ -159,7 +159,7 @@ class ExtractionTests(TestCase):
         )
         roles = assign_roles(cands)
         self.assertEqual(roles["primary"], "#4b2e83")
-        self.assertEqual(roles["metallic"], "#d4af37")  # warmest saturated
+        self.assertEqual(roles["feature_accent"], "#d4af37")  # warmest saturated
         self.assertEqual(roles["dark_accent"], "#0e0e12")  # darkest
         self.assertEqual(set(roles), set(ROLE_KEYS))
 

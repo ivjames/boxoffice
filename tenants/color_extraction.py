@@ -14,7 +14,7 @@ Two stages, each independently testable:
    candidates into the six roles by luminance and saturation: the most-used
    saturated color becomes `primary`, the next distinct one `secondary`, the
    darkest becomes `dark_accent` / `neutral`, the lightest `light_neutral`, and
-   the most saturated warm/gold-ish one `metallic`. Always returns all six
+   the most saturated warm/gold-ish one `feature_accent`. Always returns all six
    roles (falling back to sensible defaults when the page is monochrome).
 
 `derive_scheme_from_url(url)` ties them together: fetch the page, extract,
@@ -117,7 +117,7 @@ def _saturation(hex_color):
 
 def _warmth(hex_color):
     """Rough gold/brass affinity: reward red+green (yellow) over blue. Used to
-    pick the `metallic` role, which reads best as a warm highlight."""
+    pick the `feature_accent` role, which reads best as a warm highlight."""
     r, g, b = _rgb(hex_color)
     return (r + g) / 2 - b
 
@@ -180,7 +180,7 @@ _FALLBACK = {
     "primary": "#1e293b",
     "secondary": "#475569",
     "dark_accent": "#0f172a",
-    "metallic": "#c9a227",
+    "feature_accent": "#c9a227",
     "light_neutral": "#f1f5f9",
     "neutral": "#111111",
 }
@@ -211,11 +211,11 @@ def assign_roles(candidates):
     roles["neutral"] = min(colors, key=_luminance)
     roles["light_neutral"] = max(colors, key=_luminance)
 
-    # Metallic: the warmest reasonably-saturated color (gold/brass/copper
+    # Feature accent: the warmest reasonably-saturated color (gold/brass/copper
     # read best as the highlight). Keep the default gold if nothing warm shows.
     warm = [c for c in colors if _saturation(c) >= 0.2 and _warmth(c) > 20]
     if warm:
-        roles["metallic"] = max(warm, key=_warmth)
+        roles["feature_accent"] = max(warm, key=_warmth)
 
     return roles
 
@@ -316,7 +316,7 @@ def _refine_with_claude(scheme):
         f"Colors, most-used first: {swatches}\n\n"
         f"A first-pass heuristic proposed: {json.dumps(scheme['roles'])}\n\n"
         "Refine into the six roles: primary (main brand), secondary (supporting), "
-        "dark_accent (deep shade), metallic (warm highlight/CTA), light_neutral "
+        "dark_accent (deep shade), feature_accent (warm highlight/CTA), light_neutral "
         "(light background), neutral (near-black text). Prefer colors actually "
         "present on the page; only invent a color if a role has no good match. "
         "Give a short evocative name."

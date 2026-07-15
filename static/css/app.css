@@ -3374,7 +3374,8 @@ table.dash-table th {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.5rem;
     padding: 0.5rem 0.75rem;
 }
 
@@ -3385,7 +3386,9 @@ table.dash-table th {
 
 .scheme-card__actions {
     display: inline-flex;
+    flex-wrap: wrap;
     gap: 0.4rem;
+    margin-left: auto;
 }
 
 /* Heading + body font selects, side by side (stack on narrow). */

@@ -52,6 +52,14 @@ class BrandingAccessTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertContains(resp, "Ruby Velvet")
         self.assertContains(resp, "Ready-made schemes")
 
+    def test_preset_cards_carry_preview_data(self):
+        # Each preset exposes a client-side "Preview" button carrying its six
+        # role colors, so the JS can load it into the customizer.
+        self.client.force_login(self.manager)
+        resp = self.client.get(BRANDING_URL, HTTP_HOST=host_for("roxy"))
+        self.assertContains(resp, "scheme-preview-btn")
+        self.assertContains(resp, 'data-metallic="#517D78"')  # Art Deco Royal's feature accent
+
 
 class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def setUp(self):
@@ -69,7 +77,7 @@ class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
         self.org.refresh_from_db()
         self.assertEqual(self.org.primary_color, "#4B2E83")
-        self.assertEqual(self.org.accent_color, "#2A8580")  # feature-accent (metallic) role
+        self.assertEqual(self.org.accent_color, "#517D78")  # feature-accent (metallic) role
 
     def test_cannot_apply_another_tenants_custom_scheme(self):
         foreign = ColorScheme.objects.create(

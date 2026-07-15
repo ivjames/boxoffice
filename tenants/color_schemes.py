@@ -54,76 +54,76 @@ HEX_COLOR_RE = r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
 # six-key role shape above; `metallic` holds the spec's "Feature Accent" color.
 BUILTIN_SCHEMES = [
     ("ruby-velvet", "Ruby Velvet", {
-        "primary": "#6A1E32", "secondary": "#A64868", "metallic": "#E4A3A8",
+        "primary": "#6A1E32", "secondary": "#A64868", "metallic": "#4E7773",
         "dark_accent": "#2C0E17", "light_neutral": "#F7EFE3", "neutral": "#181312"}),
     ("crimson-cabaret", "Crimson Cabaret", {
-        "primary": "#9A2D3F", "secondary": "#C77A86", "metallic": "#F08A72",
+        "primary": "#9A2D3F", "secondary": "#C77A86", "metallic": "#4D7C87",
         "dark_accent": "#461723", "light_neutral": "#FAF0EC", "neutral": "#211719"}),
     ("blush-teal", "Blush & Teal", {
-        "primary": "#D89AA6", "secondary": "#EBC2C8", "metallic": "#1F6664",
+        "primary": "#D89AA6", "secondary": "#EBC2C8", "metallic": "#557873",
         "dark_accent": "#532B38", "light_neutral": "#FFF8F4", "neutral": "#30292B"}),
     ("sunset-marquee", "Sunset Marquee", {
-        "primary": "#C75A3A", "secondary": "#F0A068", "metallic": "#F4C95D",
+        "primary": "#C75A3A", "secondary": "#F0A068", "metallic": "#5877A3",
         "dark_accent": "#57281E", "light_neutral": "#F8E9D3", "neutral": "#261B16"}),
     ("copper-house", "Copper House", {
-        "primary": "#A65B32", "secondary": "#D3A67D", "metallic": "#3C817A",
+        "primary": "#A65B32", "secondary": "#D3A67D", "metallic": "#5E8A82",
         "dark_accent": "#3B241A", "light_neutral": "#F5E8D7", "neutral": "#201714"}),
     ("apricot-salon", "Apricot Salon", {
-        "primary": "#E8A06F", "secondary": "#F4C2A2", "metallic": "#71405C",
+        "primary": "#E8A06F", "secondary": "#F4C2A2", "metallic": "#6874A0",
         "dark_accent": "#6D3928", "light_neutral": "#FFF4E7", "neutral": "#33241F"}),
     ("golden-matinee", "Golden Matinee", {
-        "primary": "#C8942D", "secondary": "#E2BD67", "metallic": "#8A2F38",
+        "primary": "#C8942D", "secondary": "#E2BD67", "metallic": "#4C6486",
         "dark_accent": "#5A421E", "light_neutral": "#FFF4D6", "neutral": "#241E16"}),
     ("ivory-sapphire", "Ivory & Sapphire", {
-        "primary": "#EFE6D4", "secondary": "#BCA98D", "metallic": "#2F4F7F",
+        "primary": "#EFE6D4", "secondary": "#BCA98D", "metallic": "#3D587D",
         "dark_accent": "#4A3528", "light_neutral": "#FCFBF7", "neutral": "#2D2724"}),
     ("olive-revue", "Olive Revue", {
-        "primary": "#7A8048", "secondary": "#B9C29B", "metallic": "#9B4A3C",
+        "primary": "#7A8048", "secondary": "#B9C29B", "metallic": "#76505E",
         "dark_accent": "#3A4025", "light_neutral": "#F6F1DF", "neutral": "#1A1817"}),
     ("forest-manor", "Forest Manor", {
-        "primary": "#264D3B", "secondary": "#7B9772", "metallic": "#D09838",
+        "primary": "#264D3B", "secondary": "#7B9772", "metallic": "#B87965",
         "dark_accent": "#182A23", "light_neutral": "#F2ECDF", "neutral": "#20211F"}),
     ("emerald-palace", "Emerald Palace", {
-        "primary": "#146B52", "secondary": "#6EA67C", "metallic": "#B977A5",
+        "primary": "#146B52", "secondary": "#6EA67C", "metallic": "#8F729E",
         "dark_accent": "#123128", "light_neutral": "#F5F0E6", "neutral": "#1C1D21"}),
     ("sage-conservatory", "Sage Conservatory", {
-        "primary": "#9FB59C", "secondary": "#C6D3C0", "metallic": "#C97868",
+        "primary": "#9FB59C", "secondary": "#C6D3C0", "metallic": "#8C7A89",
         "dark_accent": "#294538", "light_neutral": "#F7FAF3", "neutral": "#29312E"}),
     ("peacock-luxe", "Peacock Luxe", {
-        "primary": "#0D6B73", "secondary": "#5DB5B3", "metallic": "#B64678",
+        "primary": "#0D6B73", "secondary": "#5DB5B3", "metallic": "#8B536D",
         "dark_accent": "#0A3438", "light_neutral": "#F5F6F3", "neutral": "#1A2428"}),
     ("sea-glass-foyer", "Sea Glass Foyer", {
-        "primary": "#7DBAB4", "secondary": "#B9D9D5", "metallic": "#E59A78",
+        "primary": "#7DBAB4", "secondary": "#B9D9D5", "metallic": "#C38A7A",
         "dark_accent": "#24504E", "light_neutral": "#F7FCFA", "neutral": "#263433"}),
     ("sapphire-night", "Sapphire Night", {
-        "primary": "#244C9A", "secondary": "#6D92D9", "metallic": "#3CBED2",
+        "primary": "#244C9A", "secondary": "#6D92D9", "metallic": "#BE934F",
         "dark_accent": "#14213B", "light_neutral": "#F2F5FA", "neutral": "#11131A"}),
     ("powder-blue", "Powder Blue", {
-        "primary": "#A9C3DD", "secondary": "#D2E1EF", "metallic": "#D97969",
+        "primary": "#A9C3DD", "secondary": "#D2E1EF", "metallic": "#C9887E",
         "dark_accent": "#24384F", "light_neutral": "#FAFCFE", "neutral": "#26303A"}),
     ("modern-luxe", "Modern Luxe", {
-        "primary": "#465A78", "secondary": "#9087B5", "metallic": "#C7C85D",
+        "primary": "#465A78", "secondary": "#9087B5", "metallic": "#B58D55",
         "dark_accent": "#29384D", "light_neutral": "#F5F6F8", "neutral": "#25272B"}),
     ("periwinkle-stage", "Periwinkle Stage", {
-        "primary": "#8D9CC7", "secondary": "#BBC3DE", "metallic": "#B44B71",
+        "primary": "#8D9CC7", "secondary": "#BBC3DE", "metallic": "#B87A84",
         "dark_accent": "#363C59", "light_neutral": "#F8F9FD", "neutral": "#272A38"}),
     ("art-deco-royal", "Art Deco Royal", {
-        "primary": "#4B2E83", "secondary": "#7E5BA7", "metallic": "#2A8580",
+        "primary": "#4B2E83", "secondary": "#7E5BA7", "metallic": "#517D78",
         "dark_accent": "#2A132F", "light_neutral": "#F2E8D6", "neutral": "#0E0E12"}),
     ("lilac-premiere", "Lilac Premiere", {
-        "primary": "#B39AC9", "secondary": "#D4C3E2", "metallic": "#357B61",
+        "primary": "#B39AC9", "secondary": "#D4C3E2", "metallic": "#5E8576",
         "dark_accent": "#46304F", "light_neutral": "#FCF8FE", "neutral": "#302934"}),
     ("vintage-cinema", "Vintage Cinema", {
-        "primary": "#5A1C24", "secondary": "#7A8048", "metallic": "#3C6685",
+        "primary": "#5A1C24", "secondary": "#7A8048", "metallic": "#5A7083",
         "dark_accent": "#2B2019", "light_neutral": "#EFE4C8", "neutral": "#1A1817"}),
     ("rose-quartz", "Rose Quartz", {
-        "primary": "#CFA4AE", "secondary": "#E9CDD3", "metallic": "#286A62",
+        "primary": "#CFA4AE", "secondary": "#E9CDD3", "metallic": "#557B72",
         "dark_accent": "#56323B", "light_neutral": "#FFF8F9", "neutral": "#33282C"}),
     ("midnight-noir", "Midnight Noir", {
-        "primary": "#222329", "secondary": "#626873", "metallic": "#C23B46",
+        "primary": "#222329", "secondary": "#626873", "metallic": "#8B3944",
         "dark_accent": "#0D0D10", "light_neutral": "#F4F3EF", "neutral": "#18191C"}),
     ("silver-screen", "Silver Screen", {
-        "primary": "#B6B8BD", "secondary": "#D8D9DC", "metallic": "#486B94",
+        "primary": "#B6B8BD", "secondary": "#D8D9DC", "metallic": "#6A7F94",
         "dark_accent": "#41444A", "light_neutral": "#FAFAFA", "neutral": "#202124"}),
 ]
 

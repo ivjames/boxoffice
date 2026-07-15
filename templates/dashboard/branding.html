@@ -102,12 +102,15 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                 </div>
                 <div class="scheme-card__foot">
                     <span class="scheme-card__name">{{ scheme.name }}</span>
-                    <form method="post" action="{% url 'dashboard_branding' %}">
-                        {% csrf_token %}
-                        <input type="hidden" name="action" value="apply_scheme">
-                        <input type="hidden" name="scheme_id" value="{{ scheme.pk }}">
-                        <button type="submit" class="button button--sm">Apply</button>
-                    </form>
+                    <span class="scheme-card__actions">
+                        {% include "dashboard/_scheme_preview_button.html" %}
+                        <form method="post" action="{% url 'dashboard_branding' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="apply_scheme">
+                            <input type="hidden" name="scheme_id" value="{{ scheme.pk }}">
+                            <button type="submit" class="button button--sm">Apply</button>
+                        </form>
+                    </span>
                 </div>
             </div>
         {% endfor %}
@@ -129,6 +132,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                 <div class="scheme-card__foot">
                     <span class="scheme-card__name">{{ scheme.name }}</span>
                     <span class="scheme-card__actions">
+                        {% include "dashboard/_scheme_preview_button.html" %}
                         <form method="post" action="{% url 'dashboard_branding' %}">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="apply_scheme">
@@ -246,6 +250,27 @@ ready-made scheme, save your own, or let us read one off your website.</p>
             });
         });
     });
+
+    // "Preview" on a scheme card: load that scheme's colors into the
+    // "Save a custom scheme" editor + its live preview (client-side only --
+    // nothing is applied to the storefront until Apply/Save), then scroll to it
+    // so staff can tweak from there.
+    var editorSection = document.getElementById("save-scheme");
+    var editorForm = editorSection && editorSection.querySelector("form");
+    if (editorForm) {
+        document.querySelectorAll(".scheme-preview-btn").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var nameInput = editorForm.querySelector('input[name="name"]');
+                if (nameInput) nameInput.value = btn.dataset.name || "";
+                editorForm.querySelectorAll("input[data-role]").forEach(function (input) {
+                    var value = btn.dataset[input.dataset.role];
+                    if (value) input.value = value;
+                });
+                sync(editorForm);
+                editorSection.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
+        });
+    }
 })();
 </script>
 {% endblock %}

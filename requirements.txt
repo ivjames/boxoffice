@@ -27,6 +27,9 @@ stripe>=11,<16
 # Chromium/Cairo/etc) so it needs nothing extra on the droplet beyond `pip
 # install -r requirements.txt` -- see events/zone_export.py.
 reportlab>=4.0,<5.0
+# AI seating-chart parsing (image/PDF -> SeatingChart, venues/chart_parsing.py):
+# official Anthropic SDK for the Claude vision + structured-output call.
+anthropic>=0.60,<1.0
 # Optional error monitoring. Only initialized when SENTRY_DSN is set
 # (config/observability.py); the import is guarded, so removing this line just
 # makes Sentry a permanent no-op rather than breaking startup.

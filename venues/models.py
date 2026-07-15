@@ -67,6 +67,7 @@ class Section(TenantScopedModel):
         ODD_DESC_LEFT = "odd_desc_left", "Odd, descending toward the aisle (…5, 3, 1)"
         EVEN_ASC_RIGHT = "even_asc_right", "Even, ascending away from the aisle (2, 4, 6…)"
         HUNDREDS = "hundreds", "Hundreds by row (101, 102… / 201, 202…)"
+        HUNDREDS_FLAT = "hundreds_flat", "Hundreds, same every row (101, 102… / 101, 102…)"
 
     class RowLabelScheme(models.TextChoices):
         SKIP_IO = "skip_io", "A–Z skipping I/O, then AA, BB…"
@@ -211,6 +212,18 @@ class Section(TenantScopedModel):
     )
     row_label_scheme = models.CharField(
         max_length=20, choices=RowLabelScheme.choices, default=RowLabelScheme.SKIP_IO
+    )
+    row_label_start = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Index into the row-label sequence where this section's FIRST row starts -- 0 "
+            "(default) labels it A. Real houses often continue one letter sequence across "
+            "tiers (Orchestra A-M, then a Parterre whose first row is N, a Balcony starting "
+            "at V): set 12 / 19 (skip_io indices for N / V) on those sections so labels -- "
+            "and therefore printed tickets -- match the house's own chart. Purely a "
+            "labeling offset: never affects geometry. See venues.generation."
+            "generate_row_labels, mirrored in static/js/seat_geometry.js."
+        ),
     )
 
     class Meta(TenantScopedModel.Meta):

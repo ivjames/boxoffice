@@ -93,20 +93,26 @@ class SeatRosterChanged(SeatGenerationError):
     specifically to fall back to a full regenerate."""
 
 
-def generate_row_labels(count, scheme):
+def generate_row_labels(count, scheme, start=0):
     """`count` row labels in generation order: A, B, C, … through the
     scheme's alphabet, then AA, BB, CC, … (doubled letters, not full base-26
     combinations) once that's exhausted, then AAA, BBB, … and so on.
     `scheme` skips I/O by default (Section.RowLabelScheme.SKIP_IO) to match
     the common house convention of not using letters that are easily
     confused with 1/0.
+
+    `start` (Section.row_label_start) offsets into that same sequence, so a
+    section whose first physical row continues the house's letter sequence
+    (a Parterre starting at N behind an A-M Orchestra) labels correctly:
+    generate_row_labels(3, SKIP_IO, start=12) -> ["N", "P", "Q"]. Mirrored
+    by seat_geometry.js's generateRowLabels.
     """
     letters = (
         _BASE_LETTERS_ALL if scheme == Section.RowLabelScheme.ALL_LETTERS else _BASE_LETTERS_SKIP_IO
     )
     n = len(letters)
     labels = []
-    for i in range(count):
+    for i in range(start, start + count):
         group, index = divmod(i, n)
         labels.append(letters[index] * (group + 1))
     return labels
@@ -129,6 +135,11 @@ def generate_seat_numbers(seat_count, scheme, row_index):
     if scheme == Section.NumberingScheme.HUNDREDS:
         base = (row_index + 1) * 100
         return [base + i + 1 for i in range(seat_count)]
+    if scheme == Section.NumberingScheme.HUNDREDS_FLAT:
+        # Continental center-block style: every row restarts at 101 (the
+        # 100-band marks "center section", not the row) -- e.g. row A
+        # 101-109, row B 101-110. Row identity comes from the row label.
+        return [100 + i + 1 for i in range(seat_count)]
     # SEQUENTIAL, and the fallback for any unrecognized value.
     return [i + 1 for i in range(seat_count)]
 
@@ -436,7 +447,7 @@ def _build_seats(section, row_counts, accessible, removed_ids, accessible_ids):
     accessible = accessible or {}
     removed_ids = removed_ids or set()
     accessible_ids = accessible_ids or set()
-    labels = generate_row_labels(len(row_counts), section.row_label_scheme)
+    labels = generate_row_labels(len(row_counts), section.row_label_scheme, section.row_label_start)
     seats = []
     for row_index, (row_label, seat_count) in enumerate(zip(labels, row_counts)):
         numbers = generate_seat_numbers(seat_count, section.numbering_scheme, row_index)

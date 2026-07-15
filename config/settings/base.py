@@ -244,6 +244,16 @@ LOGIN_RATELIMIT_WINDOW_SECONDS = env.int("LOGIN_RATELIMIT_WINDOW_SECONDS", defau
 # /admin/ itself is always reachable directly regardless of this flag.
 SHOW_ADMIN_LINK = env.bool("SHOW_ADMIN_LINK", default=False)
 
+# --- AI SEATING-CHART PARSING (venues/chart_parsing.py) --------------------
+# The dashboard's "Import from image/PDF" flow and the parse_seating_chart
+# management command send the uploaded chart to the Claude API (vision) and
+# build a parametric SeatingChart from the result. Both fail with a clear
+# "not configured" error when no API key is available -- every other part of
+# the app works without one. When ANTHROPIC_API_KEY is unset here, the
+# anthropic SDK's own environment resolution is the fallback.
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+CHART_PARSING_MODEL = env("CHART_PARSING_MODEL", default="claude-opus-4-8")
+
 # --- django-unfold (admin reskin) -----------------------------------------
 # Branding for the /admin/ skin. The functional site_header/site_title
 # strings in config/urls.py remain the fallback for anything unfold doesn't

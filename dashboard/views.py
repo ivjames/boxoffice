@@ -37,7 +37,7 @@ from passes.models import PassProduct, PassPurchase
 from passes.services import remaining_admissions, restore_redemptions_for_order
 from payments.services import RefundError, refund_order
 from promotions.models import PromoCode
-from venues import generation
+from venues import chart_parsing, generation
 from venues.models import Seat, SeatingChart, Section, Venue
 
 from .forms import (
@@ -1237,6 +1237,51 @@ class SeatingChartListView(ManagerRequiredMixin, ListView):
         return context
 
 
+@manager_required
+@require_POST
+def chart_parse_upload(request, venue_pk):
+    """POST target of the chart list page's "Import from image/PDF" form:
+    runs the uploaded file through venues.chart_parsing (Claude vision ->
+    parametric section spec -> generated seats) and drops staff into the
+    live chart editor to review/refine the result. Manager-gated and
+    venue-scoped like every other chart mutation; every failure mode comes
+    back as a flash message on the chart list rather than a 500."""
+    venue = get_object_or_404(Venue, pk=venue_pk, organization=request.organization)
+    back = redirect("dashboard_chart_list", venue.pk)
+
+    upload = request.FILES.get("file")
+    if upload is None:
+        messages.error(request, "Choose an image or PDF of your seating chart first.")
+        return back
+    media_type = chart_parsing.media_type_for_upload(upload.name, upload.content_type)
+    if media_type is None:
+        messages.error(request, "Unsupported file type. Upload a PNG, JPEG, GIF, WebP image or a PDF.")
+        return back
+    if upload.size > chart_parsing.MAX_UPLOAD_BYTES:
+        messages.error(request, "File is too large (20 MB max).")
+        return back
+
+    try:
+        spec = chart_parsing.parse_chart_file(upload.read(), media_type)
+        chart = chart_parsing.build_chart_from_spec(
+            venue, spec, name=(request.POST.get("name") or "").strip() or None
+        )
+    except chart_parsing.ChartParsingError as exc:
+        messages.error(request, str(exc))
+        return back
+
+    seat_count = Seat.objects.filter(organization=request.organization, section__chart=chart).count()
+    usage_line = chart_parsing.describe_usage(spec.get("usage"))
+    messages.success(
+        request,
+        f"Parsed {chart.sections.count()} section(s) / {seat_count} seat(s) from "
+        f"{upload.name}{f' ({usage_line})' if usage_line else ''}. Review the layout "
+        "below -- the parse is a starting point, so check counts and positions "
+        "before selling against it.",
+    )
+    return redirect("dashboard_chart_editor", chart.pk)
+
+
 class SeatingChartCreateView(ManagerRequiredMixin, CreateView):
     model = SeatingChart
     form_class = SeatingChartForm
@@ -1494,7 +1539,7 @@ def _section_color(index):
 _SECTION_PARAM_FIELDS = [
     "origin_x", "origin_y", "rotation", "seat_pitch", "row_pitch", "row_x_offset",
     "arc_radius", "offset_mode", "alt_row_seat_delta", "rows", "seats_per_row",
-    "numbering_scheme", "row_label_scheme", "pivot_mode", "pivot_x", "pivot_y",
+    "numbering_scheme", "row_label_scheme", "row_label_start", "pivot_mode", "pivot_x", "pivot_y",
 ]
 
 
@@ -1653,6 +1698,8 @@ def chart_editor_save(request, pk):
                     setattr(section, field, max(-2.0, min(2.0, float(raw[field]))))
                 elif field in ("rows", "seats_per_row"):
                     setattr(section, field, max(1, int(raw[field])))
+                elif field == "row_label_start":
+                    setattr(section, field, max(0, int(raw[field])))
                 else:
                     setattr(section, field, float(raw[field]))
         except (TypeError, ValueError):

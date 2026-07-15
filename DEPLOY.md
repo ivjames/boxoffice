@@ -24,7 +24,7 @@ both have bitten a real deploy:
 
 ```bash
 doctl account get          # provision-site's DNS step fails hard if doctl isn't authed
-python3 --version          # need >= 3.10 for Django 5.2
+python3 --version          # need >= 3.11 (django-unfold's floor; Django 5.2 itself only needs 3.10)
 apt-get install -y python3-venv python3-dev   # often absent on a Node-first box
 ```
 

@@ -60,6 +60,12 @@ def fake_response(spec, stop_reason="end_turn"):
     return SimpleNamespace(
         stop_reason=stop_reason,
         content=[SimpleNamespace(type="text", text=json.dumps(spec))],
+        usage=SimpleNamespace(
+            input_tokens=4182,
+            output_tokens=1905,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
     )
 
 
@@ -120,6 +126,27 @@ class ParseChartFileTests(TestCase):
             with mock.patch.object(chart_parsing, "_get_client", return_value=client):
                 with self.assertRaises(ChartParsingError):
                     parse_chart_file(b"fake", "image/png")
+
+    def test_usage_is_attached_and_describable(self):
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            spec = parse_chart_file(b"fake", "image/png")
+        self.assertEqual(spec["usage"]["input_tokens"], 4182)
+        self.assertEqual(spec["usage"]["output_tokens"], 1905)
+        self.assertIn("4,182 tokens in", chart_parsing.describe_usage(spec["usage"]))
+        self.assertIn("1,905 out", chart_parsing.describe_usage(spec["usage"]))
+        # A spec carrying usage still builds (validate ignores unknown keys).
+        org = make_org("usage")
+        venue = Venue.objects.create(organization=org, name="Stage")
+        build_chart_from_spec(venue, spec)
+
+    def test_describe_usage_is_empty_when_unknown(self):
+        # A response with no usage (or a caller without a parse) renders
+        # nothing rather than fake zeros.
+        self.assertEqual(chart_parsing.describe_usage(None), "")
+        self.assertEqual(
+            chart_parsing.describe_usage({"model": "claude-opus-4-8", "input_tokens": None}), ""
+        )
 
     def test_unparseable_reply_is_a_clear_error(self):
         response = SimpleNamespace(

@@ -1,4 +1,4 @@
-"""`manage.py parse_seating_chart <file> --venue <id>` -- sends an image or
+"""`manage.py parse_seating_chart <file> --venue <id>` [--dry-run] -- sends an image or
 PDF of a seating chart to the Claude API (venues/chart_parsing.py) and
 builds a real, editor-ready SeatingChart on the given Venue from the parsed
 section params. The CLI counterpart of the dashboard's "Import from
@@ -6,11 +6,14 @@ image/PDF" upload; same conventions as import_seating_chart (--name,
 --replace with its live-ticket guard).
 """
 
+import json
+
 from django.core.management.base import BaseCommand, CommandError
 
 from venues.chart_parsing import (
     ChartParsingError,
     build_chart_from_spec,
+    describe_usage,
     media_type_for_upload,
     parse_chart_file,
 )
@@ -39,6 +42,14 @@ class Command(BaseCommand):
                 "live ticket issued."
             ),
         )
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help=(
+                "Parse only: print the extracted chart spec as JSON (plus token usage) and "
+                "create nothing. Useful for evaluating the vision step against a known chart."
+            ),
+        )
 
     def handle(self, *args, **options):
         try:
@@ -58,6 +69,13 @@ class Command(BaseCommand):
 
         try:
             spec = parse_chart_file(data, media_type)
+            if options["dry_run"]:
+                printable = {key: value for key, value in spec.items() if key != "usage"}
+                self.stdout.write(json.dumps(printable, indent=2))
+                usage_line = describe_usage(spec.get("usage"))
+                if usage_line:
+                    self.stdout.write(f"API usage — {usage_line}.")
+                return
             chart = build_chart_from_spec(
                 venue, spec, name=options.get("name"), replace=options["replace"]
             )
@@ -73,3 +91,6 @@ class Command(BaseCommand):
                 f"dashboard chart editor."
             )
         )
+        usage_line = describe_usage(spec.get("usage"))
+        if usage_line:
+            self.stdout.write(f"API usage — {usage_line}.")

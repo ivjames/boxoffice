@@ -58,6 +58,12 @@ def fake_api_client(spec=None):
     client.messages.create.return_value = SimpleNamespace(
         stop_reason="end_turn",
         content=[SimpleNamespace(type="text", text=json.dumps(spec or parsed_spec()))],
+        usage=SimpleNamespace(
+            input_tokens=4182,
+            output_tokens=1905,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
     )
     return client
 
@@ -85,6 +91,9 @@ class ChartParseUploadTests(StaffFixtureMixin, TestCase):
         self.assertRedirects(
             resp, f"/dashboard/charts/{chart.pk}/editor/", fetch_redirect_response=False
         )
+        # The success flash reports the parse's token usage.
+        editor = self.client.get(f"/dashboard/charts/{chart.pk}/editor/", HTTP_HOST=self.host)
+        self.assertContains(editor, "4,182 tokens in")
 
     def test_optional_name_field_overrides_parsed_name(self):
         with mock.patch.object(chart_parsing, "_get_client", return_value=fake_api_client()):

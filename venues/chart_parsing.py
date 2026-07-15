@@ -37,6 +37,7 @@ is the fallback) and `CHART_PARSING_MODEL` (defaults to claude-opus-4-8).
 """
 
 import json
+import logging
 
 from django.conf import settings
 from django.db import transaction
@@ -72,6 +73,9 @@ MAX_SECTIONS = 40
 # 20 MB: comfortably above any real chart scan, safely below the API's
 # 32 MB request limit once base64 overhead (~4/3) is added.
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+
+logger = logging.getLogger(__name__)
 
 
 class ChartParsingError(Exception):
@@ -171,11 +175,22 @@ overlap and their relative positions match the chart -- e.g. a left box at \
 smaller x than the center block, a balcony at larger y than the orchestra.
 
 Guidelines:
-- rows / seats_per_row: count them from the chart. If rows are ragged, use \
-the most common length and list the missing seats of shorter rows in \
-removed_seats (row labels run A, B, C... front to back per row_label_scheme; \
-seat numbers follow numbering_scheme, so with 'sequential' the leftmost seat \
-of every row is "1").
+- Houses are usually split into blocks by aisles (e.g. Left/Center/Right per \
+tier). Parse each block as its own section.
+- seats_per_row is the section's WIDEST row. For every shorter row, list the \
+printed numbers that are missing (relative to that widest row's numbering) in \
+removed_seats. Shorter rows almost always hug the aisle, so the missing seats \
+are the WALL-side ones: the highest odd numbers for odd_desc_left, the \
+highest even numbers for even_asc_right, the highest numbers for hundreds_flat \
+-- unless the chart clearly shows a mid-row gap, in which case remove exactly \
+the printed gap.
+- rows counts every row POSITION front to back, including a row that is \
+entirely absent from a section (e.g. a cross-aisle where the center block has \
+no row D but the sides do): keep the position and put ALL of that row's seats \
+in removed_seats, so the rows behind it keep their correct letters.
+- Row labels run front to back per row_label_scheme starting at \
+row_label_start; seat numbers follow numbering_scheme, so with 'sequential' \
+the leftmost seat of every row is "1".
 - Curved/fanned rows: set arc_radius (front-row radius, in seat units -- \
 gentler curve = larger radius). Straight rows: arc_radius null.
 - Diagonal/raked side sections: use rotation (whole-block tilt) and/or \
@@ -230,9 +245,11 @@ def _content_block(data_b64, media_type):
 
 def parse_chart_file(data, media_type):
     """Send the file bytes to the Claude API and return a validated chart
-    spec dict (see CHART_SPEC_SCHEMA / validate_chart_spec). Raises
-    ChartParsingError for every failure mode -- unsupported type, oversize
-    file, API errors, refusals, truncated output."""
+    spec dict (see CHART_SPEC_SCHEMA / validate_chart_spec) with the API's
+    token accounting attached as spec["usage"] (see _usage_dict /
+    describe_usage). Raises ChartParsingError for every failure mode --
+    unsupported type, oversize file, API errors, refusals, truncated
+    output."""
     import base64
 
     if media_type not in SUPPORTED_MEDIA_TYPES:
@@ -300,7 +317,52 @@ def parse_chart_file(data, media_type):
         spec = json.loads(text)
     except ValueError as exc:
         raise ChartParsingError("The parsing service returned an unreadable result. Try again.") from exc
-    return validate_chart_spec(spec)
+
+    spec = validate_chart_spec(spec)
+    spec["usage"] = _usage_dict(model, response)
+    logger.info(
+        "Parsed seating chart (%s): %s section(s), input_tokens=%s output_tokens=%s "
+        "cache_read=%s cache_creation=%s",
+        model,
+        len(spec["sections"]),
+        spec["usage"].get("input_tokens"),
+        spec["usage"].get("output_tokens"),
+        spec["usage"].get("cache_read_input_tokens"),
+        spec["usage"].get("cache_creation_input_tokens"),
+    )
+    return spec
+
+
+def _usage_dict(model, response):
+    """The API's token accounting for one parse, as a plain dict:
+    {"model", "input_tokens", "output_tokens", "cache_read_input_tokens",
+    "cache_creation_input_tokens"} -- absent/None fields stay None so
+    callers can render "unknown" honestly rather than a fake 0. Attached to
+    the spec as spec["usage"] (validate_chart_spec ignores unknown keys, so
+    a spec with usage still round-trips through build_chart_from_spec)."""
+    usage = getattr(response, "usage", None)
+    return {
+        "model": model,
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
+        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
+    }
+
+
+def describe_usage(usage):
+    """One human-readable line for spec["usage"] -- shared by the dashboard
+    flash message and the management command ('claude-opus-4-8: 4,182
+    tokens in, 1,905 out'). Returns "" when there's nothing to report (no
+    usage on the response, e.g. a mocked client)."""
+    if not usage or usage.get("input_tokens") is None:
+        return ""
+    parts = [f"{usage['input_tokens']:,} tokens in"]
+    if usage.get("output_tokens") is not None:
+        parts.append(f"{usage['output_tokens']:,} out")
+    if usage.get("cache_read_input_tokens"):
+        parts.append(f"{usage['cache_read_input_tokens']:,} cached")
+    return f"{usage.get('model', 'API')}: {', '.join(parts)}"
 
 
 # --- stage 2: defensive normalisation --------------------------------------
@@ -473,8 +535,3 @@ def build_chart_from_spec(venue, spec, *, name=None, replace=False):
     return chart
 
 
-def parse_and_build_chart(venue, data, media_type, *, name=None, replace=False):
-    """One-call convenience for the dashboard view / management command:
-    parse the file, then build the chart on `venue`."""
-    spec = parse_chart_file(data, media_type)
-    return build_chart_from_spec(venue, spec, name=name, replace=replace)

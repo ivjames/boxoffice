@@ -518,22 +518,22 @@ def chart_parse_upload(request, venue_pk):
         return back
 
     try:
-        chart = chart_parsing.parse_and_build_chart(
-            venue,
-            upload.read(),
-            media_type,
-            name=(request.POST.get("name") or "").strip() or None,
+        spec = chart_parsing.parse_chart_file(upload.read(), media_type)
+        chart = chart_parsing.build_chart_from_spec(
+            venue, spec, name=(request.POST.get("name") or "").strip() or None
         )
     except chart_parsing.ChartParsingError as exc:
         messages.error(request, str(exc))
         return back
 
     seat_count = Seat.objects.filter(organization=request.organization, section__chart=chart).count()
+    usage_line = chart_parsing.describe_usage(spec.get("usage"))
     messages.success(
         request,
         f"Parsed {chart.sections.count()} section(s) / {seat_count} seat(s) from "
-        f"{upload.name}. Review the layout below -- the parse is a starting point, "
-        "so check counts and positions before selling against it.",
+        f"{upload.name}{f' ({usage_line})' if usage_line else ''}. Review the layout "
+        "below -- the parse is a starting point, so check counts and positions "
+        "before selling against it.",
     )
     return redirect("dashboard_chart_editor", chart.pk)
 

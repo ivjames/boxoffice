@@ -11,11 +11,15 @@ plain link) because it mutates infra_status.
 
 {% block object-tools-items %}
     {% if original %}
-        <li>
+        {# Class lists mirror the li/a of unfold's own History object-tool so #}
+        {# this button matches the header button group under the unfold skin. #}
+        <li class="min-lg:first:rounded-l-default select-none hover:text-primary-600 border-base-200 min-lg:-ml-px dark:border-base-700 max-lg:-mt-px border max-lg:last:rounded-b-default min-lg:last:rounded-r-default dark:hover:text-primary-500 max-lg:first:rounded-t-default">
             <form method="post"
                   action="{% url 'admin:tenants_organization_provision' original.pk %}">
                 {% csrf_token %}
-                <button type="submit" class="historylink">
+                <button type="submit"
+                        class="cursor-pointer flex grow items-center gap-2 px-3 py-2 text-left whitespace-nowrap">
+                    <span class="material-symbols-outlined">rocket_launch</span>
                     {% translate "Provision infrastructure" %}
                 </button>
             </form>

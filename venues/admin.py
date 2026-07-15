@@ -1,15 +1,19 @@
 from django.contrib import admin
 
+from unfold.admin import ModelAdmin as UnfoldModelAdmin
+from unfold.admin import StackedInline as UnfoldStackedInline
+from unfold.admin import TabularInline as UnfoldTabularInline
+
 from .models import Seat, SeatingChart, Section, Venue
 
 
-class SeatInline(admin.TabularInline):
+class SeatInline(UnfoldTabularInline):
     model = Seat
     extra = 0
     fields = ("row_label", "number", "x", "y", "is_accessible")
 
 
-class SectionInline(admin.TabularInline):
+class SectionInline(UnfoldTabularInline):
     model = Section
     extra = 0
     fields = ("name", "ordering")
@@ -17,14 +21,14 @@ class SectionInline(admin.TabularInline):
 
 
 @admin.register(Venue)
-class VenueAdmin(admin.ModelAdmin):
+class VenueAdmin(UnfoldModelAdmin):
     list_display = ("name", "organization", "timezone", "address")
     list_filter = ("organization",)
     search_fields = ("name", "address")
 
 
 @admin.register(SeatingChart)
-class SeatingChartAdmin(admin.ModelAdmin):
+class SeatingChartAdmin(UnfoldModelAdmin):
     list_display = ("name", "venue", "organization")
     list_filter = ("organization", "venue")
     search_fields = ("name", "venue__name")
@@ -32,7 +36,7 @@ class SeatingChartAdmin(admin.ModelAdmin):
 
 
 @admin.register(Section)
-class SectionAdmin(admin.ModelAdmin):
+class SectionAdmin(UnfoldModelAdmin):
     list_display = ("name", "chart", "ordering", "organization")
     list_filter = ("organization", "chart")
     search_fields = ("name",)
@@ -40,7 +44,7 @@ class SectionAdmin(admin.ModelAdmin):
 
 
 @admin.register(Seat)
-class SeatAdmin(admin.ModelAdmin):
+class SeatAdmin(UnfoldModelAdmin):
     list_display = ("__str__", "section", "is_accessible", "organization")
     list_filter = ("organization", "is_accessible", "section")
     search_fields = ("row_label", "number")

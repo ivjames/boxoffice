@@ -5,6 +5,8 @@ from django.contrib import admin, messages
 from django.shortcuts import redirect
 from django.urls import path
 
+from unfold.admin import ModelAdmin as UnfoldModelAdmin
+
 from .models import Organization
 
 # Sorted list of IANA zones for the timezone dropdown — replaces the free-text
@@ -57,7 +59,7 @@ class OrganizationAdminForm(forms.ModelForm):
 
 
 @admin.register(Organization)
-class OrganizationAdmin(admin.ModelAdmin):
+class OrganizationAdmin(UnfoldModelAdmin):
     form = OrganizationAdminForm
     change_form_template = "admin/tenants/organization/change_form.html"
 

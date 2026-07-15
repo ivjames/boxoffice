@@ -26,7 +26,9 @@ skipped I/O rows, ragged row lengths, wheelchair squares):
   `seat_pitch`, `row_pitch`, optional `arc_radius` (fanned center), plus authoring
   metadata: `numbering_scheme` (odd-desc-left | even-asc-right | hundreds |
   hundreds-flat, the continental center-block style where every row restarts at
-  101 | sequential), `row_label_scheme` (skip I/O by default), `row_label_start`
+  101 | sequential), `seat_number_base` (added to every number, composing with the
+  scheme -- a center block numbered ...105 103 101 is odd-desc-left + base 100),
+  `row_label_scheme` (skip I/O by default), `row_label_start`
   (offset into the letter sequence so a Parterre behind an A–M Orchestra can
   start at N — added with the AI chart parsing, needed by real multi-tier
   houses), and an optional `tier` grouping (Orchestra/Parterre/Balcony). x/y is

@@ -38,6 +38,7 @@ def parsed_spec():
                 "row_x_offset": 0.0,
                 "alt_row_seat_delta": 0,
                 "numbering_scheme": "sequential",
+                "seat_number_base": 0,
                 "row_label_scheme": "skip_io",
                 "row_label_start": 0,
                 "removed_seats": [],
@@ -94,7 +95,7 @@ class ChartParseUploadTests(StaffFixtureMixin, TestCase):
         )
         # The success flash reports the parse's token usage.
         editor = self.client.get(f"/dashboard/charts/{chart.pk}/editor/", HTTP_HOST=self.host)
-        self.assertContains(editor, "4,182 tokens in")
+        self.assertContains(editor, "8,364 tokens in")  # two passes: extract + verify
 
     def test_optional_name_field_overrides_parsed_name(self):
         with mock.patch.object(chart_parsing, "_get_client", return_value=fake_api_client()):

@@ -135,6 +135,16 @@ _SECTION_SCHEMA = {
             "type": "string",
             "enum": ["sequential", "odd_desc_left", "even_asc_right", "hundreds", "hundreds_flat"],
         },
+        "seat_number_base": {
+            "type": "integer",
+            "description": (
+                "Added to every seat number, composing with numbering_scheme. 0 for plain "
+                "numbers. Center blocks numbered in the 100s but keeping an odd/even "
+                "convention use the odd/even scheme with seat_number_base=100: a row printed "
+                "'...119 117 ... 103 101' is odd_desc_left + 100; '102 104 ... 120' is "
+                "even_asc_right + 100."
+            ),
+        },
         "row_label_scheme": {"type": "string", "enum": ["skip_io", "all_letters"]},
         "row_label_start": {
             "type": "integer",
@@ -159,8 +169,8 @@ _SECTION_SCHEMA = {
     "required": [
         "name", "tier", "rows", "seats_per_row", "origin_x", "origin_y", "rotation",
         "seat_pitch", "row_pitch", "arc_radius", "row_alignment", "offset_mode",
-        "row_x_offset", "alt_row_seat_delta", "numbering_scheme", "row_label_scheme",
-        "row_label_start", "removed_seats", "accessible_seats",
+        "row_x_offset", "alt_row_seat_delta", "numbering_scheme", "seat_number_base",
+        "row_label_scheme", "row_label_start", "removed_seats", "accessible_seats",
     ],
     "additionalProperties": False,
 }
@@ -203,6 +213,11 @@ above -- the importer re-centers the rows itself.
 entirely absent from a section (e.g. a cross-aisle where the center block has \
 no row D but the sides do): keep the position and put ALL of that row's seats \
 in removed_seats, so the rows behind it keep their correct letters.
+- Printed cut-outs -- TECH BOOTH, ADA/wheelchair PLATFORM, sound/mix desk, \
+camera positions, any labelled box occupying seat positions -- are seats \
+that DO NOT EXIST: put every seat they displace in removed_seats. Count the \
+printed seats of each affected row individually; never assume a row matches \
+its neighbours.
 - Row labels run front to back per row_label_scheme starting at \
 row_label_start; seat numbers follow numbering_scheme, so with 'sequential' \
 the leftmost seat of every row is "1".
@@ -217,10 +232,14 @@ Every OTHER row shifted about half a seat (brick/stadium stagger) = \
 offset_mode 'alternating' with row_x_offset 0.5 (and alt_row_seat_delta \
 +1/-1 if alternating rows are one seat longer/shorter). A whole block \
 visibly tilted, rows no longer horizontal = rotation in degrees instead.
-- numbering_scheme: read the printed seat numbers. Odd numbers descending \
-toward the aisle = odd_desc_left; ascending evens = even_asc_right; rows \
-numbered 101/201/301 = hundreds; EVERY row restarting at 101 (a common \
-center-block style) = hundreds_flat; plain 1,2,3 = sequential.
+- numbering_scheme + seat_number_base: read the printed seat numbers \
+CAREFULLY, including their parity. Odd numbers descending toward the aisle \
+= odd_desc_left; ascending evens = even_asc_right; rows numbered \
+101/201/301 by row = hundreds; every row restarting at 101, 102, 103 = \
+hundreds_flat; plain 1,2,3 = sequential. When a block keeps an odd/even \
+convention but in a higher band -- '...119 117 ... 103 101' or \
+'102 104 ... 120' -- use the odd/even scheme with seat_number_base=100 \
+(NOT hundreds_flat: 101 102 103 and 101 103 105 are different rows).
 - row_label_scheme: skip_io if rows jump from H to J (no I), otherwise \
 all_letters.
 - row_label_start: 0 when the section's first row is labelled A. When a \
@@ -264,33 +283,36 @@ def _content_block(data_b64, media_type):
     return {"type": "image", "source": source}
 
 
-def parse_chart_file(data, media_type):
-    """Send the file bytes to the Claude API and return a validated chart
-    spec dict (see CHART_SPEC_SCHEMA / validate_chart_spec) with the API's
-    token accounting attached as spec["usage"] (see _usage_dict /
-    describe_usage). Raises ChartParsingError for every failure mode --
-    unsupported type, oversize file, API errors, refusals, truncated
-    output."""
-    import base64
+_VERIFY_PROMPT_TEMPLATE = """\
+A first pass extracted the JSON spec below from this seating chart. \
+Re-examine the chart and correct that extraction, then return the complete \
+corrected spec (identical if nothing is wrong). Check, section by section:
+- Recount each row's printed seats. Wherever the printed count disagrees \
+with what the spec implies (seats_per_row minus that row's removed_seats), \
+fix removed_seats. Look ESPECIALLY for printed cut-outs -- TECH BOOTH, ADA/\
+wheelchair platforms, sound/mix desks, camera positions -- every seat they \
+displace must be in removed_seats.
+- Reproduce each row's printed numbers from numbering_scheme + \
+seat_number_base and compare against the chart, INCLUDING PARITY: \
+'101 102 103' is hundreds_flat; '...105 103 101' is odd_desc_left with \
+seat_number_base=100; '102 104 106...' is even_asc_right with \
+seat_number_base=100. These are different numbering systems -- do not \
+conflate them.
+- Check row labels against the letters printed beside each row: skipped \
+letters (I/O), and row_label_start for any section whose first row isn't A.
+- Check every wheelchair/accessible marking is in accessible_seats.
 
-    if media_type not in SUPPORTED_MEDIA_TYPES:
-        raise ChartParsingError(
-            "Unsupported file type. Upload a PNG, JPEG, GIF, WebP image or a PDF."
-        )
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise ChartParsingError("File is too large (20 MB max).")
-    if not data:
-        raise ChartParsingError("The uploaded file is empty.")
+First-pass extraction:
+{spec_json}
+"""
 
-    try:
-        import anthropic
-    except ImportError as exc:  # pragma: no cover
-        raise ChartParsingError(
-            "The 'anthropic' package is not installed. Run: pip install -r requirements.txt"
-        ) from exc
 
-    client = _get_client()
-    model = getattr(settings, "CHART_PARSING_MODEL", "claude-opus-4-8")
+def _request_spec(client, model, file_block, prompt_text):
+    """One schema-constrained vision request: send `file_block` + \
+    `prompt_text`, return the raw (not yet validated) spec dict. All API
+    failure modes surface as ChartParsingError."""
+    import anthropic
+
     try:
         response = client.messages.create(
             model=model,
@@ -301,8 +323,8 @@ def parse_chart_file(data, media_type):
                 {
                     "role": "user",
                     "content": [
-                        _content_block(base64.standard_b64encode(data).decode("ascii"), media_type),
-                        {"type": "text", "text": _PARSE_PROMPT},
+                        file_block,
+                        {"type": "text", "text": prompt_text},
                     ],
                 }
             ],
@@ -338,13 +360,60 @@ def parse_chart_file(data, media_type):
         spec = json.loads(text)
     except ValueError as exc:
         raise ChartParsingError("The parsing service returned an unreadable result. Try again.") from exc
+    return spec, response
 
-    spec = validate_chart_spec(spec)
-    spec["usage"] = _usage_dict(model, response)
+
+def parse_chart_file(data, media_type, *, verify=True):
+    """Send the file bytes to the Claude API and return a validated chart
+    spec dict (see CHART_SPEC_SCHEMA / validate_chart_spec) with the API's
+    token accounting attached as spec["usage"] (summed across passes -- see
+    _usage_dict / describe_usage). Raises ChartParsingError for every
+    failure mode -- unsupported type, oversize file, API errors, refusals,
+    truncated output.
+
+    `verify` (default on) runs a SECOND pass: the image goes back to the
+    model together with the validated first-pass spec and row-by-row
+    checking instructions (_VERIFY_PROMPT_TEMPLATE). Extraction recall --
+    missed cut-outs, mistaken numbering parity -- is the failure mode
+    observed in live parses, and a self-check against its own output is the
+    cheapest effective counter. Costs a second model call (roughly doubles
+    tokens); disable for quick/cheap runs via the management command's
+    --no-verify."""
+    import base64
+
+    if media_type not in SUPPORTED_MEDIA_TYPES:
+        raise ChartParsingError(
+            "Unsupported file type. Upload a PNG, JPEG, GIF, WebP image or a PDF."
+        )
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ChartParsingError("File is too large (20 MB max).")
+    if not data:
+        raise ChartParsingError("The uploaded file is empty.")
+
+    client = _get_client()
+    model = getattr(settings, "CHART_PARSING_MODEL", "claude-opus-4-8")
+    file_block = _content_block(base64.standard_b64encode(data).decode("ascii"), media_type)
+
+    raw_spec, response = _request_spec(client, model, file_block, _PARSE_PROMPT)
+    responses = [response]
+
+    if verify:
+        first_pass = validate_chart_spec(raw_spec)
+        raw_spec, second_response = _request_spec(
+            client,
+            model,
+            file_block,
+            _VERIFY_PROMPT_TEMPLATE.format(spec_json=json.dumps(first_pass, indent=2)),
+        )
+        responses.append(second_response)
+
+    spec = validate_chart_spec(raw_spec)
+    spec["usage"] = _usage_dict(model, responses)
     logger.info(
-        "Parsed seating chart (%s): %s section(s), input_tokens=%s output_tokens=%s "
-        "cache_read=%s cache_creation=%s",
+        "Parsed seating chart (%s, %s pass(es)): %s section(s), input_tokens=%s "
+        "output_tokens=%s cache_read=%s cache_creation=%s",
         model,
+        len(responses),
         len(spec["sections"]),
         spec["usage"].get("input_tokens"),
         spec["usage"].get("output_tokens"),
@@ -354,21 +423,28 @@ def parse_chart_file(data, media_type):
     return spec
 
 
-def _usage_dict(model, response):
-    """The API's token accounting for one parse, as a plain dict:
-    {"model", "input_tokens", "output_tokens", "cache_read_input_tokens",
-    "cache_creation_input_tokens"} -- absent/None fields stay None so
-    callers can render "unknown" honestly rather than a fake 0. Attached to
-    the spec as spec["usage"] (validate_chart_spec ignores unknown keys, so
-    a spec with usage still round-trips through build_chart_from_spec)."""
-    usage = getattr(response, "usage", None)
-    return {
-        "model": model,
-        "input_tokens": getattr(usage, "input_tokens", None),
-        "output_tokens": getattr(usage, "output_tokens", None),
-        "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
-        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
-    }
+def _usage_dict(model, responses):
+    """The API's token accounting for one parse (summed over its passes),
+    as a plain dict: {"model", "input_tokens", "output_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens"} -- fields
+    absent from every response stay None so callers can render "unknown"
+    honestly rather than a fake 0. Attached to the spec as spec["usage"]
+    (validate_chart_spec ignores unknown keys, so a spec with usage still
+    round-trips through build_chart_from_spec)."""
+    fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    )
+    totals = {field: None for field in fields}
+    for response in responses:
+        usage = getattr(response, "usage", None)
+        for field in fields:
+            value = getattr(usage, field, None)
+            if value is not None:
+                totals[field] = (totals[field] or 0) + value
+    return {"model": model, **totals}
 
 
 def describe_usage(usage):
@@ -529,6 +605,7 @@ def validate_chart_spec(spec):
                 "row_x_offset": _as_float(raw.get("row_x_offset")),
                 "alt_row_seat_delta": _clamp_int(raw.get("alt_row_seat_delta"), -MAX_SEATS_PER_ROW, MAX_SEATS_PER_ROW, 0),
                 "numbering_scheme": numbering if numbering in numbering_values else Section.NumberingScheme.SEQUENTIAL,
+                "seat_number_base": _clamp_int(raw.get("seat_number_base"), 0, 900, 0),
                 "row_label_scheme": row_labels if row_labels in row_label_values else Section.RowLabelScheme.SKIP_IO,
                 "row_label_start": _clamp_int(raw.get("row_label_start"), 0, 2 * MAX_ROWS, 0),
                 "removed_seats": _seat_identity_list(raw.get("removed_seats")),
@@ -607,7 +684,8 @@ def build_chart_from_spec(venue, spec, *, name=None, replace=False):
                         "name", "tier", "rows", "seats_per_row", "origin_x", "origin_y",
                         "rotation", "seat_pitch", "row_pitch", "arc_radius", "offset_mode",
                         "row_x_offset", "alt_row_seat_delta", "numbering_scheme",
-                        "row_label_scheme", "row_label_start", "removed_seats", "accessible_seats",
+                        "seat_number_base", "row_label_scheme", "row_label_start",
+                        "removed_seats", "accessible_seats",
                     )
                 },
             )

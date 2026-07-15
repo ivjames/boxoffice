@@ -118,30 +118,36 @@ def generate_row_labels(count, scheme, start=0):
     return labels
 
 
-def generate_seat_numbers(seat_count, scheme, row_index):
+def generate_seat_numbers(seat_count, scheme, row_index, base=0):
     """Seat numbers (ints), left-to-right, for one row of `seat_count`
     seats. `row_index` is 0-based and only affects the 'hundreds' scheme
-    (row A -> 100s, row B -> 200s, …). Numbers are purely a *label*
-    sequence -- they never drive the seat's x/y position, which comes from
-    left-to-right physical order regardless of numbering scheme (see
-    generate_seats)."""
+    (row A -> 100s, row B -> 200s, …). `base` (Section.seat_number_base) is
+    added to every number, composing with the scheme -- e.g. odd_desc_left
+    with base=100 numbers a center block ...119, 117 ... 103, 101, the
+    common "side blocks odd/even, center block same but in the 100s"
+    convention. Numbers are purely a *label* sequence -- they never drive
+    the seat's x/y position, which comes from left-to-right physical order
+    regardless of numbering scheme (see generate_seats). Mirrored by
+    seat_geometry.js's generateSeatNumbers."""
     if scheme == Section.NumberingScheme.ODD_DESC_LEFT:
         # Highest odd number on the house-left end, descending toward the
         # aisle -- e.g. a 4-seat row is 7, 5, 3, 1.
-        return [2 * (seat_count - i) - 1 for i in range(seat_count)]
+        return [base + 2 * (seat_count - i) - 1 for i in range(seat_count)]
     if scheme == Section.NumberingScheme.EVEN_ASC_RIGHT:
         # Ascending even numbers left to right -- e.g. 2, 4, 6, 8.
-        return [2 * (i + 1) for i in range(seat_count)]
+        return [base + 2 * (i + 1) for i in range(seat_count)]
     if scheme == Section.NumberingScheme.HUNDREDS:
-        base = (row_index + 1) * 100
-        return [base + i + 1 for i in range(seat_count)]
+        row_base = (row_index + 1) * 100
+        return [base + row_base + i + 1 for i in range(seat_count)]
     if scheme == Section.NumberingScheme.HUNDREDS_FLAT:
         # Continental center-block style: every row restarts at 101 (the
         # 100-band marks "center section", not the row) -- e.g. row A
         # 101-109, row B 101-110. Row identity comes from the row label.
-        return [100 + i + 1 for i in range(seat_count)]
+        # (Equivalent to SEQUENTIAL with base=100; kept as its own scheme
+        # since it predates seat_number_base.)
+        return [base + 100 + i + 1 for i in range(seat_count)]
     # SEQUENTIAL, and the fallback for any unrecognized value.
-    return [i + 1 for i in range(seat_count)]
+    return [base + i + 1 for i in range(seat_count)]
 
 
 def compute_row_counts(rows, seats_per_row, offset_mode, alt_row_seat_delta):
@@ -450,7 +456,9 @@ def _build_seats(section, row_counts, accessible, removed_ids, accessible_ids):
     labels = generate_row_labels(len(row_counts), section.row_label_scheme, section.row_label_start)
     seats = []
     for row_index, (row_label, seat_count) in enumerate(zip(labels, row_counts)):
-        numbers = generate_seat_numbers(seat_count, section.numbering_scheme, row_index)
+        numbers = generate_seat_numbers(
+            seat_count, section.numbering_scheme, row_index, section.seat_number_base
+        )
         row_accessible = accessible.get(row_index, set())
         for seat_index, number in enumerate(numbers):
             number_str = str(number)

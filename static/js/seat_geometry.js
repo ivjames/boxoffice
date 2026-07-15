@@ -53,23 +53,26 @@ function generateRowLabels(count, scheme, start = 0) {
     return labels;
 }
 
-function generateSeatNumbers(seatCount, scheme, rowIndex) {
+function generateSeatNumbers(seatCount, scheme, rowIndex, base = 0) {
+    // `base` mirrors Section.seat_number_base: added to every number,
+    // composing with the scheme (odd_desc_left + base 100 -> ...119, 117
+    // ... 101) -- see generate_seat_numbers.
     if (scheme === NUMBERING_ODD_DESC_LEFT) {
-        return Array.from({ length: seatCount }, (_, i) => 2 * (seatCount - i) - 1);
+        return Array.from({ length: seatCount }, (_, i) => base + 2 * (seatCount - i) - 1);
     }
     if (scheme === NUMBERING_EVEN_ASC_RIGHT) {
-        return Array.from({ length: seatCount }, (_, i) => 2 * (i + 1));
+        return Array.from({ length: seatCount }, (_, i) => base + 2 * (i + 1));
     }
     if (scheme === NUMBERING_HUNDREDS) {
-        const base = (rowIndex + 1) * 100;
-        return Array.from({ length: seatCount }, (_, i) => base + i + 1);
+        const rowBase = (rowIndex + 1) * 100;
+        return Array.from({ length: seatCount }, (_, i) => base + rowBase + i + 1);
     }
     if (scheme === NUMBERING_HUNDREDS_FLAT) {
         // Continental center-block style: every row restarts at 101 --
         // mirrors generate_seat_numbers's HUNDREDS_FLAT branch.
-        return Array.from({ length: seatCount }, (_, i) => 100 + i + 1);
+        return Array.from({ length: seatCount }, (_, i) => base + 100 + i + 1);
     }
-    return Array.from({ length: seatCount }, (_, i) => i + 1);
+    return Array.from({ length: seatCount }, (_, i) => base + i + 1);
 }
 
 // -- row shape (mirrors compute_row_counts) --
@@ -250,7 +253,9 @@ function computeSectionSeats(section, { removedIds, accessibleIds } = {}) {
     const seats = [];
     rowCounts.forEach((seatCount, rowIndex) => {
         const rowLabel = labels[rowIndex];
-        const numbers = generateSeatNumbers(seatCount, section.numbering_scheme, rowIndex);
+        const numbers = generateSeatNumbers(
+            seatCount, section.numbering_scheme, rowIndex, section.seat_number_base || 0
+        );
         numbers.forEach((number, seatIndex) => {
             const numberStr = String(number);
             const key = rowLabel + "|" + numberStr;

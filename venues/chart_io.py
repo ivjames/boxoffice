@@ -70,6 +70,7 @@ def export_chart_data(chart):
                 "ordering": section.ordering,
                 "tier": section.tier,
                 "numbering_scheme": section.numbering_scheme,
+                "seat_number_base": section.seat_number_base,
                 "row_label_scheme": section.row_label_scheme,
                 "row_label_start": section.row_label_start,
                 "layout": {
@@ -169,6 +170,7 @@ def import_chart_data(venue, data, *, name=None, replace=False):
             row_label_scheme=section_data.get(
                 "row_label_scheme", Section.RowLabelScheme.SKIP_IO
             ),
+            seat_number_base=section_data.get("seat_number_base", 0),
             row_label_start=section_data.get("row_label_start", 0),
             origin_x=layout.get("origin_x", 0.0),
             origin_y=layout.get("origin_y", 0.0),

@@ -213,6 +213,17 @@ class Section(TenantScopedModel):
     row_label_scheme = models.CharField(
         max_length=20, choices=RowLabelScheme.choices, default=RowLabelScheme.SKIP_IO
     )
+    seat_number_base = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Added to every generated seat number, composing with numbering_scheme -- many "
+            "houses number their center blocks in the 100s while keeping the side blocks' "
+            "odd/even convention: odd_desc_left with base 100 gives ...119, 117 ... 103, 101; "
+            "even_asc_right with base 100 gives 102, 104... A pure label offset, like "
+            "row_label_start: never affects geometry. See venues.generation."
+            "generate_seat_numbers, mirrored in static/js/seat_geometry.js."
+        ),
+    )
     row_label_start = models.PositiveIntegerField(
         default=0,
         help_text=(

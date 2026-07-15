@@ -7,7 +7,7 @@ from django.urls import path
 
 from unfold.admin import ModelAdmin as UnfoldModelAdmin
 
-from .models import Organization
+from .models import ContactInquiry, Organization
 
 # Sorted list of IANA zones for the timezone dropdown — replaces the free-text
 # field that let a typo like "Amerca/New_York" silently fall back to UTC
@@ -164,3 +164,28 @@ class OrganizationAdmin(UnfoldModelAdmin):
                 f"Skipped {already_queued} already queued.",
                 messages.WARNING,
             )
+
+
+@admin.register(ContactInquiry)
+class ContactInquiryAdmin(UnfoldModelAdmin):
+    """Triage surface for landing-page contact-form submissions. The
+    submission itself is read-only (it's what the prospective venue actually
+    wrote -- editing it in place would falsify the record); the only workflow
+    here is reading the message, replying from the hello@ mailbox, and
+    marking the row handled."""
+
+    list_display = ("created_at", "name", "email", "venue", "is_handled")
+    list_filter = ("is_handled",)
+    search_fields = ("name", "email", "venue", "message")
+    date_hierarchy = "created_at"
+    readonly_fields = ("name", "email", "venue", "message", "created_at")
+    actions = ("mark_handled",)
+
+    def has_add_permission(self, request):
+        # Rows come from the public form, never hand-created here.
+        return False
+
+    @admin.action(description="Mark selected inquiries as handled")
+    def mark_handled(self, request, queryset):
+        updated = queryset.filter(is_handled=False).update(is_handled=True)
+        self.message_user(request, f"Marked {updated} inquiry(ies) handled.", messages.SUCCESS)

@@ -24,7 +24,7 @@
             you, on your own subdomain.
         </p>
         <div class="hero__actions">
-            <a class="button" href="mailto:hello@boxo.show?subject=Boxo.show%20for%20my%20venue">Get in touch</a>
+            <a class="button" href="#contact">Get in touch</a>
             <a class="button button--secondary" href="#how">See how it works</a>
         </div>
         <p class="hero__note">One deployment, many venues — each with its own brand, catalog, and staff.</p>
@@ -174,10 +174,65 @@
         </div>
     </section>
 
-    <section class="landing-cta">
+    <section class="landing-cta" id="contact">
         <h2>Ready to run your own box office?</h2>
         <p>Tell us about your venue and we'll get you set up.</p>
-        <a class="button" href="mailto:hello@boxo.show?subject=Boxo.show%20for%20my%20venue">Get in touch</a>
+
+        {% if contact_sent %}
+            <div class="contact-form__success" role="status">
+                <h3>Thanks — message received.</h3>
+                <p>We'll read it and get back to you at the address you gave us, usually within a day or two.</p>
+            </div>
+        {% else %}
+            {# No novalidate: native browser validation catches an empty or #}
+            {# malformed field instantly, without a full-page POST round-trip #}
+            {# that re-renders at the top of the page (far from #contact).   #}
+            {# Server-side validation remains the real gate for anything     #}
+            {# that bypasses it -- see tenants/views.py contact().           #}
+            <form class="contact-form" method="post" action="{% url 'platform_contact' %}">
+                {% csrf_token %}
+
+                {% if contact_form.non_field_errors %}
+                    <div class="contact-form__errors" role="alert">
+                        {% for error in contact_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+                    </div>
+                {% endif %}
+
+                <div class="contact-form__row">
+                    <div class="contact-form__field">
+                        <label for="{{ contact_form.name.id_for_label }}">{{ contact_form.name.label }}</label>
+                        {{ contact_form.name }}
+                        {% for error in contact_form.name.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                    </div>
+                    <div class="contact-form__field">
+                        <label for="{{ contact_form.email.id_for_label }}">{{ contact_form.email.label }}</label>
+                        {{ contact_form.email }}
+                        {% for error in contact_form.email.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                    </div>
+                </div>
+
+                <div class="contact-form__field">
+                    <label for="{{ contact_form.venue.id_for_label }}">{{ contact_form.venue.label }}</label>
+                    {{ contact_form.venue }}
+                    {% for error in contact_form.venue.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                </div>
+
+                <div class="contact-form__field">
+                    <label for="{{ contact_form.message.id_for_label }}">{{ contact_form.message.label }}</label>
+                    {{ contact_form.message }}
+                    {% for error in contact_form.message.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                </div>
+
+                {# Honeypot -- visually removed and skipped by tab order/screen #}
+                {# readers; the view drops any submission that fills it in.    #}
+                <div class="contact-form__hp" aria-hidden="true">
+                    <label for="{{ contact_form.website.id_for_label }}">Website</label>
+                    {{ contact_form.website }}
+                </div>
+
+                <button type="submit" class="button">Send message</button>
+            </form>
+        {% endif %}
     </section>
 {% endblock %}
 

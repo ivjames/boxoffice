@@ -85,9 +85,6 @@ RESERVED_SUBDOMAINS=www,app,admin,beta
 ALLOWED_HOSTS=boxo.show,.boxo.show
 CSRF_TRUSTED_ORIGINS=https://*.boxo.show,https://boxo.show
 WEB_CONCURRENCY=3
-EMAIL_HOST=<your SMTP host>
-EMAIL_HOST_USER=<...>
-EMAIL_HOST_PASSWORD=<...>
 DEFAULT_FROM_EMAIL=no-reply@boxo.show
 EOF
 chmod 600 .env
@@ -105,6 +102,12 @@ Two `.env` rules the hard way:
 
 Leave `DATABASE_URL` unset for the default SQLite-in-`data/` deploy (see
 "SQLite -> Postgres" below for the upgrade path).
+
+Deliberately **not** in this block: the `EMAIL_*` SMTP settings. Leave them
+unset until you work through "Mail" below — a **blank** `EMAIL_HOST` is the
+signal the app keys its graceful fallbacks on
+(`guests.services.email_delivery_configured()`), whereas a pasted placeholder
+value counts as "configured" and makes every send fail instead of fall back.
 
 ### 4. Symlink the operate CLI
 
@@ -226,6 +229,144 @@ rather than burning them against a dead transport. Wire up SMTP (`.env`'s
 RFC 8058 bulk-sender requirement), pointing at the same signed unsubscribe link
 carried in the email body. Tune throughput with `CAMPAIGN_BATCH_SIZE` in `.env`.
 
+## Mail (do this before contact addresses go on the live site)
+
+The live site publishes email addresses in three places, and none of them
+work until this section is done:
+
+- **`hello@boxo.show`** — the landing page's "Get in touch" CTA
+  (`templates/tenants/platform_landing.html`, hero + footer). With no MX
+  records on `boxo.show`, mail to it **hard-bounces** today.
+- **`no-reply@boxo.show`** — the From address on every ticket confirmation,
+  guest magic-link, and campaign email (`DEFAULT_FROM_EMAIL`).
+- **each tenant's `contact_email`** — published on their public FAQ page by
+  the help center (see "What to check per tenant" below).
+
+Nothing crashes while mail is unconfigured — the app degrades on purpose
+(guest sign-in shows the magic link on screen, the campaign worker leaves
+sends `pending`, and a receipt email that can't send never invalidates the
+order — the buyer's tickets page still works; the stub-checkout path logs
+the failure, the Stripe webhook path lets Stripe retry). But a published
+contact address that bounces is worse than no address, so wire this up in
+the same pass that puts contact info on the site. All the DNS below lives in
+the DigitalOcean `boxo.show` zone, so every record is one `doctl` command
+from the droplet.
+
+### 1. Outbound: an SMTP relay for no-reply@boxo.show
+
+Don't run a mail server on the droplet — DigitalOcean blocks/throttles port
+25 and a bare droplet IP has no sending reputation. Use a transactional SMTP
+relay (Postmark, Mailgun, Resend, Brevo, SES, …): the app is
+transport-agnostic — `config/settings/prod.py` just feeds `EMAIL_*` to
+Django's SMTP backend, so anything speaking STARTTLS on 587 works.
+
+1. Sign up with the provider and add `boxo.show` as a verified **sending
+   domain** (it must match `DEFAULT_FROM_EMAIL`'s domain or DMARC alignment
+   fails). The provider hands you SMTP credentials plus DNS records.
+2. Publish its authentication records (names/values come from the provider
+   dashboard — the shapes are):
+
+   ```bash
+   # SPF — exactly ONE TXT record on the apex, ever. If an SPF record already
+   # exists (e.g. from part 2's inbound provider), MERGE the include into it:
+   # two v=spf1 records is a permanent SPF error, worse than none.
+   doctl compute domain records create boxo.show --record-type TXT \
+     --record-name @ --record-data "v=spf1 include:<provider-spf> ~all" --record-ttl 1800
+
+   # DKIM — the provider's exact record (usually a CNAME per selector; note
+   # the trailing dot, doctl stores the literal value):
+   doctl compute domain records create boxo.show --record-type CNAME \
+     --record-name <selector>._domainkey --record-data <provider-dkim-host>. --record-ttl 1800
+
+   # DMARC — start in monitor mode (p=none), tighten to quarantine once a few
+   # weeks of reports (rua= goes to part 2's inbox) look clean:
+   doctl compute domain records create boxo.show --record-type TXT \
+     --record-name _dmarc --record-data "v=DMARC1; p=none; rua=mailto:hello@boxo.show" --record-ttl 1800
+   ```
+
+3. **Only after the provider shows the domain verified**, fill in `.env` and
+   restart. Setting `EMAIL_HOST` is the switch that flips three behaviors at
+   once (`email_delivery_configured()` starts returning True): guest sign-in
+   goes back to emailed links + anti-enumeration, the campaign worker starts
+   draining its queue on the next tick, and ticket emails send for real — so
+   don't flip it while DKIM/SPF are still unverified or that first batch
+   lands in spam and burns the domain's reputation.
+
+   ```bash
+   cat >> .env <<'EOF'
+   EMAIL_HOST=<smtp.provider.example>
+   EMAIL_PORT=587
+   EMAIL_HOST_USER=<...>
+   EMAIL_HOST_PASSWORD='<...>'
+   EMAIL_USE_TLS=true
+   EOF
+   boxoffice restart
+   ```
+
+   (Single-quote the password — the `.env` rule from step 3 of provisioning;
+   relay-issued secrets love `#` and `$`.)
+
+4. Verify end to end:
+
+   ```bash
+   boxoffice manage sendtestemail you@example.com
+   ```
+
+   Open the received message's raw headers (Gmail: "Show original") and
+   confirm `spf=pass`, `dkim=pass`, `dmarc=pass` — or send one to a scoring
+   service like mail-tester.com. Then run a real flow: test-checkout a ticket
+   on beta or request a guest sign-in link, and check it lands in the inbox,
+   not spam.
+
+### 2. Inbound: hello@boxo.show has to land somewhere
+
+DigitalOcean hosts the DNS zone but sells no mailboxes and no forwarding —
+until MX records exist, every `@boxo.show` address bounces. Two ways to fix
+it, same DNS shape either way:
+
+- **A forwarding service** (simplest; free tiers exist — ImprovMX,
+  forwardemail.net): forwards `hello@boxo.show` to the inbox you actually
+  read. Caveat: replies go out from your personal address unless you also
+  wire that mailbox to send-as `hello@boxo.show` through part 1's relay.
+- **A real mailbox host** (Fastmail, Migadu, Google Workspace): costs a few
+  dollars/month but you can reply *as* `hello@boxo.show`, which reads far
+  more legit to a venue you're trying to onboard.
+
+```bash
+# The provider's MX pair — trailing dots, priorities from their docs:
+doctl compute domain records create boxo.show --record-type MX \
+  --record-name @ --record-data <mx1.provider.example>. --record-priority 10
+doctl compute domain records create boxo.show --record-type MX \
+  --record-name @ --record-data <mx2.provider.example>. --record-priority 20
+# ...plus the provider's verification TXT record, if it wants one. If it also
+# wants an SPF include, MERGE it into the single apex TXT from part 1.
+```
+
+Verify from an **outside** account (not the forward target): send to
+`hello@boxo.show`, confirm it arrives; reply, and check which From address
+the reply carries. Sanity-check the zone with
+`doctl compute domain records list boxo.show`.
+
+### 3. What to check per tenant
+
+`provision_tenant` defaults a new tenant's `contact_email` to
+`boxoffice@<sub>.boxo.show` — a **placeholder under our domain that cannot
+receive mail** (part 2 stood up `hello@`, not a catch-all — deliberately;
+catch-alls are spam magnets). The help center publishes `contact_email` on
+the tenant's public FAQ page, so a venue left on the default is publishing a
+dead address. Set the venue's real box-office inbox in `/admin` as part of
+onboarding — same checklist item as branding and Stripe (see "Onboarding a
+tenant" below).
+
+### Beta
+
+Leave `EMAIL_HOST` **unset on the beta box** (its `.env` block below already
+does): beta then keeps the on-screen magic-link fallback and leaves campaign
+sends queued instead of pushing test blasts through the production relay's
+reputation. If a beta task genuinely needs to see delivered mail, point
+beta's `EMAIL_*` at a capture sandbox (Mailtrap, or the relay's sandbox
+mode) — never at the prod relay credentials.
+
 ## Onboarding a tenant (no-wildcard subdomain flow)
 
 Every theater gets a real `<sub>.boxo.show` — no wildcard DNS or cert. All
@@ -264,8 +405,11 @@ droplet here).
 and checkout runs in **simulated stub mode** (no real charge) until:
 
 - **Branding** (`/admin`): `logo`, `primary_color`, `accent_color`;
-  `contact_email`, `timezone`, `currency` if the `provision_tenant` defaults
-  aren't right.
+  `timezone`, `currency` if the `provision_tenant` defaults aren't right.
+  **Always** replace `contact_email` — the provisioned default
+  (`boxoffice@<sub>.boxo.show`) is a placeholder that can't receive mail,
+  and the help center publishes it on the tenant's public FAQ page (see
+  "Mail" above).
 - **Payments** (theater dashboard, owner-only): the theater's owner clicks
   **Connect Stripe** on the dashboard Overview and completes Stripe's hosted
   Express onboarding. Once Stripe reports the account `charges_enabled`, real
@@ -374,6 +518,8 @@ CSRF_TRUSTED_ORIGINS=https://*.boxo.show
 RESERVED_SUBDOMAINS=www,app,admin,beta
 DEPLOY_REF=origin/staging
 DEFAULT_FROM_EMAIL=no-reply@boxo.show
+# EMAIL_HOST stays UNSET on beta on purpose -- on-screen magic-link fallback,
+# campaign sends stay queued. See "Mail" above before ever changing this.
 ENABLE_TEST_CHECKOUT=true
 SHOW_ADMIN_LINK=true
 EOF

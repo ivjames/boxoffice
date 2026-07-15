@@ -2,8 +2,9 @@
 the DB half of no-wildcard onboarding — the infra half (DNS + nginx vhost +
 certbot) is done by `bin/boxoffice add-tenant <sub>`, which shells out to this
 command for the DB step and then runs the lab980 provisioning tooling for the
-rest. Deliberately does NOT touch Stripe keys or branding — those are set
-later in Django admin (see docs/DEPLOY.md).
+rest. Deliberately does NOT touch payments or branding — branding is set later
+in Django admin, and Stripe is connected by an owner from the theater dashboard
+via Stripe Connect onboarding (see DEPLOY.md).
 
     venv/bin/python manage.py provision_tenant roxy --name "The Roxy Theater"
 
@@ -74,7 +75,7 @@ class Command(BaseCommand):
             )
 
         self.stdout.write(
-            "Next: set Stripe keys and branding for this org in /admin (Organization "
-            f"is_active={org.is_active})."
+            "Next: set branding in /admin, then have an owner connect Stripe from the "
+            f"theater dashboard (Overview → Connect Stripe). Organization is_active={org.is_active}."
         )
         return f"{org.subdomain}\t{'created' if created else 'existing'}"

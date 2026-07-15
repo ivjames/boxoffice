@@ -30,30 +30,17 @@ def _completed(returncode=0, stdout="", stderr=""):
 
 
 class OrganizationAdminFormTests(TestCase):
-    """The admin form gives Organization sensible widgets: write-only Stripe
-    secrets, native color pickers, and validated dropdowns for timezone and
-    currency. The change form also carries a per-object provision button."""
+    """The admin form gives Organization sensible widgets: read-only Stripe
+    Connect status (account id + capability flags, set by onboarding/webhook,
+    not hand-edited), native color pickers, and validated dropdowns for
+    timezone and currency. The change form also carries a per-object provision
+    button."""
 
     def setUp(self):
         self.admin_user = get_user_model().objects.create_superuser(
             email="admin@boxo.show", password="pw"
         )
         self.client.force_login(self.admin_user)
-
-    # --- write-only secret handling (form-level) ---
-
-    def test_blank_secret_keeps_the_current_value(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
-        form = OrganizationAdminForm(instance=org)
-        form.cleaned_data = {"stripe_secret_key": ""}
-        # A blank submit must not wipe the live key.
-        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_EXISTING")
-
-    def test_new_secret_overwrites(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
-        form = OrganizationAdminForm(instance=org)
-        form.cleaned_data = {"stripe_secret_key": "sk_live_NEW"}
-        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_NEW")
 
     # --- server-side validation of timezone/currency (not just a dropdown) ---
 
@@ -74,12 +61,20 @@ class OrganizationAdminFormTests(TestCase):
     def _change_url(self, org):
         return reverse("admin:tenants_organization_change", args=[org.pk])
 
-    def test_stored_secret_never_reaches_the_html(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_TOPSECRET")
+    def test_connect_status_is_shown_read_only(self):
+        """The connected-account id and capability flags are driven by the
+        onboarding flow + account.updated webhook, so the admin surfaces them
+        read-only rather than as editable inputs a superuser could desync from
+        Stripe's real state."""
+        org = make_org("roxy")
+        org.stripe_account_id = "acct_readonly_check"
+        org.save(update_fields=["stripe_account_id"])
         resp = self.client.get(self._change_url(org))
-        self.assertNotContains(resp, "sk_live_TOPSECRET")
-        # Rendered as a password input, not a plain text field.
-        self.assertContains(resp, 'type="password"')
+        self.assertContains(resp, "Stripe Connect")
+        self.assertContains(resp, "acct_readonly_check")
+        # Read-only field: value is displayed, but there's no editable input
+        # named stripe_account_id to post a hand-typed acct_… through.
+        self.assertNotContains(resp, 'name="stripe_account_id"')
 
     def test_widgets_are_pickers_and_dropdowns(self):
         org = make_org("roxy")
@@ -648,3 +643,55 @@ class ShowtimeRenderingTests(TestCase):
         )
         rendered = tmpl.render(Context({"dt": self.DT}))
         self.assertEqual(rendered, "Thu, Jan 14 2027 — 9:00 PM")
+
+
+class SeoRoutesTests(TestCase):
+    """robots.txt, sitemap.xml, and favicon (BO-10). The sitemap must be
+    tenant-scoped: a tenant host lists only its own published upcoming events,
+    and the platform host lists no tenant catalog at all."""
+
+    def setUp(self):
+        self.org = make_org("roxy")
+        self.venue = Venue.objects.create(organization=self.org, name="Main")
+        self.event = Event.objects.create(
+            organization=self.org, title="Hamlet", slug="hamlet", status=Event.Status.PUBLISHED
+        )
+        Performance.objects.create(
+            organization=self.org, event=self.event, venue=self.venue,
+            starts_at=timezone.now() + timezone.timedelta(days=5),
+            seating_mode=Performance.SeatingMode.GA, status=Performance.Status.PUBLISHED,
+        )
+
+    def test_robots_txt_disallows_staff_paths_and_links_sitemap(self):
+        resp = self.client.get("/robots.txt", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "text/plain")
+        body = resp.content.decode()
+        self.assertIn("Disallow: /dashboard/", body)
+        self.assertIn("Disallow: /scan/", body)
+        self.assertIn("Sitemap: http://roxy.localhost/sitemap.xml", body)
+
+    def test_sitemap_lists_published_event_on_tenant_host(self):
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/xml", resp["Content-Type"])
+        body = resp.content.decode()
+        self.assertIn("http://roxy.localhost/events/hamlet/", body)
+        self.assertIn("http://roxy.localhost/faq/", body)
+
+    def test_sitemap_hides_draft_event(self):
+        self.event.status = Event.Status.DRAFT
+        self.event.save(update_fields=["status"])
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="roxy.localhost")
+        self.assertNotIn("hamlet", resp.content.decode())
+
+    def test_platform_host_sitemap_leaks_no_tenant_catalog(self):
+        # No tenant subdomain -> platform host; must not list any org's events.
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("hamlet", resp.content.decode())
+
+    def test_favicon_ico_redirects_to_static_svg(self):
+        resp = self.client.get("/favicon.ico", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 301)
+        self.assertIn("favicon", resp["Location"])

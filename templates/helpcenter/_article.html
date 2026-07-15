@@ -1,0 +1,27 @@
+{% comment %}
+Renders one help article — a tenant-authored HelpArticle or a shipped
+builtins.BuiltinArticle (same attribute surface). Params:
+  article          the article
+  show_visibility  show the audience badge (staff views only, never public)
+  can_manage       viewer may edit tenant articles (managers) -> edit link
+{% endcomment %}
+<details class="help-article">
+    <summary class="help-article__summary">
+        <span class="help-article__title">{{ article.title }}</span>
+        {% if show_visibility %}
+            <span class="badge help-article__badge">{{ article.get_visibility_display }}</span>
+        {% endif %}
+        {% if article.summary %}<span class="help-article__teaser muted">{{ article.summary }}</span>{% endif %}
+    </summary>
+    <div class="help-article__body">
+        {{ article.body|linebreaks }}
+        {% if can_manage and not article.is_builtin %}
+            <p class="help-article__actions">
+                <a href="{% url 'dashboard_help_update' article.pk %}">Edit this article</a>
+            </p>
+        {% endif %}
+        {% if article.is_builtin %}
+            <p class="muted help-article__builtin-note">Built-in help · shown until your venue adds its own.</p>
+        {% endif %}
+    </div>
+</details>

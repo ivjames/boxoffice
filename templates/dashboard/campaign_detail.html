@@ -1,0 +1,62 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}{{ campaign.name }} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_campaign_list' %}">&larr; All campaigns</a>
+<div class="dash-header">
+    <h1>{{ campaign.name }}</h1>
+    <span class="badge badge--{{ campaign.status }}">{{ campaign.get_status_display }}</span>
+</div>
+
+<p class="muted">Subject: {{ campaign.subject }}</p>
+<p class="muted">Segment: {{ campaign.get_segment_kind_display }}
+    {% if campaign.segment_kind == 'event' and campaign.segment_event %} — {{ campaign.segment_event.title }}{% endif %}
+    {% if campaign.segment_kind == 'min_spend' and campaign.segment_min_spend %} — ${{ campaign.segment_min_spend }}+{% endif %}
+</p>
+
+<div class="campaign-detail__actions">
+    {% if campaign.status == 'draft' %}
+        <a class="button button--secondary" href="{% url 'dashboard_campaign_update' campaign.pk %}">Edit</a>
+    {% endif %}
+    <form method="post" action="{% url 'dashboard_campaign_test' campaign.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="button button--secondary">Send me a test</button>
+    </form>
+    {% if campaign.status == 'draft' %}
+        <form method="post" action="{% url 'dashboard_campaign_send' campaign.pk %}"
+              onsubmit="return confirm('Send this campaign to {{ recipient_preview }} recipient(s) now? This can’t be undone.');">
+            {% csrf_token %}
+            <button type="submit" class="button">Send now ({{ recipient_preview }} recipient{{ recipient_preview|pluralize }})</button>
+        </form>
+    {% endif %}
+</div>
+
+<h2>Delivery</h2>
+<ul class="campaign-detail__counts">
+    <li>Sent: {{ counts.sent }}</li>
+    <li>Pending: {{ counts.pending }}</li>
+    <li>Failed: {{ counts.failed }}</li>
+    <li>Skipped: {{ counts.skipped }}</li>
+    <li>Total queued: {{ campaign.recipient_count }}</li>
+</ul>
+
+{% if failed_sends %}
+    <h2>Failed sends</h2>
+    <div class="dash-table-wrap">
+    <table class="dash-table">
+        <thead><tr><th>Email</th><th>Guest</th><th>Error</th></tr></thead>
+        <tbody>
+        {% for send in failed_sends %}
+            <tr>
+                <td>{{ send.email }}</td>
+                <td>{% if send.guest_id %}<a href="{% url 'dashboard_audience_detail' send.guest_id %}">{{ send.guest.name|default:send.guest.email }}</a>{% else %}—{% endif %}</td>
+                <td class="muted">{{ send.error|truncatechars:120 }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+{% endif %}
+{% endblock %}

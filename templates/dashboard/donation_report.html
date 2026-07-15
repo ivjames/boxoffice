@@ -1,0 +1,47 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Donations — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Donations</h1>
+    <a class="button" href="{% url 'dashboard_donation_settings' %}">Settings</a>
+</div>
+
+<form method="get" class="search-form">
+    <input type="date" name="start" value="{{ start }}">
+    <input type="date" name="end" value="{{ end }}">
+    <button type="submit" class="button">Filter</button>
+    <a class="button button--secondary" href="?start={{ start }}&end={{ end }}&format=csv">Export CSV</a>
+</form>
+
+<p class="stat-tile__value">${{ total }}</p>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Order</th>
+            <th>Buyer</th>
+            <th>Campaign</th>
+            <th>Amount</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for item in items %}
+        <tr>
+            <td>{{ item.order.created_at|date:"M j Y g:i A" }}</td>
+            <td><a href="{% url 'dashboard_order_detail' item.order.token %}">{{ item.order.token }}</a></td>
+            <td>{{ item.order.buyer_name|default:item.order.buyer_email }}</td>
+            <td>{{ item.donation_campaign.name|default:"—" }}</td>
+            <td>${{ item.unit_amount }}</td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="5" class="muted">No donations yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

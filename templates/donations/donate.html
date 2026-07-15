@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Donate — {{ organization.name }}{% endblock %}
+
+{% block content %}
+<div class="donate-page" x-data="{ amount: '{{ amount|default:'' }}' }">
+    <a class="back-link" href="{% url 'home' %}">&larr; Continue browsing</a>
+    <h1>Support {{ organization.name }}</h1>
+
+    {% if campaign.acknowledgment %}
+        <p class="muted">{{ campaign.acknowledgment|linebreaksbr }}</p>
+    {% endif %}
+
+    {% if error %}
+        <p class="field-error">{{ error }}</p>
+    {% endif %}
+
+    <form method="post" class="donate-form">
+        {% csrf_token %}
+        <div class="donate-form__presets">
+            {% for preset in campaign.suggested_amount_list %}
+                <button type="button" class="button button--secondary" @click="amount = '{{ preset }}'">${{ preset }}</button>
+            {% endfor %}
+        </div>
+        <div class="field">
+            <label for="donate-amount">Amount ($)</label>
+            <input type="text" id="donate-amount" name="amount" x-model="amount" inputmode="decimal" required>
+        </div>
+        <div class="field">
+            <label for="donate-name">Name</label>
+            <input type="text" id="donate-name" name="buyer_name" value="{{ buyer_name|default:'' }}" autocomplete="name">
+        </div>
+        <div class="field">
+            <label for="donate-email">Email</label>
+            <input type="email" id="donate-email" name="buyer_email" value="{{ buyer_email|default:'' }}" autocomplete="email" required>
+        </div>
+        {% include "orders/_marketing_consent.html" %}
+        <button type="submit" class="button">Donate</button>
+    </form>
+</div>
+{% endblock %}

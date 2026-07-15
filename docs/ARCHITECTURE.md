@@ -30,8 +30,11 @@ writing code and must not deviate without flagging the orchestrator.
     deploys simple; use CSS custom properties for per-tenant theming.
   - Interactivity: Alpine.js (single CDN/vendored file) for the cart and the
     reserved-seat picker. Avoid a bundler.
-- Payments: Stripe Checkout Sessions + webhooks. Per-tenant Stripe keys (each
-  theater connects its own Stripe account) stored on the Organization.
+- Payments: Stripe Connect (Express) + Checkout Sessions + webhooks. boxo.show
+  is the platform account; each theater is a connected account (direct charges,
+  merchant-of-record = the theater) with an optional platform application fee.
+  Platform keys live in settings; only the connected-account id sits on the
+  Organization. See "Payments" below.
 - QR: `segno` (pure-python, no C deps). Email: Django SMTP backend.
 - Deploy target: lab980 droplet, gunicorn under pm2, nginx proxy, `/var/www/boxoffice`.
   gunicorn binds `127.0.0.1:$PORT` where PORT comes from the app-dir `.env`
@@ -45,8 +48,9 @@ Shared-schema, row-level tenancy (NOT schema-per-tenant). Simpler ops, fine for 
 
 - `Organization` (a.k.a. tenant/theater): `name`, `slug`, `subdomain` (unique),
   branding (`logo`, `primary_color`, `accent_color`), `timezone`, `currency`,
-  Stripe fields (`stripe_publishable_key`, `stripe_secret_key`,
-  `stripe_webhook_secret` — encrypted/secret), contact email, `is_active`.
+  Stripe Connect fields (`stripe_account_id`, cached `stripe_charges_enabled` /
+  `stripe_details_submitted`, optional `platform_fee_percent` override), contact
+  email, `is_active`.
 - `TenantMiddleware` resolves the Organization from the request Host header
   (subdomain). Attaches `request.organization`. Unknown/inactive subdomain → 404.
   A reserved subdomain (`www`, `app`, `admin`, none) serves the marketing/landing +
@@ -78,8 +82,29 @@ Shared-schema, row-level tenancy (NOT schema-per-tenant). Simpler ops, fine for 
 - `orders` — `Cart`/`Hold`, `Order`, `OrderItem`, `Ticket`, `Payment`.
 - `payments` — Stripe checkout session creation + webhook handling (per tenant).
 - `scanning` — ticket validation + redemption endpoint and staff scan UI.
+- `guests` — buyer self-service portal: a returning ticket buyer signs in with
+  a per-tenant magic link (no password) and sees every order they've placed at
+  this theater. `GuestAccount` is keyed off the buyer's email at checkout
+  fulfillment; the portal is tenant-scoped like the rest of the storefront.
+- `helpcenter` — tenant-authored knowledge base + built-in FAQ, surfaced to
+  staff (role-filtered, in the dashboard) and buyers (public storefront FAQ).
+  See `docs/HELP.md`.
 
 ## Key data & flows
+
+### Help center
+
+- `HelpArticle` (tenant-scoped) is a manager-authored article — house rules,
+  show info, policies, how-tos. Its `visibility` maps onto the `accounts`
+  role hierarchy: `public` > `staff` > `box_office` > `manager` > `owner`,
+  cumulative in the same direction roles are. `public` articles also appear on
+  the storefront FAQ.
+- `HelpArticle.objects.readable_by(org, membership)` (staff) and `.public(org)`
+  (storefront) are the ONLY places visibility → queryset filtering happens.
+- A small set of read-only **built-in** articles (`helpcenter/builtins.py`)
+  ships as a fallback so Help/FAQ is useful before a manager writes anything;
+  built-ins are filtered by the same visibility rules and merged into the same
+  category groups as authored content. Full detail in `docs/HELP.md`.
 
 ### Seating
 
@@ -99,12 +124,33 @@ them. Holds convert to `Order` on successful payment.
 
 ### Checkout
 
-1. Cart → create/refresh `Hold`. 2. POST checkout → create Stripe Checkout Session
-using THAT tenant's Stripe secret key, `success_url`/`cancel_url` on the tenant
-subdomain, metadata = hold id. 3. Stripe webhook (`checkout.session.completed`)
-→ verify signature with tenant `stripe_webhook_secret` → within a transaction:
-re-validate the hold, create `Order` + `Ticket`s (each with a signed QR token),
-mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
+1. Cart → create/refresh `Hold`. 2. POST checkout → create a Stripe Checkout
+Session as a **direct charge on the theater's connected account** (platform key
++ `stripe_account=<acct_id>`), with the platform's cut as `application_fee_amount`
+(0 by default → omitted), `success_url`/`cancel_url` on the tenant subdomain,
+metadata = hold id. A theater that hasn't finished Connect onboarding
+(`stripe_charges_enabled` False) falls back to a simulated stub checkout so the
+pre-launch demo flow still works. 3. **One platform Connect webhook**
+(`checkout.session.completed`) → verify signature against the single
+`settings.STRIPE_WEBHOOK_SECRET` → resolve the theater from the event's
+top-level `account` (→ `stripe_account_id`) → within a transaction: re-validate
+the hold, create `Order` + `Ticket`s (each with a signed QR token), mark
+seats/GA sold, delete the hold → email tickets. Idempotent on session id.
+`account.updated` events keep each Organization's cached capability flags fresh.
+
+### Payments (Stripe Connect, Express)
+
+boxo.show is the platform Stripe account; each theater onboards as a **connected
+Express account** via an in-app flow (owner-only, `billing_required`):
+`Account.create(type="express")` → `AccountLink` → Stripe-hosted onboarding →
+return view + `account.updated` webhook cache `charges_enabled`/
+`details_submitted` onto the Organization. Charges are **direct** (theater is
+merchant of record — its name on the buyer's statement, it bears its own Stripe
+fees and disputes); the platform takes a cut via `application_fee_amount`, sized
+by `PLATFORM_FEE_PERCENT` + `PLATFORM_FEE_FIXED_CENTS` (both default 0 = no cut)
+with a per-theater `Organization.platform_fee_percent` override. There are no
+per-tenant Stripe keys — the one platform key selects a theater per call with
+the `stripe_account` request option. See `payments/services.py` + `payments/views.py`.
 
 ### Ticket & scanning
 
@@ -132,7 +178,10 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 - `/performances/<id>/` seat/qty selection
 - `/cart/`, `/checkout/`, `/checkout/success/`, `/checkout/cancel/`
 - `/tickets/<order-token>/` order confirmation + tickets
+- `/faq/` public storefront help/FAQ (public articles + built-ins)
 - `/dashboard/` staff area (events CRUD, orders, reports)
+- `/dashboard/help/` staff help (role-filtered); `/dashboard/help/manage/`,
+  `/dashboard/help/new/`, `/dashboard/help/<id>/edit/`, `.../delete/` (manager+)
 - `/scan/` scanner UI, `/S/<token>/<sig>/` (internal redeem endpoint; the QR
   encodes a bare `<token>.<sig>` code, not this URL)
 - `/webhooks/stripe/` tenant Stripe webhook
@@ -148,6 +197,14 @@ mark seats/GA sold, delete the hold → email tickets. Idempotent on session id.
 - Tenant isolation is non-negotiable: never query tenant data without the org filter.
 - Keep templates under each app's `templates/<app>/`; shared base in `templates/base.html`
   with branding via CSS variables from `request.organization`.
+- **Two chromes, kept separate.** Public/buyer pages (storefront, `/faq/`)
+  extend `base.html` and show the storefront menu. Internal staff pages
+  (dashboard, help center, scan result) extend `templates/dashboard/base.html`,
+  which drops that menu (`site_header` block emptied) so the consumer nav never
+  bleeds into the staff area; internal navigation is the dashboard section nav
+  (`templates/dashboard/_nav.html`), whose single "View storefront" link is the
+  one explicit way back to the main site. New staff pages extend
+  `dashboard/base.html`, not `base.html`.
 - Deployment: `bin/boxoffice` operate CLI (deploy/restart/logs/migrate/backup),
   gunicorn config, nginx sample, `DEPLOY.md`. Verify a CLEAN clone builds.
 

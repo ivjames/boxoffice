@@ -1,0 +1,44 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Manage help — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_help' %}">&larr; Help</a>
+<div class="dash-header">
+    <h1>Manage help articles</h1>
+    <a class="button" href="{% url 'dashboard_help_create' %}">New article</a>
+</div>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead><tr><th>Title</th><th>Category</th><th>Visibility</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for article in articles %}
+        <tr>
+            <td><a href="{% url 'dashboard_help_update' article.pk %}">{{ article.title }}</a></td>
+            <td>{{ article.get_category_display }}</td>
+            <td>{{ article.get_visibility_display }}</td>
+            <td>
+                {% if article.is_published %}
+                    <span class="badge badge--published">Published</span>
+                {% else %}
+                    <span class="badge badge--draft">Draft</span>
+                {% endif %}
+            </td>
+            <td class="dash-table__actions">
+                <a href="{% url 'dashboard_help_update' article.pk %}" class="button button--secondary button--sm">Edit</a>
+                <form method="post" action="{% url 'dashboard_help_delete' article.pk %}"
+                      onsubmit="return confirm('Delete “{{ article.title|escapejs }}”?');">
+                    {% csrf_token %}
+                    <button type="submit" class="button button--secondary button--sm">Delete</button>
+                </form>
+            </td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="5" class="muted">No articles yet. Built-in help still shows on the Help page until you add your own.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

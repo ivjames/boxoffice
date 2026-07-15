@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ campaign.subject }}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; color: #1a1a1a; background: #f4f4f5; margin: 0; padding: 24px;">
+    <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 10px; overflow: hidden; border: 1px solid #e5e7eb;">
+        <div style="background: {{ organization.primary_color }}; padding: 24px; text-align: center;">
+            {% if logo_url %}
+                <img src="{{ logo_url }}" alt="{{ organization.name }}" height="40" style="height: 40px; width: auto; display: inline-block;">
+            {% else %}
+                <span style="color: #ffffff; font-size: 20px; font-weight: 700; letter-spacing: 0.01em;">{{ organization.name }}</span>
+            {% endif %}
+        </div>
+
+        <div style="padding: 24px;">
+            <h1 style="font-size: 20px; margin: 0 0 16px; color: {{ organization.primary_color }};">{{ campaign.subject }}</h1>
+
+            {% comment %}
+            `body` arrives already paragraph-wrapped: campaigns.emails.render_campaign
+            runs the plain-text campaign body through django.utils.html.linebreaks
+            before this template renders, per its FROZEN context contract. So this
+            drops the resulting <p>/<br> markup in with the `safe` filter rather than
+            re-running it through the `linebreaks` template filter, which would
+            double-wrap the paragraphs and HTML-escape the tags into visible text.
+            See render_campaign's docstring for the exact contract.
+            {% endcomment %}
+            <div style="color: #1a1a1a; line-height: 1.5;">{{ body|safe }}</div>
+
+            <p style="color: #6b7280; margin: 24px 0 0;">— {{ organization.name }}</p>
+        </div>
+
+        <div style="background: #f4f4f5; padding: 16px 24px; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
+                You're receiving this because you opted in to marketing emails from {{ organization.name }}.
+                <a href="{{ unsubscribe_url }}" style="color: #6b7280;">Unsubscribe</a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>

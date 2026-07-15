@@ -5,12 +5,16 @@ serves many branded theaters, each on its own subdomain: public storefront
 (browse → buy → Stripe checkout → emailed QR ticket) plus a staff dashboard
 (manage events, view orders, scan tickets at the door).
 
-See `docs/ARCHITECTURE.md` for the full spec. This repo is being built in
-phases; **this is Phase 1 (scaffold)**: project layout, settings, the
-`tenants` app (Organization + TenantMiddleware + branding), the `accounts`
-app (custom email-login User + Membership/roles), base templates, and a
-health check. No booking/payments/domain models yet — those land in later
-phases.
+See `docs/ARCHITECTURE.md` for the full spec. All of the originally planned
+build phases have shipped: multi-tenancy + branding (`tenants`), staff auth +
+roles (`accounts`), the domain models (`venues`, `events`, `orders`), the
+storefront (browse → seat/GA selection → cart/hold → checkout), Stripe Connect
+payments + QR tickets + emails (`payments`), the staff dashboard + door
+scanner (`dashboard`, `scanning`), and the lab980-aligned deploy tooling
+(`bin/boxoffice`, `DEPLOY.md`). Later additions on top of that base: a visual
+seating-chart editor + pricing zones (`docs/SEATING.md`, `docs/EDITOR.md`), a
+role-based help center (`helpcenter`, `docs/HELP.md`), a buyer self-service
+portal (`guests`), and staff order management (resend / cancel / refund).
 
 ## Stack
 
@@ -91,9 +95,18 @@ config/                  Django project: settings, urls, wsgi/asgi
     dev.py                DEBUG=True, SQLite fallback, console email
     prod.py               DEBUG=False, Postgres required, SMTP email
 tenants/                  Organization model, TenantMiddleware, branding,
-                          TenantScopedManager/TenantScopedModel base classes
-                          for later tenant-owned apps, /healthz
+                          TenantScopedManager/TenantScopedModel base classes,
+                          /healthz, robots.txt/sitemap.xml
 accounts/                 Custom User (email login), Membership + roles
+guests/                   Buyer self-service portal (magic-link sign-in →
+                          "my orders")
+venues/                   Venue, SeatingChart, Section, Seat (+ visual editor)
+events/                   Event, Performance, PriceTier, GAAllocation, zones
+orders/                   Cart/Hold, Order, OrderItem, Ticket, Payment
+payments/                 Stripe Connect (Express) checkout + webhook + refunds
+dashboard/                Role-gated staff area (events/orders/venues/reports)
+scanning/                 Door scanner UI + ticket redeem endpoint
+helpcenter/               Tenant KB + built-in FAQ (staff + storefront)
 templates/
   base.html               Shared layout, per-tenant CSS variables
   tenants/                Storefront home / platform landing placeholders
@@ -118,12 +131,18 @@ docs/ARCHITECTURE.md      Full spec (read this first)
 ## Tests
 
 ```bash
+# STORAGES uses WhiteNoise's manifest storage even in dev, so collect static
+# once first or static lookups raise "Missing staticfiles manifest entry".
+python manage.py collectstatic --noinput
 pytest
 ```
 
-(No tests yet beyond what Django's `check` framework covers — Phase 1 is
-scaffolding. Model/locking/tenant-isolation tests land with the domain
-models in later phases.)
+There's a substantial suite (600+ tests) covering money/seat-locking,
+tenant isolation, the Stripe checkout + webhook paths, and the dashboard. The
+multi-process concurrency tests (real OS processes against on-disk SQLite) are
+included in a normal run but are slow; deselect them in a hurry with
+`pytest -m "not multiprocess_concurrency"`, or scope a run to the app you
+touched (e.g. `python manage.py test orders.test_views tenants`).
 
 ## Roles
 

@@ -1,5 +1,11 @@
 Django>=5.2,<5.3
 django-environ>=0.11,<0.12
+# Reskin of /admin/ (the platform-operator surface only -- tenant storefronts
+# and the staff dashboard are untouched). Every admin class inherits
+# unfold.admin.ModelAdmin (see */admin.py); theme config lives in the UNFOLD
+# dict in config/settings/base.py. Pre-1.0 package, so pin the minor and bump
+# deliberately -- minor releases can change template blocks/markup.
+django-unfold>=0.91,<0.92
 # Postgres driver: only needed if DATABASE_URL points at Postgres. Kept in so
 # the SQLite->Postgres upgrade is one env var, no dependency change.
 psycopg[binary]>=3.1,<3.3
@@ -24,3 +30,7 @@ reportlab>=4.0,<5.0
 # AI seating-chart parsing (image/PDF -> SeatingChart, venues/chart_parsing.py):
 # official Anthropic SDK for the Claude vision + structured-output call.
 anthropic>=0.60,<1.0
+# Optional error monitoring. Only initialized when SENTRY_DSN is set
+# (config/observability.py); the import is guarded, so removing this line just
+# makes Sentry a permanent no-op rather than breaking startup.
+sentry-sdk>=2.0,<3.0

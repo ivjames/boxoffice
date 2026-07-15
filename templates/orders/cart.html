@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load showtimes %}
+{% load showtimes pass_tags %}
 
 {% block title %}Your cart — {{ organization.name }}{% endblock %}
 
@@ -9,6 +9,7 @@
 
     {% if items %}
         {% for item in items %}
+            {% redeemable_with_pass item.hold redeeming_pass as item_pass_redeemable %}
             <div class="cart-item" x-data="holdCountdown('{{ item.hold.expires_at|date:'c' }}')" x-init="start()">
                 <div class="cart-item__header">
                     <h2>{{ item.hold.performance.event.title }}</h2>
@@ -25,13 +26,95 @@
                     </ul>
                 {% endif %}
 
-                <p><strong>Total: ${{ item.total }}</strong></p>
+                {% if item.discount %}
+                    <p>Subtotal: ${{ item.total }}</p>
+                    <p class="muted">&minus; ${{ item.discount }} ({{ item.hold.promo_code_text }})</p>
+                {% endif %}
+                {% if item.donation %}
+                    <p class="muted">Donation: ${{ item.donation }}</p>
+                {% endif %}
+                <p><strong>Total: ${{ item.net_total }}</strong></p>
                 <p class="cart-item__timer">
                     Holding for: <span x-text="display" :class="{ 'cart-item__timer--warning': secondsLeft > 0 && secondsLeft < 60 }"></span>
                 </p>
 
+                {% if not item_pass_redeemable %}
+                <div class="cart-item__promo">
+                    {% if item.hold.promo_code_id %}
+                        <p class="muted">Code <strong>{{ item.hold.promo_code_text }}</strong> applied.</p>
+                        <form method="post" action="{% url 'promo_remove' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <button type="submit" class="button button--secondary button--sm">Remove code</button>
+                        </form>
+                    {% else %}
+                        <form method="post" action="{% url 'promo_apply' %}" class="cart-item__promo-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <div class="field">
+                                <label class="sr-only" for="promo-code-{{ item.hold.pk }}">Promo code</label>
+                                <input type="text" id="promo-code-{{ item.hold.pk }}" name="code"
+                                       placeholder="Promo code" autocapitalize="characters">
+                            </div>
+                            <button type="submit" class="button button--secondary button--sm">Apply</button>
+                        </form>
+                    {% endif %}
+                </div>
+
+                {% if donations_enabled %}
+                <div class="cart-item__donation">
+                    {% if item.hold.donation_amount %}
+                        <p class="muted">Donation: <strong>${{ item.hold.donation_amount }}</strong></p>
+                        <form method="post" action="{% url 'donation_remove' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <button type="submit" class="button button--secondary button--sm">Remove donation</button>
+                        </form>
+                    {% else %}
+                        <p class="muted">Add a donation</p>
+                        <div class="cart-item__donation-presets">
+                            {% for preset in donation_suggested_amounts %}
+                                <form method="post" action="{% url 'donation_add' %}" class="cart-item__donation-preset-form">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                                    <input type="hidden" name="amount" value="{{ preset }}">
+                                    <button type="submit" class="button button--secondary button--sm">${{ preset }}</button>
+                                </form>
+                            {% endfor %}
+                        </div>
+                        <form method="post" action="{% url 'donation_add' %}" class="cart-item__donation-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                            <div class="field">
+                                <label class="sr-only" for="donation-amount-{{ item.hold.pk }}">Custom donation amount</label>
+                                <input type="text" id="donation-amount-{{ item.hold.pk }}" name="amount"
+                                       placeholder="Other amount" inputmode="decimal">
+                            </div>
+                            <button type="submit" class="button button--secondary button--sm">Add</button>
+                        </form>
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% endif %}{% comment %}/not item_pass_redeemable{% endcomment %}
+
+                {% if redeeming_pass %}
+                    {% if item_pass_redeemable %}
+                        <div class="cart-item__pass-redeem">
+                            <form method="post" action="{% url 'pass_redeem' %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">
+                                <button type="submit" class="button">Redeem with pass</button>
+                            </form>
+                        </div>
+                    {% else %}
+                        <p class="muted">Not covered by your pass.</p>
+                    {% endif %}
+                {% endif %}
+
                 <div class="cart-item__actions">
-                    <a class="button" href="{% url 'checkout' %}">Proceed to checkout</a>
+                    {% if not item_pass_redeemable %}
+                        <a class="button" href="{% url 'checkout' %}">Proceed to checkout</a>
+                    {% endif %}
                     <form method="post" action="{% url 'cart_release' %}">
                         {% csrf_token %}
                         <input type="hidden" name="hold_id" value="{{ item.hold.pk }}">

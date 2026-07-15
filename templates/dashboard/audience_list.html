@@ -1,0 +1,58 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Audience — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Audience</h1>
+    <a class="button" href="{% url 'dashboard_campaign_list' %}">Campaigns</a>
+</div>
+
+<form method="get" class="search-form">
+    <input type="text" name="search" value="{{ search }}" placeholder="Search email or name">
+    <input type="text" name="tag" value="{{ tag }}" placeholder="Tag">
+    <select name="opt_in">
+        <option value="" {% if opt_in == "" %}selected{% endif %}>Everyone</option>
+        <option value="1" {% if opt_in == "1" %}selected{% endif %}>Opted in</option>
+        <option value="0" {% if opt_in == "0" %}selected{% endif %}>Opted out</option>
+    </select>
+    <button type="submit" class="button">Filter</button>
+    <a class="button button--secondary" href="?search={{ search }}&tag={{ tag }}&opt_in={{ opt_in }}&format=csv">Export CSV</a>
+</form>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead>
+        <tr>
+            <th>Email</th>
+            <th>Name</th>
+            <th>Opted in</th>
+            <th>Orders</th>
+            <th>Lifetime value</th>
+            <th>Tags</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for guest in guests %}
+        <tr>
+            <td><a href="{% url 'dashboard_audience_detail' guest.pk %}">{{ guest.email }}</a></td>
+            <td>{{ guest.name|default:"—" }}</td>
+            <td>
+                {% if guest.marketing_opt_in %}
+                    <span class="badge badge--active">Opted in</span>
+                {% else %}
+                    <span class="badge badge--inactive">Opted out</span>
+                {% endif %}
+            </td>
+            <td>{{ guest.order_count }}</td>
+            <td>${{ guest.ltv|default:"0.00" }}</td>
+            <td>{{ guest.tags|default:"—" }}</td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="6" class="muted">No guests match these filters.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

@@ -377,7 +377,8 @@ cmd_add_tenant() {
 ${c_blue}==>${c_off} Onboarded $fqdn
       port:  $PORT  (same gunicorn process as the main app)
 
-Next: set Stripe keys + branding for this org in /admin.
+Next: set branding in /admin, then have an owner connect Stripe from the
+theater dashboard (Overview -> Connect Stripe).
 DONE
 }
 

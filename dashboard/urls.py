@@ -4,6 +4,11 @@ from . import views
 
 urlpatterns = [
     path("dashboard/", views.overview, name="dashboard_overview"),
+    path(
+        "dashboard/performances/<int:pk>/",
+        views.performance_detail,
+        name="dashboard_performance_detail",
+    ),
     path("dashboard/events/", views.EventListView.as_view(), name="dashboard_event_list"),
     path("dashboard/events/new/", views.EventCreateView.as_view(), name="dashboard_event_create"),
     path("dashboard/events/<int:pk>/", views.EventDetailView.as_view(), name="dashboard_event_detail"),
@@ -27,6 +32,88 @@ urlpatterns = [
         views.performance_price_tiers,
         name="dashboard_performance_price_tiers",
     ),
+    # -- promo codes (manager+) ----------------------------------------------
+    path("dashboard/promos/", views.PromoCodeListView.as_view(), name="dashboard_promo_list"),
+    path("dashboard/promos/new/", views.PromoCodeCreateView.as_view(), name="dashboard_promo_create"),
+    path(
+        "dashboard/promos/<int:pk>/edit/",
+        views.PromoCodeUpdateView.as_view(),
+        name="dashboard_promo_update",
+    ),
+    path(
+        "dashboard/promos/<int:pk>/toggle/",
+        views.promo_deactivate,
+        name="dashboard_promo_toggle",
+    ),
+    # -- donations (manager+) ------------------------------------------------
+    path(
+        "dashboard/donations/",
+        views.donations_report,
+        name="dashboard_donation_report",
+    ),
+    path(
+        "dashboard/donations/settings/",
+        views.donation_settings,
+        name="dashboard_donation_settings",
+    ),
+    # -- passes (manager+) ----------------------------------------------------
+    path("dashboard/passes/", views.PassProductListView.as_view(), name="dashboard_pass_list"),
+    path(
+        "dashboard/passes/new/", views.PassProductCreateView.as_view(), name="dashboard_pass_create"
+    ),
+    path(
+        "dashboard/passes/<int:pk>/edit/",
+        views.PassProductUpdateView.as_view(),
+        name="dashboard_pass_update",
+    ),
+    path(
+        "dashboard/passes/<int:pk>/toggle/",
+        views.pass_toggle,
+        name="dashboard_pass_toggle",
+    ),
+    path("dashboard/passes/report/", views.pass_report, name="dashboard_pass_report"),
+    # -- audience / CRM + email campaigns (manager+, Phase 4) ---------------
+    path("dashboard/audience/", views.audience_list, name="dashboard_audience_list"),
+    path(
+        "dashboard/audience/<int:pk>/",
+        views.audience_detail,
+        name="dashboard_audience_detail",
+    ),
+    path(
+        "dashboard/campaigns/",
+        views.EmailCampaignListView.as_view(),
+        name="dashboard_campaign_list",
+    ),
+    path(
+        "dashboard/campaigns/new/",
+        views.EmailCampaignCreateView.as_view(),
+        name="dashboard_campaign_create",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/edit/",
+        views.EmailCampaignUpdateView.as_view(),
+        name="dashboard_campaign_update",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/",
+        views.campaign_detail,
+        name="dashboard_campaign_detail",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/preview/",
+        views.campaign_preview,
+        name="dashboard_campaign_preview",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/test/",
+        views.campaign_test,
+        name="dashboard_campaign_test",
+    ),
+    path(
+        "dashboard/campaigns/<int:pk>/send/",
+        views.campaign_send,
+        name="dashboard_campaign_send",
+    ),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),
@@ -45,6 +132,21 @@ urlpatterns = [
         "dashboard/orders/<slug:token>/",
         views.OrderDetailView.as_view(),
         name="dashboard_order_detail",
+    ),
+    path(
+        "dashboard/orders/<slug:token>/resend/",
+        views.order_resend,
+        name="dashboard_order_resend",
+    ),
+    path(
+        "dashboard/orders/<slug:token>/cancel/",
+        views.order_cancel,
+        name="dashboard_order_cancel",
+    ),
+    path(
+        "dashboard/orders/<slug:token>/refund/",
+        views.order_refund,
+        name="dashboard_order_refund",
     ),
     # -- seating chart builder (Phase A, docs/SEATING.md) -------------------
     path("dashboard/venues/", views.VenueListView.as_view(), name="dashboard_venue_list"),

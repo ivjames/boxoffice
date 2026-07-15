@@ -10,8 +10,23 @@ from django.views.decorators.http import require_POST
 
 from tenants.decorators import require_tenant
 
+from . import throttle
 from .forms import StaffLoginForm
 from .models import Membership, User
+
+
+def _default_landing(request):
+    """Where a just-logged-in staffer lands with no explicit ?next=. Scanners
+    work the door only -- they have no overview/reports -- so send a
+    scanner-only membership straight to the scan screen; everyone box office
+    and up starts on the dashboard overview. Mirrors the nav/overview gating
+    in dashboard.views + templates/dashboard/_nav.html."""
+    membership = Membership.objects.filter(
+        user=request.user, organization=request.organization
+    ).first()
+    if membership is not None and not membership.can_sell_tickets():
+        return reverse("scan_home")
+    return reverse("dashboard_overview")
 
 
 def _safe_next(request, next_url):
@@ -19,7 +34,7 @@ def _safe_next(request, next_url):
         next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
     ):
         return next_url
-    return reverse("dashboard_overview")
+    return _default_landing(request)
 
 
 @require_tenant
@@ -47,17 +62,26 @@ def login_view(request):
     if request.method == "POST":
         form = StaffLoginForm(request.POST)
         next_url = request.POST.get("next", "")
-        if form.is_valid():
+        if throttle.is_locked_out("staff-login", request):
+            # Refuse before touching authenticate(), so a locked-out IP can't
+            # keep probing. Same generic wording as a bad password.
+            error = "Too many sign-in attempts. Please wait a few minutes and try again."
+        elif form.is_valid():
             user = authenticate(
                 request,
                 username=form.cleaned_data["email"],
                 password=form.cleaned_data["password"],
             )
             if user is None:
+                throttle.register_failure("staff-login", request)
                 error = "Incorrect email or password."
             elif not Membership.objects.filter(user=user, organization=request.organization).exists():
+                # A real password but wrong theater is still a failed attempt
+                # here -- count it so this can't be used to probe unthrottled.
+                throttle.register_failure("staff-login", request)
                 error = "This account doesn't have access to this theater."
             else:
+                throttle.clear("staff-login", request)
                 login(request, user)
                 messages.success(request, f"Welcome back, {user.get_short_name()}.")
                 return redirect(_safe_next(request, next_url))

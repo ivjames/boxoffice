@@ -1,0 +1,11 @@
+[Unit]
+Description=Run boxoffice-campaigns.service every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=boxoffice-campaigns.service
+
+[Install]
+WantedBy=timers.target

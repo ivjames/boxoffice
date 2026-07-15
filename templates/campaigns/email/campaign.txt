@@ -1,0 +1,8 @@
+{{ campaign.subject }}
+{{ organization.name }}
+
+{{ body }}
+
+---
+You're receiving this because you opted in to marketing emails from {{ organization.name }}.
+Unsubscribe any time: {{ unsubscribe_url }}

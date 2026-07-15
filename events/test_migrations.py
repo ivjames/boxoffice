@@ -17,8 +17,23 @@ class BackfillSeatingChartMigrationTests(TransactionTestCase):
     # DDL) needs TransactionTestCase, not TestCase -- TestCase wraps each
     # test in one outer transaction it rolls back, which doesn't play well
     # with a nested migrate() also managing its own transactions/DDL.
-    migrate_from = [("events", "0004_performance_seating_chart_and_more")]
-    migrate_to = [("events", "0005_backfill_performance_seating_chart")]
+    # Pin tenants at its current leaf, not just events. Without this,
+    # `old_apps` would freeze the historical `Organization` at the tenants
+    # migration that events 0004 depends on (0001) — which still declares the
+    # long-since-removed per-tenant Stripe key columns — while the real test DB
+    # table is at the latest tenants migration (those columns dropped). Creating
+    # an Organization through that stale historical model then emits an INSERT
+    # for columns the table no longer has. Pinning tenants to its leaf keeps the
+    # historical Organization's schema in step with the DB. (Harmless for
+    # *added* columns thanks to db_default; only column *removals* expose it.)
+    migrate_from = [
+        ("events", "0004_performance_seating_chart_and_more"),
+        ("tenants", "0004_organization_stripe_connect"),
+    ]
+    migrate_to = [
+        ("events", "0005_backfill_performance_seating_chart"),
+        ("tenants", "0004_organization_stripe_connect"),
+    ]
 
     def _migrate(self, targets):
         executor = MigrationExecutor(connection)

@@ -1,0 +1,30 @@
+# Alternative to deploy/boxoffice-campaigns.cron: systemd timer/service pair
+# for the campaign email sender, if you'd rather use systemd than cron on this
+# droplet. Functionally identical; pick one, not both.
+#
+# NOTE: unlike the cron sample, systemd does not read DJANGO_SETTINGS_MODULE
+# from a shell -- it's set explicitly in the [Service] Environment= line below,
+# so the sender reads the prod DB (the same reason the cron line sets it).
+#
+# Install:
+#   cp deploy/systemd/boxoffice-campaigns.service /etc/systemd/system/
+#   cp deploy/systemd/boxoffice-campaigns.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now boxoffice-campaigns.timer
+#
+# Check it's firing:
+#   systemctl list-timers boxoffice-campaigns.timer
+#   journalctl -u boxoffice-campaigns.service -n 50
+
+[Unit]
+Description=boxoffice: send queued campaign emails
+# Not After=boxoffice.service on purpose -- this is a one-shot management
+# command against the same SQLite file, not a dependency on gunicorn being up.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/boxoffice
+Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
+ExecStart=/var/www/boxoffice/venv/bin/python manage.py send_campaign_emails
+# lab980 apps run as root (no dedicated service user) -- see lab980.com/CLAUDE.md.
+User=root

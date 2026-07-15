@@ -38,7 +38,7 @@ from passes.services import remaining_admissions, restore_redemptions_for_order
 from payments.services import RefundError, refund_order
 from promotions.models import PromoCode
 from venues import chart_parsing, generation
-from venues.models import Seat, SeatingChart, Section, Venue
+from venues.models import ChartParseJob, Seat, SeatingChart, Section, Venue
 
 from .forms import (
     DonationSettingsForm,
@@ -1234,52 +1234,103 @@ class SeatingChartListView(ManagerRequiredMixin, ListView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["venue"] = self.venue
+        # The "Import from image/PDF" panel's job monitor: everything still
+        # in flight plus the last few finished runs, so a manager returning
+        # to the page sees what happened while they were away.
+        context["parse_jobs"] = ChartParseJob.objects.filter(
+            organization=self.request.organization, venue=self.venue
+        ).select_related("chart")[:5]
         return context
 
 
 @manager_required
 @require_POST
 def chart_parse_upload(request, venue_pk):
-    """POST target of the chart list page's "Import from image/PDF" form:
-    runs the uploaded file through venues.chart_parsing (Claude vision ->
-    parametric section spec -> generated seats) and drops staff into the
-    live chart editor to review/refine the result. Manager-gated and
-    venue-scoped like every other chart mutation; every failure mode comes
-    back as a flash message on the chart list rather than a 500."""
+    """POST target of both "Import from image/PDF" forms (chart list: new
+    chart; chart editor sidebar: re-parse INTO the current chart via the
+    hidden `chart` field). The parse itself makes two multi-minute vision
+    calls -- far past any request timeout -- so this view only validates
+    the upload, records a ChartParseJob, and spawns the detached
+    run_chart_parse worker (venues.chart_parsing.spawn_parse_job); progress
+    is polled from chart_parse_status. Manager-gated and venue-scoped like
+    every other chart mutation. AJAX callers (the editor panel) get JSON
+    {ok, job_id, status_url}; plain form POSTs bounce back to the chart
+    list, where the jobs panel picks the new job up."""
     venue = get_object_or_404(Venue, pk=venue_pk, organization=request.organization)
+    wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     back = redirect("dashboard_chart_list", venue.pk)
+
+    def fail(message, status=400):
+        if wants_json:
+            return JsonResponse({"ok": False, "error": message}, status=status)
+        messages.error(request, message)
+        return back
 
     upload = request.FILES.get("file")
     if upload is None:
-        messages.error(request, "Choose an image or PDF of your seating chart first.")
-        return back
+        return fail("Choose an image or PDF of your seating chart first.")
     media_type = chart_parsing.media_type_for_upload(upload.name, upload.content_type)
     if media_type is None:
-        messages.error(request, "Unsupported file type. Upload a PNG, JPEG, GIF, WebP image or a PDF.")
-        return back
+        return fail("Unsupported file type. Upload a PNG, JPEG, GIF, WebP image or a PDF.")
     if upload.size > chart_parsing.MAX_UPLOAD_BYTES:
-        messages.error(request, "File is too large (20 MB max).")
-        return back
+        return fail("File is too large (20 MB max).")
 
-    try:
-        spec = chart_parsing.parse_chart_file(upload.read(), media_type)
-        chart = chart_parsing.build_chart_from_spec(
-            venue, spec, name=(request.POST.get("name") or "").strip() or None
+    replace_chart = None
+    replace_pk = request.POST.get("chart")
+    if replace_pk:
+        replace_chart = get_object_or_404(
+            SeatingChart, pk=replace_pk, organization=request.organization, venue=venue
         )
-    except chart_parsing.ChartParsingError as exc:
-        messages.error(request, str(exc))
-        return back
 
-    seat_count = Seat.objects.filter(organization=request.organization, section__chart=chart).count()
-    usage_line = chart_parsing.describe_usage(spec.get("usage"))
-    messages.success(
-        request,
-        f"Parsed {chart.sections.count()} section(s) / {seat_count} seat(s) from "
-        f"{upload.name}{f' ({usage_line})' if usage_line else ''}. Review the layout "
-        "below -- the parse is a starting point, so check counts and positions "
-        "before selling against it.",
+    job = ChartParseJob.objects.create(
+        organization=request.organization,
+        venue=venue,
+        replace_chart=replace_chart,
+        upload=upload,
+        media_type=media_type,
+        chart_name=(request.POST.get("name") or "").strip(),
+        created_by=request.user,
     )
-    return redirect("dashboard_chart_editor", chart.pk)
+    chart_parsing.spawn_parse_job(job)
+
+    status_url = reverse("dashboard_chart_parse_status", args=[job.pk])
+    if wants_json:
+        return JsonResponse({"ok": True, "job_id": job.pk, "status_url": status_url})
+    messages.info(
+        request,
+        f"Parsing {upload.name} in the background -- it usually takes a couple of minutes. "
+        "Progress shows below; you can leave this page and come back.",
+    )
+    return back
+
+
+@manager_required
+def chart_parse_status(request, pk):
+    """Polling endpoint for a ChartParseJob (the chart list panel and the
+    editor sidebar poll it every few seconds). Org-scoped like everything
+    else; reports effective_status so a dead worker reads as failed rather
+    than spinning forever."""
+    job = get_object_or_404(ChartParseJob, pk=pk, organization=request.organization)
+    status = job.effective_status
+    payload = {
+        "status": status,
+        "progress": job.progress or None,
+        "error": job.error or None,
+        "usage": chart_parsing.describe_usage(job.usage) or None,
+        "editor_url": None,
+        "detail": None,
+    }
+    if status == ChartParseJob.Status.FAILED and not payload["error"]:
+        payload["error"] = "The parse worker stopped responding. Try again."
+    if status == ChartParseJob.Status.SUCCEEDED and job.chart_id:
+        payload["editor_url"] = reverse("dashboard_chart_editor", args=[job.chart_id])
+        seat_count = Seat.objects.filter(
+            organization=request.organization, section__chart_id=job.chart_id
+        ).count()
+        payload["detail"] = (
+            f"{job.chart.sections.count()} section(s) / {seat_count} seat(s)"
+        )
+    return JsonResponse(payload)
 
 
 class SeatingChartCreateView(ManagerRequiredMixin, CreateView):

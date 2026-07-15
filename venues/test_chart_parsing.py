@@ -626,3 +626,131 @@ class RealWorldChartTests(TestCase):
                 ("Parterre Center", "U", "101"),
             },
         )
+
+
+# --- background jobs (run_parse_job / run_chart_parse) ----------------------
+
+import tempfile
+
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+
+from venues.chart_parsing import run_parse_job
+from venues.models import ChartParseJob
+
+MEDIA_TMP = tempfile.mkdtemp(prefix="boxoffice-test-media-")
+
+
+@override_settings(MEDIA_ROOT=MEDIA_TMP)
+class RunParseJobTests(TestCase):
+    def setUp(self):
+        self.org = make_org("roxy")
+        self.venue = Venue.objects.create(organization=self.org, name="Main Stage")
+
+    def make_job(self, **overrides):
+        fields = {
+            "organization": self.org,
+            "venue": self.venue,
+            "upload": SimpleUploadedFile("house.png", b"fake-png", content_type="image/png"),
+            "media_type": "image/png",
+        }
+        fields.update(overrides)
+        return ChartParseJob.objects.create(**fields)
+
+    def test_success_builds_chart_and_records_outcome(self):
+        job = self.make_job(chart_name="Cabaret setup")
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            result = run_parse_job(job.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.SUCCEEDED)
+        self.assertEqual(job.chart.name, "Cabaret setup")
+        self.assertEqual(job.usage["input_tokens"], 8364)  # both passes summed
+        self.assertEqual(job.progress, "")
+        self.assertIsNotNone(job.started_at)
+        self.assertIsNotNone(job.finished_at)
+        self.assertEqual(result.pk, job.pk)
+        self.assertEqual(Seat.objects.filter(section__chart=job.chart).count(), 12)
+
+    def test_replace_target_rebuilds_that_chart_in_place(self):
+        chart = SeatingChart.objects.create(
+            organization=self.org, venue=self.venue, name="Main house"
+        )
+        Section.objects.create(organization=self.org, chart=chart, name="Old section")
+        job = self.make_job(replace_chart=chart)
+        with mock.patch.object(
+            chart_parsing, "_get_client", return_value=fake_client(fake_response(chart_spec()))
+        ):
+            run_parse_job(job.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.SUCCEEDED)
+        self.assertEqual(job.chart_id, chart.pk)  # identity survives the replace
+        self.assertEqual(
+            list(chart.sections.values_list("name", flat=True)), ["Orchestra"]
+        )
+
+    def test_parsing_error_marks_failed_with_staff_safe_message(self):
+        job = self.make_job()
+        client = fake_client(fake_response(chart_spec(), stop_reason="refusal"))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            run_parse_job(job.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.FAILED)
+        self.assertIn("declined", job.error)
+        self.assertIsNone(job.chart)
+
+    def test_unexpected_crash_is_caught_not_raised(self):
+        job = self.make_job()
+        with mock.patch.object(chart_parsing, "_get_client", side_effect=RuntimeError("boom")):
+            run_parse_job(job.pk)  # must not raise -- nobody catches in the worker
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.FAILED)
+        self.assertIn("Unexpected error", job.error)
+
+    def test_only_pending_jobs_are_claimable(self):
+        job = self.make_job(status=ChartParseJob.Status.RUNNING)
+        self.assertIsNone(run_parse_job(job.pk))
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.RUNNING)  # untouched
+
+    def test_progress_stages_are_written_to_the_row(self):
+        job = self.make_job()
+        stages = []
+        real_parse = chart_parsing.parse_chart_file
+
+        def spying_parse(data, media_type, **kwargs):
+            on_progress = kwargs.get("on_progress")
+            with mock.patch.object(
+                chart_parsing, "_get_client", return_value=fake_client(fake_response(chart_spec()))
+            ):
+                spec = real_parse(data, media_type, on_progress=on_progress)
+            return spec
+
+        original_on_progress_write = ChartParseJob.save
+
+        def spying_save(self, *args, **kwargs):
+            if kwargs.get("update_fields") == ["progress"]:
+                stages.append(self.progress)
+            return original_on_progress_write(self, *args, **kwargs)
+
+        with mock.patch.object(chart_parsing, "parse_chart_file", side_effect=spying_parse):
+            with mock.patch.object(ChartParseJob, "save", spying_save):
+                run_parse_job(job.pk)
+        self.assertEqual(stages, ["extracting", "verifying", "building"])
+
+    def test_worker_command_runs_a_job_end_to_end(self):
+        from django.core.management import CommandError, call_command
+        from io import StringIO
+
+        job = self.make_job()
+        buf = StringIO()
+        with mock.patch.object(
+            chart_parsing, "_get_client", return_value=fake_client(fake_response(chart_spec()))
+        ):
+            call_command("run_chart_parse", str(job.pk), stdout=buf)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.SUCCEEDED)
+        self.assertIn("succeeded", buf.getvalue())
+
+        with self.assertRaises(CommandError):
+            call_command("run_chart_parse", "999999", stdout=StringIO())

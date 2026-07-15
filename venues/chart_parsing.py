@@ -363,7 +363,7 @@ def _request_spec(client, model, file_block, prompt_text):
     return spec, response
 
 
-def parse_chart_file(data, media_type, *, verify=True):
+def parse_chart_file(data, media_type, *, verify=True, on_progress=None):
     """Send the file bytes to the Claude API and return a validated chart
     spec dict (see CHART_SPEC_SCHEMA / validate_chart_spec) with the API's
     token accounting attached as spec["usage"] (summed across passes -- see
@@ -378,7 +378,12 @@ def parse_chart_file(data, media_type, *, verify=True):
     observed in live parses, and a self-check against its own output is the
     cheapest effective counter. Costs a second model call (roughly doubles
     tokens); disable for quick/cheap runs via the management command's
-    --no-verify."""
+    --no-verify.
+
+    `on_progress`, if given, is called with a short stage string
+    ("extracting", "verifying") before each model call -- the background
+    job worker (run_parse_job) uses it to surface progress to the
+    dashboard's polling UI."""
     import base64
 
     if media_type not in SUPPORTED_MEDIA_TYPES:
@@ -394,11 +399,15 @@ def parse_chart_file(data, media_type, *, verify=True):
     model = getattr(settings, "CHART_PARSING_MODEL", "claude-opus-4-8")
     file_block = _content_block(base64.standard_b64encode(data).decode("ascii"), media_type)
 
+    if on_progress:
+        on_progress("extracting")
     raw_spec, response = _request_spec(client, model, file_block, _PARSE_PROMPT)
     responses = [response]
 
     if verify:
         first_pass = validate_chart_spec(raw_spec)
+        if on_progress:
+            on_progress("verifying")
         raw_spec, second_response = _request_spec(
             client,
             model,
@@ -702,3 +711,79 @@ def build_chart_from_spec(venue, spec, *, name=None, replace=False):
     return chart
 
 
+
+# --- background jobs (ChartParseJob -> run_chart_parse worker) --------------
+
+
+def run_parse_job(job_id):
+    """Execute one ChartParseJob synchronously: claim it (PENDING ->
+    RUNNING, atomically -- a double-spawned worker exits instead of running
+    the parse twice), stream progress onto the row, parse, build (into
+    `replace_chart` in place, or as a new chart), and record the outcome.
+    Never raises: every failure -- expected (ChartParsingError, surfaced
+    verbatim, it's staff-safe by contract) or not (logged, generic message)
+    -- lands in status=FAILED with `error` set, because the caller is a
+    detached worker process nobody's watching. Returns the refreshed job,
+    or None if it wasn't claimable."""
+    from django.utils import timezone
+
+    from .models import ChartParseJob
+
+    claimed = ChartParseJob.objects.filter(
+        pk=job_id, status=ChartParseJob.Status.PENDING
+    ).update(status=ChartParseJob.Status.RUNNING, started_at=timezone.now())
+    if not claimed:
+        return None
+    job = ChartParseJob.objects.get(pk=job_id)
+
+    def on_progress(stage):
+        job.progress = stage
+        job.save(update_fields=["progress"])
+
+    try:
+        with job.upload.open("rb") as f:
+            data = f.read()
+        spec = parse_chart_file(data, job.media_type, on_progress=on_progress)
+        on_progress("building")
+        if job.replace_chart_id:
+            chart = build_chart_from_spec(
+                job.venue, spec, name=job.replace_chart.name, replace=True
+            )
+        else:
+            chart = build_chart_from_spec(job.venue, spec, name=job.chart_name or None)
+        job.chart = chart
+        job.usage = spec.get("usage") or {}
+        job.status = ChartParseJob.Status.SUCCEEDED
+        job.error = ""
+    except ChartParsingError as exc:
+        job.status = ChartParseJob.Status.FAILED
+        job.error = str(exc)
+    except Exception:
+        logger.exception("Chart parse job %s crashed", job_id)
+        job.status = ChartParseJob.Status.FAILED
+        job.error = "Unexpected error while parsing -- see the server log."
+    job.progress = ""
+    job.finished_at = timezone.now()
+    job.save()
+    return job
+
+
+def spawn_parse_job(job):
+    """Launch the `run_chart_parse` management command for `job` as a
+    DETACHED subprocess (own session, no inherited stdio) so the parse's
+    multi-minute vision calls run outside any web worker's request/timeout
+    lifecycle -- the right-sized async worker for this deliberately
+    celery-free stack. The subprocess inherits os.environ, which carries
+    DJANGO_SETTINGS_MODULE (django-environ's read_env loads .env into the
+    process environment at settings import). Isolated so tests can patch it."""
+    import subprocess
+    import sys
+
+    subprocess.Popen(
+        [sys.executable, str(settings.BASE_DIR / "manage.py"), "run_chart_parse", str(job.pk)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        cwd=str(settings.BASE_DIR),
+    )

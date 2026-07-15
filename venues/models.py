@@ -64,8 +64,8 @@ class Section(TenantScopedModel):
 
     class NumberingScheme(models.TextChoices):
         SEQUENTIAL = "sequential", "Sequential (1, 2, 3…)"
-        ODD_DESC_LEFT = "odd_desc_left", "Odd, descending toward the aisle (…5, 3, 1)"
-        EVEN_ASC_RIGHT = "even_asc_right", "Even, ascending away from the aisle (2, 4, 6…)"
+        ODD_DESC_LEFT = "odd_desc_left", "Odd, right to left (…5, 3, 1)"
+        EVEN_ASC_RIGHT = "even_asc_right", "Even, left to right (2, 4, 6…)"
         HUNDREDS = "hundreds", "Hundreds by row (101, 102… / 201, 202…)"
         HUNDREDS_FLAT = "hundreds_flat", "Hundreds, same every row (101, 102… / 101, 102…)"
 

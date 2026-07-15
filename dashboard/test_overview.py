@@ -51,12 +51,13 @@ class OnboardingChecklistTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertContains(resp, f'href="{"/dashboard/venues/"}"')
         self.assertContains(resp, f'href="{"/dashboard/events/"}"')
         self.assertContains(resp, f'href="{"/dashboard/team/"}"')
+        # Branding now has a dedicated dashboard page (logo + color schemes).
+        self.assertContains(resp, f'href="{"/dashboard/branding/"}"')
 
     def test_steps_without_a_destination_render_as_plain_text_not_links(self):
         resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
         steps_by_key = {s["key"]: s for s in resp.context["onboarding_steps"]}
         self.assertIsNone(steps_by_key["stripe"]["url"])
-        self.assertIsNone(steps_by_key["branding"]["url"])
         self.assertIsNone(steps_by_key["first_sale"]["url"])
 
     def test_adding_a_venue_flips_that_step_done_and_increments_count(self):

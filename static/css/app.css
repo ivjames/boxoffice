@@ -11,6 +11,15 @@
     --text-color: #1a1a1a;
     --muted-color: #6b7280;
     --border-color: #e5e7eb;
+    /* Storefront typography, overridden per-tenant inline in base.html. The
+       system stack here is the fallback for the platform host and any page
+       without an organization. See tenants/fonts.py. */
+    --heading-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --body-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* Fixed staff-UI font -- the internal dashboard/scan/help pages reset to
+       this so a tenant's brand (esp. a display face) never degrades the tools
+       staff use all day. */
+    --internal-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 * {
@@ -19,7 +28,7 @@
 
 body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--body-font);
     color: var(--text-color);
     background: var(--bg-color);
     line-height: 1.5;
@@ -29,6 +38,20 @@ body {
        touch. `pan-x pan-y` still allows normal page scrolling. */
     touch-action: pan-x pan-y;
     -webkit-text-size-adjust: 100%;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--heading-font);
+}
+
+/* Internal staff UI (dashboard, scan, help center -- body.app-internal, set on
+   dashboard/base.html + scan_home). base.html still emits the tenant's brand
+   --heading-font/--body-font here because `organization` is set, so reset both
+   to the fixed staff font: the tools stay legible regardless of brand pick. */
+.app-internal,
+.app-internal h1, .app-internal h2, .app-internal h3,
+.app-internal h4, .app-internal h5, .app-internal h6 {
+    font-family: var(--internal-font);
 }
 
 a {
@@ -3264,4 +3287,293 @@ table.dash-table th {
 
 .onboarding-list a.onboarding-list__label:hover {
     color: var(--accent-color);
+}
+
+/* -- branding / color schemes page (dashboard/branding.html) ------------
+   Layout + chrome only. Every actual palette color is applied INLINE on the
+   swatch element (the values are per-scheme, per-tenant data), so nothing
+   here hardcodes a brand color -- keeping app.css tenant-agnostic per
+   CLAUDE.md "Frontend / styling". */
+
+.brand-section {
+    margin: 2rem 0;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.brand-section h2 {
+    margin-bottom: 0.5rem;
+}
+
+/* Labelled swatches (the "current colors" preview). */
+.swatch-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.swatch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8125rem;
+}
+
+.swatch__chip {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border-color);
+}
+
+.swatch__hex {
+    color: var(--muted-color, #6b7280);
+    font-size: 0.75rem;
+}
+
+/* Compact contiguous strip of chips (preset cards, found-colors ribbon). */
+.swatch-strip {
+    display: flex;
+    flex-wrap: wrap;
+    border-radius: 0.375rem;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+}
+
+.swatch-strip__chip {
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+}
+
+/* Preset / saved-scheme gallery. */
+.scheme-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: 1rem;
+}
+
+.scheme-card {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.scheme-card .swatch-strip {
+    border: 0;
+    border-radius: 0;
+}
+
+.scheme-card .swatch-strip__chip {
+    flex: 1 0 0;
+    height: 2.75rem;
+}
+
+.scheme-card__foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+}
+
+.scheme-card__name {
+    font-weight: 600;
+    font-size: 0.9375rem;
+}
+
+.scheme-card__actions {
+    display: inline-flex;
+    gap: 0.4rem;
+}
+
+/* Heading + body font selects, side by side (stack on narrow). */
+.font-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 0.75rem 1rem;
+    max-width: 40rem;
+    margin-bottom: 1rem;
+}
+
+.font-grid .field {
+    margin-bottom: 0;
+}
+
+/* The six color pickers, laid out in a responsive grid. */
+.color-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: 0.75rem 1rem;
+    max-width: 40rem;
+    margin-bottom: 1rem;
+}
+
+.color-grid__field {
+    margin-bottom: 0;
+}
+
+/* Native color inputs shouldn't stretch to the .dash-form full width. */
+.dash-form .color-grid__field input[type="color"] {
+    width: 100%;
+    max-width: 8rem;
+    height: 2.5rem;
+    padding: 0.15rem;
+    cursor: pointer;
+}
+
+.brand-actions {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.brand-derived {
+    margin-top: 1rem;
+}
+
+/* Editor + live preview side by side (stacks under ~40rem, see below). */
+.brand-editor {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
+    gap: 1.5rem;
+    align-items: start;
+    margin-bottom: 1rem;
+}
+
+.brand-editor .color-grid {
+    margin-bottom: 0;
+}
+
+.brand-preview-wrap__label {
+    font-weight: 600;
+    margin: 0 0 0.4rem;
+}
+
+/* The preview sink. Everything below reads the SIX brand vars set inline on
+   .brand-preview (seeded server-side, updated live by the page JS) -- so this
+   block hardcodes no brand color, only the neutral/#fff chrome and the
+   readable white text the real storefront also uses on colored fills. */
+.brand-preview {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background: var(--light-neutral-color);
+    color: var(--neutral-color);
+    font-size: 0.875rem;
+    /* Use the preview's OWN inline --body-font (seeded server-side, updated
+       live by the page JS), not the page font. */
+    font-family: var(--body-font);
+}
+
+/* Two-class specificity so the preview's heading font wins over the
+   `.app-internal h4/h6` reset on this (internal) branding page. */
+.brand-preview .brand-preview__brand,
+.brand-preview .brand-preview__title {
+    font-family: var(--heading-font);
+}
+
+.brand-preview__bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.6rem 0.85rem;
+    background: var(--primary-color);
+    color: #fff;
+}
+
+.brand-preview__brand {
+    font-weight: 700;
+}
+
+.brand-preview__nav {
+    font-size: 0.75rem;
+    opacity: 0.85;
+}
+
+.brand-preview__body {
+    padding: 0.85rem;
+}
+
+.brand-preview__title {
+    margin: 0 0 0.3rem;
+    color: var(--primary-color);
+}
+
+.brand-preview__text {
+    margin: 0 0 0.75rem;
+}
+
+.brand-preview__link {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.brand-preview__card {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.7rem;
+    background: #fff;
+    border: 1px solid var(--secondary-color);
+    border-radius: 0.375rem;
+}
+
+.brand-preview__badge {
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: var(--accent-color);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.brand-preview__price {
+    color: var(--secondary-color);
+    font-weight: 600;
+}
+
+.brand-preview__actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-left: auto;
+}
+
+.brand-preview__btn {
+    padding: 0.35rem 0.7rem;
+    border-radius: 0.375rem;
+    background: var(--accent-color);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.8125rem;
+}
+
+.brand-preview__btn--secondary {
+    background: transparent;
+    color: var(--primary-color);
+    border: 1px solid var(--secondary-color);
+}
+
+.brand-preview__foot {
+    padding: 0.5rem 0.85rem;
+    background: var(--dark-accent-color);
+    color: #fff;
+    font-size: 0.75rem;
+}
+
+@media (max-width: 40rem) {
+    .brand-editor {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Generic destructive action (delete a saved scheme). A semantic UI red, not
+   a tenant brand color -- safe to hardcode. */
+.button--danger {
+    background: #b91c1c;
+    color: #fff;
 }

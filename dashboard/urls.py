@@ -114,6 +114,13 @@ urlpatterns = [
         views.campaign_send,
         name="dashboard_campaign_send",
     ),
+    # -- branding / color schemes (manager+) --------------------------------
+    path("dashboard/branding/", views.branding, name="dashboard_branding"),
+    path(
+        "dashboard/branding/derive/",
+        views.branding_derive,
+        name="dashboard_branding_derive",
+    ),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),

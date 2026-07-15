@@ -17,6 +17,9 @@ from guests.models import GuestAccount
 from orders.services import get_seating_chart
 from passes.models import PassProduct
 from promotions.models import PromoCode
+from tenants.color_schemes import COLOR_ROLES
+from tenants.fonts import FONT_CHOICES
+from tenants.models import ColorScheme, Organization
 from venues.models import SeatingChart, Section, Venue
 
 
@@ -489,6 +492,100 @@ class EmailCampaignForm(forms.ModelForm):
         if kind == EmailCampaign.SegmentKind.MIN_SPEND and not cleaned.get("segment_min_spend"):
             self.add_error("segment_min_spend", "Enter a minimum lifetime spend amount.")
         return cleaned
+
+
+# --- branding / color schemes (manager+) -----------------------------------
+
+
+class BrandingForm(forms.ModelForm):
+    """The org's logo + six-role brand palette, edited directly on the
+    Organization (the storefront's source of truth -- see base.html). The six
+    color fields render as native <input type="color"> pickers; the model's
+    validate_hex_color validator still guards a hand-posted value. Applying a
+    preset or saved scheme is a separate POST path in the branding view
+    (Organization.apply_color_scheme), not this form."""
+
+    # Typography (tenants/fonts.py). ChoiceField (not a bare Select widget) so
+    # a posted value is validated against the catalog server-side. data-font
+    # lets the live-preview JS map the select to the right CSS variable.
+    heading_font = forms.ChoiceField(
+        choices=FONT_CHOICES, label="Heading font",
+        widget=forms.Select(attrs={"data-font": "heading"}),
+    )
+    body_font = forms.ChoiceField(
+        choices=FONT_CHOICES, label="Body font",
+        widget=forms.Select(attrs={"data-font": "body"}),
+    )
+
+    class Meta:
+        model = Organization
+        # Color order follows the palette spec (Feature Accent -> accent_color
+        # precedes Dark Accent), matching COLOR_ROLES and the swatch previews.
+        fields = [
+            "logo",
+            "heading_font",
+            "body_font",
+            "primary_color",
+            "secondary_color",
+            "accent_color",
+            "dark_accent_color",
+            "light_neutral_color",
+            "neutral_color",
+        ]
+        # data-role tags each picker with its scheme role so the branding
+        # page's live-preview JS maps it to the right CSS variable regardless
+        # of the (org-field) input name.
+        widgets = {
+            field: forms.TextInput(attrs={"type": "color", "data-role": role})
+            for role, _label, field in COLOR_ROLES
+        }
+        labels = {field: label for _role, label, field in COLOR_ROLES}
+
+
+class ColorSchemeForm(forms.ModelForm):
+    """Save a set of six colors as a reusable custom ColorScheme for this
+    tenant. `organization` is stamped by the view (never trusted from POST),
+    mirroring every other CRUD form here; the six role colors post as hex
+    values (from color pickers or the derive-from-homepage agent's result)."""
+
+    class Meta:
+        model = ColorScheme
+        # Feature Accent (metallic) precedes Dark Accent, matching COLOR_ROLES.
+        fields = ["name", "primary", "secondary", "metallic", "dark_accent", "light_neutral", "neutral"]
+        widgets = {
+            role: forms.TextInput(attrs={"type": "color", "data-role": role})
+            for role, _label, _field in COLOR_ROLES
+        }
+        labels = {role: label for role, label, _field in COLOR_ROLES}
+
+    def __init__(self, *args, organization, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+
+    def clean_name(self):
+        # `organization` isn't a form field (the view fixes it), so Django's
+        # own validate_unique() can't check unique_custom_scheme_slug_per_org.
+        # Check the slug we'll actually persist by hand -- mirrors
+        # SectionForm.clean_name / PromoCodeForm.clean_code.
+        from django.utils.text import slugify
+
+        name = (self.cleaned_data.get("name") or "").strip()
+        slug = slugify(name)[:140]
+        if slug:
+            existing = ColorScheme.objects.filter(organization=self.organization, slug=slug)
+            if self.instance.pk:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise forms.ValidationError("You already have a saved scheme with this name.")
+        return name
+
+    def save(self, commit=True):
+        scheme = super().save(commit=False)
+        scheme.organization = self.organization
+        scheme.is_preset = False
+        if commit:
+            scheme.save()
+        return scheme
 
 
 class GuestTagsNotesForm(forms.ModelForm):

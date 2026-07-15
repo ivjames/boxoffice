@@ -25,9 +25,12 @@ skipped I/O rows, ragged row lengths, wheelchair squares):
 - `Section` gains layout params: `origin_x/origin_y`, `rotation` (deg),
   `seat_pitch`, `row_pitch`, optional `arc_radius` (fanned center), plus authoring
   metadata: `numbering_scheme` (odd-desc-left | even-asc-right | hundreds |
-  sequential), `row_label_scheme` (skip I/O by default), and an optional `tier`
-  grouping (Orchestra/Parterre/Balcony). x/y is generated from these, then
-  hand-adjustable.
+  hundreds-flat, the continental center-block style where every row restarts at
+  101 | sequential), `row_label_scheme` (skip I/O by default), `row_label_start`
+  (offset into the letter sequence so a Parterre behind an A–M Orchestra can
+  start at N — added with the AI chart parsing, needed by real multi-tier
+  houses), and an optional `tier` grouping (Orchestra/Parterre/Balcony). x/y is
+  generated from these, then hand-adjustable.
 - `Performance.seating_chart` FK — make chart selection explicit (today a
   performance implicitly uses the venue's first chart). Enables multiple charts
   per venue and per-performance choice.

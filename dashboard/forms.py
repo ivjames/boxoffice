@@ -190,6 +190,11 @@ class SectionForm(forms.ModelForm):
     also the only place seats actually get (re)generated. This form only
     creates/renames the section shell and picks its numbering conventions.
 
+    `row_label_start` is optional here (missing/blank -> 0, the model
+    default) so the inline "New section" modal and any pre-existing caller
+    that doesn't send it keep working -- it only matters for houses whose
+    row letters continue across tiers (see the model field's help text).
+
     `ordering` is deliberately NOT a form field (Round-2 feedback,
     docs/EDITOR.md #7): a bare sort-index number input is exactly the kind
     of "raw internal param" the inline "New section" modal shouldn't expose
@@ -202,12 +207,16 @@ class SectionForm(forms.ModelForm):
 
     class Meta:
         model = Section
-        fields = ["name", "tier", "numbering_scheme", "row_label_scheme"]
+        fields = ["name", "tier", "numbering_scheme", "row_label_scheme", "row_label_start"]
 
     def __init__(self, *args, organization, chart, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.chart = chart
+        self.fields["row_label_start"].required = False
+
+    def clean_row_label_start(self):
+        return self.cleaned_data.get("row_label_start") or 0
 
     def clean_name(self):
         # `chart` isn't a form field (it's fixed by the URL/view, not user-

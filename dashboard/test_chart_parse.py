@@ -38,6 +38,7 @@ def parsed_spec():
                 "alt_row_seat_delta": 0,
                 "numbering_scheme": "sequential",
                 "row_label_scheme": "skip_io",
+                "row_label_start": 0,
                 "removed_seats": [],
                 "accessible_seats": [],
             }

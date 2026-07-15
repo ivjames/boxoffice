@@ -119,9 +119,18 @@ _SECTION_SCHEMA = {
         "alt_row_seat_delta": {"type": "integer", "description": "alternating mode only: seats added/dropped on every other row. Usually 0."},
         "numbering_scheme": {
             "type": "string",
-            "enum": ["sequential", "odd_desc_left", "even_asc_right", "hundreds"],
+            "enum": ["sequential", "odd_desc_left", "even_asc_right", "hundreds", "hundreds_flat"],
         },
         "row_label_scheme": {"type": "string", "enum": ["skip_io", "all_letters"]},
+        "row_label_start": {
+            "type": "integer",
+            "description": (
+                "Index into the row-label sequence for this section's FIRST row: 0 = A "
+                "(the usual case). Use it when a section continues the house's letter "
+                "sequence -- e.g. a Parterre whose first row is N behind an A-M Orchestra "
+                "is 12 under skip_io (A=0, B=1, ... H=7, J=8, ... N=12)."
+            ),
+        },
         "removed_seats": {
             "type": "array",
             "items": {"type": "array", "items": {"type": "string"}},
@@ -136,7 +145,7 @@ _SECTION_SCHEMA = {
     "required": [
         "name", "tier", "rows", "seats_per_row", "origin_x", "origin_y", "rotation",
         "seat_pitch", "row_pitch", "arc_radius", "offset_mode", "row_x_offset",
-        "alt_row_seat_delta", "numbering_scheme", "row_label_scheme",
+        "alt_row_seat_delta", "numbering_scheme", "row_label_scheme", "row_label_start",
         "removed_seats", "accessible_seats",
     ],
     "additionalProperties": False,
@@ -173,10 +182,15 @@ gentler curve = larger radius). Straight rows: arc_radius null.
 row_x_offset with offset_mode 'repeated' (each row shifted further than the \
 last, making a trapezoid).
 - numbering_scheme: read the printed seat numbers. Odd numbers descending \
-toward the aisle = odd_desc_left; ascending evens = even_asc_right; 101/201 \
-per row = hundreds; plain 1,2,3 = sequential.
+toward the aisle = odd_desc_left; ascending evens = even_asc_right; rows \
+numbered 101/201/301 = hundreds; EVERY row restarting at 101 (a common \
+center-block style) = hundreds_flat; plain 1,2,3 = sequential.
 - row_label_scheme: skip_io if rows jump from H to J (no I), otherwise \
 all_letters.
+- row_label_start: 0 when the section's first row is labelled A. When a \
+section continues the house's letter sequence (e.g. a mezzanine whose first \
+row is N behind an A-M orchestra), set the index of its first letter in the \
+scheme's sequence (skip_io: A=0 ... H=7, J=8 ... N=12 ... V=19).
 - Mark wheelchair symbols in accessible_seats.
 - Ignore the stage, legends, lobbies and other non-seat elements.
 """
@@ -373,6 +387,7 @@ def validate_chart_spec(spec):
                 "alt_row_seat_delta": _clamp_int(raw.get("alt_row_seat_delta"), -MAX_SEATS_PER_ROW, MAX_SEATS_PER_ROW, 0),
                 "numbering_scheme": numbering if numbering in numbering_values else Section.NumberingScheme.SEQUENTIAL,
                 "row_label_scheme": row_labels if row_labels in row_label_values else Section.RowLabelScheme.SKIP_IO,
+                "row_label_start": _clamp_int(raw.get("row_label_start"), 0, 2 * MAX_ROWS, 0),
                 "removed_seats": _seat_identity_list(raw.get("removed_seats")),
                 "accessible_seats": _seat_identity_list(raw.get("accessible_seats")),
             }
@@ -441,7 +456,7 @@ def build_chart_from_spec(venue, spec, *, name=None, replace=False):
                         "name", "tier", "rows", "seats_per_row", "origin_x", "origin_y",
                         "rotation", "seat_pitch", "row_pitch", "arc_radius", "offset_mode",
                         "row_x_offset", "alt_row_seat_delta", "numbering_scheme",
-                        "row_label_scheme", "removed_seats", "accessible_seats",
+                        "row_label_scheme", "row_label_start", "removed_seats", "accessible_seats",
                     )
                 },
             )

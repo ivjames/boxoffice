@@ -795,7 +795,7 @@ def _section_color(index):
 _SECTION_PARAM_FIELDS = [
     "origin_x", "origin_y", "rotation", "seat_pitch", "row_pitch", "row_x_offset",
     "arc_radius", "offset_mode", "alt_row_seat_delta", "rows", "seats_per_row",
-    "numbering_scheme", "row_label_scheme", "pivot_mode", "pivot_x", "pivot_y",
+    "numbering_scheme", "row_label_scheme", "row_label_start", "pivot_mode", "pivot_x", "pivot_y",
 ]
 
 
@@ -954,6 +954,8 @@ def chart_editor_save(request, pk):
                     setattr(section, field, max(-2.0, min(2.0, float(raw[field]))))
                 elif field in ("rows", "seats_per_row"):
                     setattr(section, field, max(1, int(raw[field])))
+                elif field == "row_label_start":
+                    setattr(section, field, max(0, int(raw[field])))
                 else:
                     setattr(section, field, float(raw[field]))
         except (TypeError, ValueError):

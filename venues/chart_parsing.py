@@ -75,6 +75,14 @@ MAX_SECTIONS = 40
 # 32 MB request limit once base64 overhead (~4/3) is added.
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
+# Images are downscaled client-side to this long edge before upload. It's
+# the vision model's own native maximum (Opus 4.7+ high-res limit) -- the
+# API downscales anything bigger server-side anyway, so nothing is lost --
+# and it keeps a full-res phone photo well clear of the API's hard
+# pixel-dimension cap, which is what a 400 on a big IMG_xxxx.png upload
+# turned out to be.
+MAX_IMAGE_EDGE_PX = 2576
+
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +281,91 @@ def _get_client():
         ) from exc
 
 
+def _sniff_media_type(data):
+    """The media type the file's MAGIC BYTES claim, or None if unrecognised.
+    Browsers/filenames lie routinely -- a renamed iPhone photo arrives as
+    'IMG_0128.png' with image/png while the bytes are JPEG or HEIC, and the
+    API 400s on the mismatch -- so the bytes win over the claimed type."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    if len(data) > 12 and data[4:8] == b"ftyp":
+        # The ISO base-media container: HEIC/HEIF/AVIF photos (iPhone default).
+        return "image/heic"
+    return None
+
+
+def _prepare_upload(data, media_type):
+    """Make the upload API-safe before it costs tokens: trust the magic
+    bytes over the claimed media type, reject HEIC with an actionable
+    message, and normalise real images (EXIF rotation applied, long edge
+    capped at MAX_IMAGE_EDGE_PX). Bytes we can't identify pass through
+    unchanged -- if they're genuinely bad the API's own error is surfaced
+    verbatim by _request_spec."""
+    sniffed = _sniff_media_type(data)
+    if sniffed == "image/heic":
+        raise ChartParsingError(
+            "This looks like an iPhone HEIC/HEIF photo, which the parser can't read -- "
+            "export or share it as JPEG or PNG and upload that instead."
+        )
+    if sniffed and sniffed != media_type:
+        media_type = sniffed
+    if sniffed in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+        data, media_type = _normalise_image(data, media_type)
+    return data, media_type
+
+
+def _normalise_image(data, media_type):
+    """Decode a real image with Pillow (already a project dependency), apply
+    its EXIF orientation (a sideways phone photo parses sideways otherwise),
+    and downscale anything whose long edge exceeds MAX_IMAGE_EDGE_PX.
+    Untouched PNG/JPEG bytes are returned as-is -- no pointless re-encode;
+    GIF/WebP are converted to PNG so the API sees a boring, safe format."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception as exc:
+        raise ChartParsingError(
+            "Couldn't read that image file -- it may be corrupted or truncated. "
+            "Re-export it and try again."
+        ) from exc
+
+    image = ImageOps.exif_transpose(image)
+    resized = False
+    long_edge = max(image.size)
+    if long_edge > MAX_IMAGE_EDGE_PX:
+        scale = MAX_IMAGE_EDGE_PX / long_edge
+        image = image.resize(
+            (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+            Image.LANCZOS,
+        )
+        resized = True
+
+    if not resized and media_type in ("image/png", "image/jpeg"):
+        return data, media_type
+
+    buffer = io.BytesIO()
+    if media_type == "image/jpeg":
+        image.convert("RGB").save(buffer, "JPEG", quality=90)
+    else:
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA")
+        image.save(buffer, "PNG")
+        media_type = "image/png"
+    return buffer.getvalue(), media_type
+
+
 def _content_block(data_b64, media_type):
     """The API content block for the uploaded file: PDFs go in a `document`
     block, images in an `image` block -- both base64, both natively
@@ -342,7 +435,12 @@ def _request_spec(client, model, file_block, prompt_text):
             "(set ANTHROPIC_API_KEY)."
         ) from exc
     except anthropic.APIStatusError as exc:
-        raise ChartParsingError(f"The parsing service returned an error ({exc.status_code}). Try again.") from exc
+        # Surface the API's own explanation -- a bare "(400)" told staff
+        # nothing when a bad upload (oversized/mistyped image) was rejected.
+        detail = (getattr(exc, "message", "") or str(exc)).strip()
+        raise ChartParsingError(
+            f"The parsing service rejected the request ({exc.status_code}): {detail[:300]}"
+        ) from exc
     except anthropic.APIConnectionError as exc:
         raise ChartParsingError("Couldn't reach the parsing service. Try again.") from exc
 
@@ -394,6 +492,8 @@ def parse_chart_file(data, media_type, *, verify=True, on_progress=None):
         raise ChartParsingError("File is too large (20 MB max).")
     if not data:
         raise ChartParsingError("The uploaded file is empty.")
+
+    data, media_type = _prepare_upload(data, media_type)
 
     client = _get_client()
     model = getattr(settings, "CHART_PARSING_MODEL", "claude-opus-4-8")

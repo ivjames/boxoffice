@@ -754,3 +754,98 @@ class RunParseJobTests(TestCase):
 
         with self.assertRaises(CommandError):
             call_command("run_chart_parse", "999999", stdout=StringIO())
+
+
+# --- upload preparation (sniffing / normalising) ----------------------------
+
+
+def real_image_bytes(fmt="PNG", size=(8, 6), mode="RGB"):
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new(mode, size, "red").save(buffer, fmt)
+    return buffer.getvalue()
+
+
+class PrepareUploadTests(TestCase):
+    def test_sniffs_the_common_formats(self):
+        sniff = chart_parsing._sniff_media_type
+        self.assertEqual(sniff(real_image_bytes("PNG")), "image/png")
+        self.assertEqual(sniff(real_image_bytes("JPEG")), "image/jpeg")
+        self.assertEqual(sniff(real_image_bytes("GIF", mode="P")), "image/gif")
+        self.assertEqual(sniff(real_image_bytes("WEBP")), "image/webp")
+        self.assertEqual(sniff(b"%PDF-1.7 ..."), "application/pdf")
+        self.assertEqual(sniff(b"\x00\x00\x00\x18ftypheic rest"), "image/heic")
+        self.assertIsNone(sniff(b"fake-png-bytes"))
+
+    def test_bytes_win_over_the_claimed_media_type(self):
+        # A JPEG renamed to .png (classic phone-photo move): the request
+        # must go out as image/jpeg or the API 400s on the mismatch.
+        jpeg = real_image_bytes("JPEG")
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(jpeg, "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        self.assertEqual(file_block["source"]["media_type"], "image/jpeg")
+
+    def test_pdf_bytes_claimed_as_image_become_a_document_block(self):
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(b"%PDF-1.7 fake pdf", "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        self.assertEqual(file_block["type"], "document")
+        self.assertEqual(file_block["source"]["media_type"], "application/pdf")
+
+    def test_heic_is_rejected_with_an_actionable_message(self):
+        with self.assertRaisesMessage(ChartParsingError, "HEIC"):
+            parse_chart_file(b"\x00\x00\x00\x18ftypheic rest-of-file", "image/png")
+
+    def test_oversized_images_are_downscaled_before_upload(self):
+        import base64
+        import io
+
+        from PIL import Image
+
+        big = real_image_bytes("PNG", size=(40, 20))
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "MAX_IMAGE_EDGE_PX", 10):
+            with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+                parse_chart_file(big, "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        sent = Image.open(io.BytesIO(base64.standard_b64decode(file_block["source"]["data"])))
+        self.assertEqual(sent.size, (10, 5))
+
+    def test_small_images_pass_through_unreencoded(self):
+        import base64
+
+        png = real_image_bytes("PNG")
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(png, "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        self.assertEqual(base64.standard_b64decode(file_block["source"]["data"]), png)
+
+    def test_corrupt_image_with_valid_magic_is_a_clear_error(self):
+        truncated = real_image_bytes("PNG")[:20]  # valid magic, unreadable body
+        with self.assertRaisesMessage(ChartParsingError, "corrupted"):
+            parse_chart_file(truncated, "image/png")
+
+    def test_api_status_errors_surface_the_apis_explanation(self):
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx.Response(400, request=request)
+        error = anthropic.BadRequestError(
+            "image exceeds 8000 pixels on its longest edge",
+            response=response,
+            body={"error": {"message": "image exceeds 8000 pixels on its longest edge"}},
+        )
+        client = mock.Mock()
+        client.messages.create.side_effect = error
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            with self.assertRaisesMessage(ChartParsingError, "8000 pixels") as ctx:
+                parse_chart_file(b"fake-png-bytes", "image/png")
+        self.assertIn("(400)", str(ctx.exception))

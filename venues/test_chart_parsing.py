@@ -39,10 +39,6 @@ def section_spec(**overrides):
         "seat_pitch": 1.0,
         "row_pitch": 1.0,
         "arc_radius": None,
-        "row_alignment": "edge",
-        "offset_mode": "repeated",
-        "row_x_offset": 0.0,
-        "alt_row_seat_delta": 0,
         "numbering_scheme": "sequential",
         "seat_number_base": 0,
         "row_label_scheme": "skip_io",
@@ -207,17 +203,28 @@ class ValidateChartSpecTests(TestCase):
     def test_unknown_enums_fall_back_to_defaults(self):
         spec = validate_chart_spec(
             chart_spec(
-                section_spec(
-                    numbering_scheme="roman-numerals",
-                    row_label_scheme="emoji",
-                    offset_mode="diagonal",
-                )
+                section_spec(numbering_scheme="roman-numerals", row_label_scheme="emoji")
             )
         )
         section = spec["sections"][0]
         self.assertEqual(section["numbering_scheme"], Section.NumberingScheme.SEQUENTIAL)
         self.assertEqual(section["row_label_scheme"], Section.RowLabelScheme.SKIP_IO)
+
+    def test_offset_params_are_always_left_at_defaults(self):
+        # The AI parse no longer determines per-row stagger/rake -- staff set
+        # it in the editor. Whatever a section dict carries for those fields,
+        # validate emits the neutral grid defaults.
+        spec = validate_chart_spec(
+            chart_spec(
+                section_spec(
+                    offset_mode="alternating", row_x_offset=1.5, alt_row_seat_delta=-1
+                )
+            )
+        )
+        section = spec["sections"][0]
         self.assertEqual(section["offset_mode"], Section.OffsetMode.REPEATED)
+        self.assertEqual(section["row_x_offset"], 0.0)
+        self.assertEqual(section["alt_row_seat_delta"], 0)
 
     def test_duplicate_and_blank_section_names(self):
         spec = validate_chart_spec(
@@ -242,81 +249,6 @@ class ValidateChartSpecTests(TestCase):
         section = spec["sections"][0]
         self.assertEqual(section["removed_seats"], [["A", "1"]])
         self.assertEqual(section["accessible_seats"], [])
-
-    def test_center_alignment_derives_a_recentering_offset(self):
-        # A center block that widens toward the back (widths 4, 5, 6 in a
-        # 6-wide grid, trimmed from the high-number end) is left-aligned by
-        # the removals alone; row_alignment="center" folds in the offset
-        # that re-centers it: -seat_pitch/2 * (per-row widening) = -0.5.
-        removed = [["A", "5"], ["A", "6"], ["B", "6"]]
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=3, seats_per_row=6, row_alignment="center", removed_seats=removed
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], -0.5)
-        # Idempotent: re-validating the folded spec doesn't double-apply.
-        revalidated = validate_chart_spec(spec)
-        self.assertEqual(revalidated["sections"][0]["row_x_offset"], -0.5)
-
-    def test_center_alignment_ignores_outlier_back_row(self):
-        # The slope anchors on the WIDEST row, so a single odd back row (a
-        # mix-desk cut-out) doesn't flip the derived offset: widths 4, 5, 6,
-        # 2 still derive from rows A->C.
-        removed = [["A", "5"], ["A", "6"], ["B", "6"], ["D", "3"], ["D", "4"], ["D", "5"], ["D", "6"]]
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=4, seats_per_row=6, row_alignment="center", removed_seats=removed
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], -0.5)
-
-    def test_center_alignment_attempts_nothing_without_a_clear_taper(self):
-        # Oscillating widths (5, 4, 6, 3, 5 in a 6-wide grid) fit no linear
-        # taper -- the derivation declines rather than applying an offset
-        # that would merely look deliberate. Same when the section uses
-        # ALTERNATING stagger, which is its own mechanism.
-        removed = [["A", "6"], ["B", "5"], ["B", "6"], ["D", "4"], ["D", "5"], ["D", "6"], ["E", "6"]]
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=5, seats_per_row=6, row_alignment="center", removed_seats=removed
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
-
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=3, seats_per_row=6, row_alignment="center",
-                    offset_mode="alternating", alt_row_seat_delta=-1,
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
-
-    def test_edge_alignment_and_explicit_offsets_are_untouched(self):
-        # Default/edge alignment never derives an offset...
-        spec = validate_chart_spec(
-            chart_spec(section_spec(rows=3, seats_per_row=6, removed_seats=[["A", "6"]]))
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
-        # ...and a centered section whose parse already reported an offset
-        # (centered AND raked) keeps the reported value.
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=3, seats_per_row=6, row_alignment="center",
-                    row_x_offset=0.75, removed_seats=[["A", "6"]],
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.75)
 
     def test_blank_chart_name_gets_default(self):
         spec = validate_chart_spec({"chart_name": "  ", "sections": [section_spec()]})
@@ -418,8 +350,7 @@ class BuildChartFromSpecTests(TestCase):
 
 
 def _house_section(
-    name, tier, *, numbering, width, start, keeps, origin, rotation=0.0,
-    row_alignment="edge", accessible=(),
+    name, tier, *, numbering, width, start, keeps, origin, rotation=0.0, accessible=(),
 ):
     """One section of the transcribed house. `keeps` is front-to-back, one
     entry per row: an int n keeps the n aisle-most seats of a `width`-wide
@@ -453,7 +384,6 @@ def _house_section(
         origin_x=origin[0],
         origin_y=origin[1],
         rotation=rotation,
-        row_alignment=row_alignment,
         removed_seats=removed,
         accessible_seats=[list(identity) for identity in accessible],
     )
@@ -473,7 +403,7 @@ def real_world_chart_spec():
                 "Orchestra Center", "Orchestra", numbering="hundreds_flat", width=15, start=0,
                 # Row D is a cross-aisle gap in the printed chart.
                 keeps=[9, 10, 11, 0, 11, 12, 13, 12, 13, 14, 15, 12],
-                origin=(0.0, 0.0), row_alignment="center",
+                origin=(0.0, 0.0),
                 accessible=[("M", "101"), ("M", "106"), ("M", "107"), ("M", "112")],
             ),
             _house_section(
@@ -490,7 +420,7 @@ def real_world_chart_spec():
                 "Parterre Center", "Parterre", numbering="hundreds_flat", width=21, start=12,
                 # Row U keeps only its two flanks (mix desk in the middle).
                 keeps=[18, 19, 18, 19, 20, 21, [101, 102, 117, 118, 119, 120]],
-                origin=(-6.3, 13.5), row_alignment="center",
+                origin=(-6.3, 13.5),
                 accessible=[("U", "101")],
             ),
             _house_section(
@@ -503,7 +433,7 @@ def real_world_chart_spec():
             ),
             _house_section(
                 "Balcony Center", "Balcony", numbering="hundreds_flat", width=15, start=19,
-                keeps=[14, 13, 15, 13, 14], origin=(-3.3, 23.0), row_alignment="center",
+                keeps=[14, 13, 15, 13, 14], origin=(-3.3, 23.0),
             ),
             _house_section(
                 "Balcony Right", "Balcony", numbering="even_asc_right", width=7, start=19,
@@ -583,26 +513,15 @@ class RealWorldChartTests(TestCase):
         )
         self.assertEqual(row_u, [101, 102, 117, 118, 119, 120])  # mix-desk gap
 
-    def test_center_blocks_get_recentering_offsets(self):
-        # The center blocks are reported as row_alignment="center" and get
-        # their re-centering row_x_offset derived from the row widths --
-        # front row vs widest row, /2 (see _derived_center_offset).
-        offsets = {
-            s.name: s.row_x_offset
-            for s in self.chart.sections.filter(name__endswith="Center")
-        }
-        self.assertEqual(
-            offsets,
-            {
-                "Orchestra Center": -0.3,  # steady taper A=9 -> L=15 over 10 rows
-                "Parterre Center": -0.3,   # steady taper N=18 -> T=21 over 5 rows
-                # Balcony widths oscillate (14, 13, 15, 13, 14) -- no clear
-                # taper, so the derivation declines and attempts nothing.
-                "Balcony Center": 0.0,
-            },
-        )
-        # Side blocks stay edge-aligned with no offset.
-        self.assertEqual(self.chart.sections.get(name="Orchestra Left").row_x_offset, 0.0)
+    def test_parse_never_sets_a_stagger_offset(self):
+        # The parse leaves every section a plain grid (offset_mode/
+        # row_x_offset/alt_row_seat_delta at defaults) -- staff dial in any
+        # rake/centering with the editor's slider. Ragged widths still come
+        # through as removed_seats; only the geometry offset is left alone.
+        for section in self.chart.sections.all():
+            self.assertEqual(section.row_x_offset, 0.0)
+            self.assertEqual(section.offset_mode, Section.OffsetMode.REPEATED)
+            self.assertEqual(section.alt_row_seat_delta, 0)
 
     def test_wheelchair_inventory(self):
         accessible = {

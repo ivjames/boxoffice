@@ -252,59 +252,64 @@ the same pass that puts contact info on the site. All the DNS below lives in
 the DigitalOcean `boxo.show` zone, so every record is one `doctl` command
 from the droplet.
 
-### 1. Outbound: an SMTP relay for no-reply@boxo.show
+The chosen stack — same pairing as capcrop: **Resend** relays everything the
+app sends, **Zoho Mail** hosts the `hello@boxo.show` mailbox (free tier, for
+now). They split DNS cleanly: Resend's records live on the `send` subdomain
+and its own DKIM selector, Zoho owns the apex MX/SPF — so neither ever
+tramples the other. Swapping either later is just repointing the records
+below; nothing in the app knows which provider is behind `EMAIL_*`.
+
+### 1. Outbound: Resend relays no-reply@boxo.show
 
 Don't run a mail server on the droplet — DigitalOcean blocks/throttles port
-25 and a bare droplet IP has no sending reputation. Use a transactional SMTP
-relay (Postmark, Mailgun, Resend, Brevo, SES, …): the app is
-transport-agnostic — `config/settings/prod.py` just feeds `EMAIL_*` to
-Django's SMTP backend, so anything speaking STARTTLS on 587 works.
+25 and a bare droplet IP has no sending reputation. The app is
+transport-agnostic (`config/settings/prod.py` just feeds `EMAIL_*` to
+Django's SMTP backend), so Resend is used purely as an SMTP relay here — no
+SDK, no API integration.
 
-1. Sign up with the provider and add `boxo.show` as a verified **sending
-   domain** (it must match `DEFAULT_FROM_EMAIL`'s domain or DMARC alignment
-   fails). The provider hands you SMTP credentials plus DNS records.
-2. Publish its authentication records (names/values come from the provider
-   dashboard — the shapes are):
+1. In the Resend dashboard, add `boxo.show` as a **sending domain** (it must
+   match `DEFAULT_FROM_EMAIL`'s domain or DMARC alignment fails). Resend
+   hands you three DNS records, all deliberately off the apex: a
+   Return-Path MX + SPF pair on the `send` subdomain, and a DKIM TXT on the
+   `resend._domainkey` selector.
+2. Publish them (values **verbatim from the dashboard** — the region in the
+   MX host varies by account):
 
    ```bash
-   # SPF — exactly ONE TXT record on the apex, ever. If an SPF record already
-   # exists (e.g. from part 2's inbound provider), MERGE the include into it:
-   # two v=spf1 records is a permanent SPF error, worse than none.
+   # Return-Path (bounce) pair -- on the `send` subdomain, NOT the apex, so
+   # it can't collide with Zoho's apex MX/SPF from part 2:
+   doctl compute domain records create boxo.show --record-type MX \
+     --record-name send --record-data feedback-smtp.<region>.amazonses.com. --record-priority 10
    doctl compute domain records create boxo.show --record-type TXT \
-     --record-name @ --record-data "v=spf1 include:<provider-spf> ~all" --record-ttl 1800
+     --record-name send --record-data "v=spf1 include:amazonses.com ~all" --record-ttl 1800
 
-   # DKIM — the provider's exact record (usually a CNAME per selector; note
-   # the trailing dot, doctl stores the literal value):
-   doctl compute domain records create boxo.show --record-type CNAME \
-     --record-name <selector>._domainkey --record-data <provider-dkim-host>. --record-ttl 1800
-
-   # DMARC — start in monitor mode (p=none), tighten to quarantine once a few
-   # weeks of reports (rua= goes to part 2's inbox) look clean:
+   # DKIM:
    doctl compute domain records create boxo.show --record-type TXT \
-     --record-name _dmarc --record-data "v=DMARC1; p=none; rua=mailto:hello@boxo.show" --record-ttl 1800
+     --record-name resend._domainkey --record-data "p=<key from the dashboard>" --record-ttl 1800
    ```
 
-3. **Only after the provider shows the domain verified**, fill in `.env` and
-   restart. Setting `EMAIL_HOST` is the switch that flips three behaviors at
-   once (`email_delivery_configured()` starts returning True): guest sign-in
-   goes back to emailed links + anti-enumeration, the campaign worker starts
+3. **Only after Resend shows the domain Verified**, create an API key
+   (sending-only access is enough) — the key IS the SMTP password, and the
+   username is literally `resend`. Then fill in `.env` and restart. Setting
+   `EMAIL_HOST` is the switch that flips three behaviors at once
+   (`email_delivery_configured()` starts returning True): guest sign-in goes
+   back to emailed links + anti-enumeration, the campaign worker starts
    draining its queue on the next tick, and ticket emails send for real — so
-   don't flip it while DKIM/SPF are still unverified or that first batch
+   don't flip it while the DNS above is still unverified or that first batch
    lands in spam and burns the domain's reputation.
 
    ```bash
    cat >> .env <<'EOF'
-   EMAIL_HOST=<smtp.provider.example>
+   EMAIL_HOST=smtp.resend.com
    EMAIL_PORT=587
-   EMAIL_HOST_USER=<...>
-   EMAIL_HOST_PASSWORD='<...>'
+   EMAIL_HOST_USER=resend
+   EMAIL_HOST_PASSWORD='re_<the API key>'
    EMAIL_USE_TLS=true
    EOF
    boxoffice restart
    ```
 
-   (Single-quote the password — the `.env` rule from step 3 of provisioning;
-   relay-issued secrets love `#` and `$`.)
+   (Single-quote the key — the `.env` rule from step 3 of provisioning.)
 
 4. Verify end to end:
 
@@ -314,37 +319,66 @@ Django's SMTP backend, so anything speaking STARTTLS on 587 works.
 
    Open the received message's raw headers (Gmail: "Show original") and
    confirm `spf=pass`, `dkim=pass`, `dmarc=pass` — or send one to a scoring
-   service like mail-tester.com. Then run a real flow: test-checkout a ticket
-   on beta or request a guest sign-in link, and check it lands in the inbox,
-   not spam.
+   service like mail-tester.com. Then drive a real flow on prod — request a
+   guest sign-in link from a tenant's portal — and check it lands in the
+   inbox, not spam. (Not on beta: its `EMAIL_HOST` stays unset, see "Beta"
+   below.)
 
-### 2. Inbound: hello@boxo.show has to land somewhere
+### 2. Inbound: Zoho Mail hosts hello@boxo.show
 
-DigitalOcean hosts the DNS zone but sells no mailboxes and no forwarding —
-until MX records exist, every `@boxo.show` address bounces. Two ways to fix
-it, same DNS shape either way:
+DigitalOcean hosts the DNS zone but sells no mailboxes — until MX records
+exist, every `@boxo.show` address bounces. Zoho Mail's free tier (up to 5
+users; web + mobile clients — IMAP/POP is a paid feature) hosts a **real
+mailbox**, so replies go out *as* `hello@boxo.show` — which reads far more
+legit to a venue you're trying to onboard than a forward answered from a
+personal address. "For now": outgrowing it later just means repointing the
+MX records; nothing else in this section changes.
 
-- **A forwarding service** (simplest; free tiers exist — ImprovMX,
-  forwardemail.net): forwards `hello@boxo.show` to the inbox you actually
-  read. Caveat: replies go out from your personal address unless you also
-  wire that mailbox to send-as `hello@boxo.show` through part 1's relay.
-- **A real mailbox host** (Fastmail, Migadu, Google Workspace): costs a few
-  dollars/month but you can reply *as* `hello@boxo.show`, which reads far
-  more legit to a venue you're trying to onboard.
+1. In the Zoho Mail admin console, add `boxo.show` and prove ownership with
+   the TXT code it issues:
 
-```bash
-# The provider's MX pair — trailing dots, priorities from their docs:
-doctl compute domain records create boxo.show --record-type MX \
-  --record-name @ --record-data <mx1.provider.example>. --record-priority 10
-doctl compute domain records create boxo.show --record-type MX \
-  --record-name @ --record-data <mx2.provider.example>. --record-priority 20
-# ...plus the provider's verification TXT record, if it wants one. If it also
-# wants an SPF include, MERGE it into the single apex TXT from part 1.
-```
+   ```bash
+   doctl compute domain records create boxo.show --record-type TXT \
+     --record-name @ --record-data "zoho-verification=<code>.zmverify.zoho.com" --record-ttl 1800
+   ```
 
-Verify from an **outside** account (not the forward target): send to
-`hello@boxo.show`, confirm it arrives; reply, and check which From address
-the reply carries. Sanity-check the zone with
+2. Create the `hello@boxo.show` user/mailbox in the console.
+3. Publish MX, SPF, and DKIM. Use the **exact hosts the console shows** —
+   a `zoho.eu`/`zoho.in`-region account uses different ones than the
+   `zoho.com` defaults below (match capcrop's):
+
+   ```bash
+   doctl compute domain records create boxo.show --record-type MX \
+     --record-name @ --record-data mx.zoho.com. --record-priority 10
+   doctl compute domain records create boxo.show --record-type MX \
+     --record-name @ --record-data mx2.zoho.com. --record-priority 20
+   doctl compute domain records create boxo.show --record-type MX \
+     --record-name @ --record-data mx3.zoho.com. --record-priority 50
+
+   # SPF -- the apex TXT is Zoho's ALONE (Resend's SPF lives on the `send`
+   # subdomain, part 1). Exactly ONE v=spf1 record on the apex, ever: if
+   # another apex sender is ever added, MERGE its include into this record --
+   # two v=spf1 records is a permanent SPF error, worse than none.
+   doctl compute domain records create boxo.show --record-type TXT \
+     --record-name @ --record-data "v=spf1 include:zohomail.com ~all" --record-ttl 1800
+
+   # DKIM -- generate the selector in the console (default: zmail):
+   doctl compute domain records create boxo.show --record-type TXT \
+     --record-name zmail._domainkey --record-data "v=DKIM1; k=rsa; p=<key from the console>" --record-ttl 1800
+   ```
+
+4. Last — once the mailbox can receive — publish DMARC. It covers both
+   senders (Resend and Zoho both sign as `boxo.show`); start in monitor mode
+   and tighten to `p=quarantine` once a few weeks of reports look clean:
+
+   ```bash
+   doctl compute domain records create boxo.show --record-type TXT \
+     --record-name _dmarc --record-data "v=DMARC1; p=none; rua=mailto:hello@boxo.show" --record-ttl 1800
+   ```
+
+Verify from an **outside** account: send to `hello@boxo.show`, confirm it
+arrives in the Zoho inbox; reply, and confirm the reply's From is
+`hello@boxo.show`. Sanity-check the zone with
 `doctl compute domain records list boxo.show`.
 
 ### 3. What to check per tenant
@@ -362,10 +396,10 @@ tenant" below).
 
 Leave `EMAIL_HOST` **unset on the beta box** (its `.env` block below already
 does): beta then keeps the on-screen magic-link fallback and leaves campaign
-sends queued instead of pushing test blasts through the production relay's
-reputation. If a beta task genuinely needs to see delivered mail, point
-beta's `EMAIL_*` at a capture sandbox (Mailtrap, or the relay's sandbox
-mode) — never at the prod relay credentials.
+sends queued instead of pushing test blasts through the production domain's
+sending reputation. If a beta task genuinely needs to see delivered mail,
+point beta's `EMAIL_*` at a capture sandbox (e.g. Mailtrap) — never at the
+prod Resend key.
 
 ## Onboarding a tenant (no-wildcard subdomain flow)
 

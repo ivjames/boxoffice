@@ -30,14 +30,11 @@ def tenant_base_url(organization):
     """The absolute origin (scheme + host, no trailing slash) of
     `organization`'s storefront -- e.g. "https://roxy.boxo.show".
 
-    Rebuilt from the subdomain + settings.BASE_DOMAIN because there's no request
-    to ask (this runs under cron). Uses http only when BASE_DOMAIN is a local
-    dev host (localhost / 127.*) -- everywhere else the storefront is HTTPS
-    (per-site certbot, see DEPLOY.md), so links must be https or a mail client
-    may refuse the one-click unsubscribe POST."""
-    base_domain = settings.BASE_DOMAIN or "localhost"
-    scheme = "http" if base_domain.startswith(("localhost", "127.")) else "https"
-    return f"{scheme}://{organization.subdomain}.{base_domain}"
+    Thin alias for Organization.base_url, kept for this module's existing
+    callers; the logic moved onto the model when orders/emails.py needed the
+    same host derivation (the Connect webhook's request is for the platform
+    host, so emailed receipt links must be rebuilt from the org instead)."""
+    return organization.base_url
 
 
 def render_campaign(campaign, guest, *, unsubscribe_url):

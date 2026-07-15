@@ -1132,7 +1132,7 @@ def order_resend(request, token):
         messages.error(request, "This order has no email address on file to send to.")
         return redirect("dashboard_order_detail", token=order.token)
     try:
-        send_order_receipt(order, request)
+        send_order_receipt(order)
     except Exception:  # delivery/transport failure -- don't 500 the dashboard
         messages.error(request, "Couldn't send the email just now. Please try again.")
     else:

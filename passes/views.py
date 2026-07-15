@@ -65,7 +65,7 @@ def _send_receipt_best_effort(order, request):
     from orders.emails import send_order_receipt
 
     try:
-        send_order_receipt(order, request)
+        send_order_receipt(order)
     except Exception:
         logger.exception(
             "Receipt email for order %s could not be sent; the order is still "

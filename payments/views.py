@@ -89,7 +89,7 @@ def stripe_webhook(request):
             return HttpResponse(status=200)
 
         if created:
-            send_order_receipt(order, request)
+            send_order_receipt(order)
 
     return HttpResponse(status=200)
 

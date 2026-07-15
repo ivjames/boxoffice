@@ -86,6 +86,26 @@ class Organization(models.Model):
     def __str__(self):
         return self.name
 
+    @property
+    def base_url(self):
+        """The absolute origin (scheme + host, no trailing slash) of this
+        tenant's storefront -- e.g. "https://roxy.boxo.show".
+
+        Rebuilt from the subdomain + settings.BASE_DOMAIN rather than any
+        request, because the flows that need it often have NO request on the
+        right host: the campaign cron sender has no request at all, and the
+        Stripe Connect webhook's request is for the PLATFORM host
+        (boxo.show/webhooks/stripe/ -- see DEPLOY.md), not the theater's
+        subdomain, so request.build_absolute_uri there mints links that 404
+        on tenant-gated routes. Uses http only when BASE_DOMAIN is a local
+        dev host (localhost / 127.*) -- everywhere else the storefront is
+        HTTPS (per-site certbot, see DEPLOY.md)."""
+        from django.conf import settings
+
+        base_domain = settings.BASE_DOMAIN or "localhost"
+        scheme = "http" if base_domain.startswith(("localhost", "127.")) else "https"
+        return f"{scheme}://{self.subdomain}.{base_domain}"
+
 
 class TenantScopedManager(models.Manager):
     """

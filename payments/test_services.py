@@ -2318,9 +2318,7 @@ class SendOrderReceiptPassDispatchTests(PassMoneyPathMixin, TestCase):
             self.org, product=product, buyer_email="buyer@example.com",
             buyer_name="Buyer", provider="test", payment_ref="test-pass",
         )
-        request = RequestFactory().post("/", HTTP_HOST=host_for(self.org.subdomain))
-
-        emails.send_order_receipt(order, request)
+        emails.send_order_receipt(order)
 
         self.assertEqual(len(mail.outbox), 1)
         subject = mail.outbox[0].subject

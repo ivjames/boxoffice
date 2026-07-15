@@ -7,6 +7,12 @@ transaction commits -- see that module's docstring for why email goes
 outside the transaction. Uses Django's configured EMAIL_BACKEND (console in
 dev, SMTP in prod -- config/settings/{dev,prod}.py), so nothing here is
 Stripe- or transport-specific.
+
+Every absolute URL in these emails is derived from the order's Organization
+(Organization.base_url), NOT from whatever request triggered the send: the
+Connect webhook that fulfills real purchases arrives on the PLATFORM host,
+where request-derived links would 404 on the tenant-gated routes they point
+at. That's also why none of these functions take a request.
 """
 
 from django.conf import settings
@@ -18,7 +24,7 @@ from .models import OrderItem
 from .qr import ticket_qr_data_uri
 
 
-def send_order_receipt(order, request):
+def send_order_receipt(order):
     """The ONE entry point callers should use to email an order's receipt --
     dispatches to send_ticket_email for an order with tickets, send_pass_
     purchase_email for a pass-purchase order (Phase 3), or send_donation_
@@ -45,34 +51,34 @@ def send_order_receipt(order, request):
         donation-only gift.
     """
     if order.tickets.exists():
-        send_ticket_email(order, request)
+        send_ticket_email(order)
     elif order.items.filter(kind=OrderItem.Kind.PASS).exists():
-        send_pass_purchase_email(order, request)
+        send_pass_purchase_email(order)
     else:
-        send_donation_receipt_email(order, request)
+        send_donation_receipt_email(order)
 
 
-def send_ticket_email(order, request):
-    """Email `order.buyer_email` their tickets. `request` is the in-flight
-    request that triggered fulfillment (the Stripe webhook POST, which lands
-    on the tenant subdomain just like a browser request would) -- it's used
-    to build the absolute URL for the tickets page so it's correct for dev
-    vs. prod without hardcoding a host here. (The QR codes need no request --
-    they encode a bare ticket code, not a URL; see orders/qr.py.)
+def send_ticket_email(order):
+    """Email `order.buyer_email` their tickets. Every absolute URL is built
+    from the ORDER'S ORGANIZATION (Organization.base_url), never from the
+    request that triggered fulfillment: the Stripe Connect webhook that
+    fulfills real purchases is delivered to the PLATFORM host
+    (boxo.show/webhooks/stripe/, see DEPLOY.md), so a request-derived link
+    would point buyers at tenant-gated routes on the wrong host and 404.
+    (The QR codes need no URL at all -- they encode a bare ticket code, not
+    a link; see orders/qr.py.)
     """
     tickets = list(order.tickets.select_related("seat", "seat__section").order_by("id"))
     ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket)} for ticket in tickets]
-    tickets_url = request.build_absolute_uri(reverse("ticket_detail", args=[order.token]))
+    organization = order.organization
+    tickets_url = organization.base_url + reverse("ticket_detail", args=[order.token])
 
     # Carry the theater's branding into the email so a buyer sees the venue
     # they bought from, not "Boxo.show". The palette lives on Organization
     # (same fields templates/base.html themes the storefront with); the logo
-    # is an ImageField, so build an absolute URL from the in-flight request
-    # (order.organization.logo.url is host-relative) and only when one is set.
-    organization = order.organization
-    logo_url = (
-        request.build_absolute_uri(organization.logo.url) if organization.logo else None
-    )
+    # is an ImageField whose .url is host-relative, so absolutize it on the
+    # tenant origin, and only when one is set.
+    logo_url = organization.base_url + organization.logo.url if organization.logo else None
 
     # Phase 2: a ticket order can ALSO carry a donation added at the cart
     # (orders.services.set_hold_donation) -- surface that as an extra line +
@@ -107,7 +113,7 @@ def send_ticket_email(order, request):
     email.send(fail_silently=False)
 
 
-def send_donation_receipt_email(order, request):
+def send_donation_receipt_email(order):
     """Email `order.buyer_email` their donation receipt -- the Phase 2
     analogue of send_ticket_email for a donation-only order (Order.performance
     null, no Ticket rows): no tickets/QR/performance to show, just the
@@ -116,9 +122,9 @@ def send_donation_receipt_email(order, request):
     (/tickets/<order.token>/ -- orders.views.ticket_detail already renders a
     donation-only order's receipt view, see its template's guard).
 
-    `request` supplies the tenant host for the absolute receipt URL, exactly
-    like send_ticket_email -- the Stripe webhook's in-flight request, or the
-    stub/test donation "Pay" request."""
+    The receipt URL is built from the order's organization, exactly like
+    send_ticket_email -- never from the fulfilling request, which may be the
+    platform-host webhook."""
     donation_item = (
         order.items.filter(kind=OrderItem.Kind.DONATION)
         .select_related("donation_campaign")
@@ -127,12 +133,9 @@ def send_donation_receipt_email(order, request):
     campaign = donation_item.donation_campaign if donation_item is not None else None
     amount = donation_item.unit_amount if donation_item is not None else order.total
 
-    receipt_url = request.build_absolute_uri(reverse("ticket_detail", args=[order.token]))
-
     organization = order.organization
-    logo_url = (
-        request.build_absolute_uri(organization.logo.url) if organization.logo else None
-    )
+    receipt_url = organization.base_url + reverse("ticket_detail", args=[order.token])
+    logo_url = organization.base_url + organization.logo.url if organization.logo else None
 
     context = {
         "order": order,
@@ -156,7 +159,7 @@ def send_donation_receipt_email(order, request):
     email.send(fail_silently=False)
 
 
-def send_pass_purchase_email(order, request):
+def send_pass_purchase_email(order):
     """Email `order.buyer_email` their pass receipt -- the Phase 3 analogue of
     send_donation_receipt_email for a pass PURCHASE order (no tickets: the pass
     is redeemed for seats LATER, through the guest portal). Renders the pass
@@ -168,9 +171,10 @@ def send_pass_purchase_email(order, request):
     Reads the pass detail off the PassPurchase issued for this order (its frozen
     snapshots), falling back to the kind=PASS OrderItem for the product name/
     amount if the purchase row can't be found (it always can in practice -- both
-    are created in the same fulfill_pass_purchase transaction). `request`
-    supplies the tenant host for the absolute portal URL, exactly like the other
-    receipt senders."""
+    are created in the same fulfill_pass_purchase transaction). The portal URL
+    is built from the order's organization, exactly like the other receipt
+    senders -- never from the fulfilling request, which may be the
+    platform-host webhook."""
     pass_item = (
         order.items.filter(kind=OrderItem.Kind.PASS)
         .select_related("pass_product")
@@ -185,13 +189,10 @@ def send_pass_purchase_email(order, request):
     amount = pass_item.unit_amount if pass_item is not None else order.total
 
     # Portal is where the holder redeems -- named route lands with the guests
-    # app; built absolute for dev/prod host correctness like the other senders.
-    portal_url = request.build_absolute_uri(reverse("guest_portal"))
-
+    # app; absolutized on the tenant origin like the other senders.
     organization = order.organization
-    logo_url = (
-        request.build_absolute_uri(organization.logo.url) if organization.logo else None
-    )
+    portal_url = organization.base_url + reverse("guest_portal")
+    logo_url = organization.base_url + organization.logo.url if organization.logo else None
 
     context = {
         "order": order,

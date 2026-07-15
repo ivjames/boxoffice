@@ -821,6 +821,13 @@ class DonationCartFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase)
     def setUp(self):
         self.org, self.venue = self.build_org("org-a")
         self.event, self.performance, self.tier = self.build_ga(self.org, self.venue, capacity=5)
+        # Donations must be switched ON before the storefront endpoint will
+        # take a gift -- donation_add resolves an existing ACTIVE campaign
+        # read-only and rejects otherwise (it must never create one from a
+        # public POST; see its docstring). This is the deliberate setup path.
+        from donations.services import get_or_create_general_fund
+
+        self.campaign = get_or_create_general_fund(self.org)
 
     def _hold(self):
         self.post_as(
@@ -855,13 +862,41 @@ class DonationCartFlowTests(TenantClientMixin, StorefrontFixtureMixin, TestCase)
         campaign = DonationCampaign.objects.get(organization=self.org)
         self.assertEqual(hold.donation_campaign_id, campaign.pk)
 
-    def test_add_creates_general_fund_campaign_if_none_exists(self):
+    def test_add_without_active_campaign_is_rejected_and_creates_nothing(self):
+        """A direct POST while donations are OFF (no active campaign) must be
+        refused -- and, crucially, must NOT create a campaign: the old
+        get_or_create call here let any buyer with a hold silently switch a
+        tenant's donations on."""
         from donations.models import DonationCampaign
 
-        self.assertFalse(DonationCampaign.objects.filter(organization=self.org).exists())
+        DonationCampaign.objects.filter(organization=self.org).delete()
         hold = self._hold()
-        self.post_as("org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"})
-        self.assertEqual(DonationCampaign.objects.filter(organization=self.org).count(), 1)
+
+        resp = self.post_as(
+            "org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"}, follow=True
+        )
+
+        self.assertRedirects(resp, "/cart/")
+        self.assertContains(resp, "Donations aren&#x27;t available right now.")
+        self.assertFalse(DonationCampaign.objects.filter(organization=self.org).exists())
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
+
+    def test_add_ignores_inactive_campaign(self):
+        """A deactivated campaign counts as donations-off -- the endpoint
+        resolves ACTIVE campaigns only, matching the /donate/ page and the
+        donations_enabled context processor."""
+        self.campaign.is_active = False
+        self.campaign.save(update_fields=["is_active"])
+        hold = self._hold()
+
+        resp = self.post_as(
+            "org-a", "/cart/donation/add/", {"hold_id": hold.pk, "amount": "10"}, follow=True
+        )
+
+        self.assertContains(resp, "Donations aren&#x27;t available right now.")
+        hold.refresh_from_db()
+        self.assertIsNone(hold.donation_amount)
 
     def test_add_bad_amount_shows_error_and_leaves_hold_undonated(self):
         hold = self._hold()
@@ -1054,6 +1089,46 @@ class DonationOnlyOrderRenderingTests(TenantClientMixin, StorefrontFixtureMixin,
         resp = self.get_as("org-a", "/checkout/success/?session_id=cs_test_donation")
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Thank you for your donation")
+
+    def test_checkout_success_shows_pass_confirmation_not_donation(self):
+        """A Stripe pass purchase also has Order.performance null -- the
+        success page must branch on the kind=PASS line BEFORE the donation
+        fallback (same dispatch order as send_order_receipt), or the buyer
+        of a pass lands on 'Thank you for your donation!'."""
+        from decimal import Decimal as D
+
+        from orders.models import Order, OrderItem
+        from passes.models import PassProduct
+
+        product = PassProduct.objects.create(
+            organization=self.org,
+            name="Season Flex",
+            kind=PassProduct.Kind.FLEX,
+            price=D("120.00"),
+            credit_count=4,
+        )
+        order = Order.objects.create(
+            organization=self.org,
+            performance=None,
+            buyer_email="holder@example.com",
+            total=D("120.00"),
+            status=Order.Status.PAID,
+            stripe_checkout_session_id="cs_test_pass",
+        )
+        OrderItem.objects.create(
+            organization=self.org,
+            order=order,
+            kind=OrderItem.Kind.PASS,
+            quantity=1,
+            unit_amount=D("120.00"),
+            pass_product=product,
+        )
+
+        resp = self.get_as("org-a", "/checkout/success/?session_id=cs_test_pass")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Season Flex")
+        self.assertContains(resp, "4 credits")
+        self.assertNotContains(resp, "Thank you for your donation")
 
     def test_ticket_pdf_404s_on_donation_only_order(self):
         order = self._donation_order()

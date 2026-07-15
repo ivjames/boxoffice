@@ -23,6 +23,24 @@
                 {{ order.performance.venue.name }}
             </p>
             <p><a class="button" href="{% url 'ticket_detail' order.token %}">View your tickets</a></p>
+        {% elif pass_item %}
+            {# PASS before the donation fallback -- a pass purchase also has #}
+            {# no performance; same dispatch order as send_order_receipt.    #}
+            <p>
+                Your payment went through and your
+                <strong>{{ pass_item.pass_product.name|default:"pass" }}</strong> is ready to use.
+            </p>
+            <p class="muted">
+                {% if pass_item.pass_product.kind == 'season' %}
+                    One admission per covered show — redeem your seats from your account any time.
+                {% else %}
+                    {{ pass_item.pass_product.credit_count }} credit{{ pass_item.pass_product.credit_count|pluralize }} — 1 credit = 1 admission to any covered show. Redeem from your account any time.
+                {% endif %}
+            </p>
+            <p>
+                <a class="button" href="{% url 'guest_portal' %}">View in my account</a>
+                <a class="button button--secondary" href="{% url 'ticket_detail' order.token %}">View your receipt</a>
+            </p>
         {% else %}
             <p>Thank you for your donation!</p>
             {% if donation_item.donation_campaign.acknowledgment %}

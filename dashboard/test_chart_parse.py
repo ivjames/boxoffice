@@ -33,6 +33,7 @@ def parsed_spec():
                 "seat_pitch": 1.0,
                 "row_pitch": 1.0,
                 "arc_radius": None,
+                "row_alignment": "edge",
                 "offset_mode": "repeated",
                 "row_x_offset": 0.0,
                 "alt_row_seat_delta": 0,

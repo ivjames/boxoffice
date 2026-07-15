@@ -38,11 +38,12 @@ is the fallback) and `CHART_PARSING_MODEL` (defaults to claude-opus-4-8).
 
 import json
 import logging
+from collections import Counter
 
 from django.conf import settings
 from django.db import transaction
 
-from .generation import compute_row_counts, generate_seats
+from .generation import compute_row_counts, generate_row_labels, generate_seats
 from .models import SeatingChart, Section
 
 # Uploads we'll forward to the API: Claude accepts these image types as
@@ -118,8 +119,17 @@ _SECTION_SCHEMA = {
             "anyOf": [{"type": "number"}, {"type": "null"}],
             "description": "For curved/fanned sections: the front row's arc radius in the same units (typically 15-40). null for straight sections.",
         },
+        "row_alignment": {
+            "type": "string",
+            "enum": ["edge", "center"],
+            "description": (
+                "How shorter rows sit against the widest one: 'edge' when rows keep one "
+                "edge/aisle aligned (typical left/right blocks), 'center' when each row is "
+                "centered on the block's axis (typical center blocks / symmetric trapezoids)."
+            ),
+        },
         "offset_mode": {"type": "string", "enum": ["repeated", "alternating"]},
-        "row_x_offset": {"type": "number", "description": "Per-row x stagger. 0 for a plain grid; positive with offset_mode=repeated for a raked/trapezoid side section."},
+        "row_x_offset": {"type": "number", "description": "Per-row x stagger in seat widths. 0 for a plain grid with vertical seat columns; see the prompt's offset-detection guidance."},
         "alt_row_seat_delta": {"type": "integer", "description": "alternating mode only: seats added/dropped on every other row. Usually 0."},
         "numbering_scheme": {
             "type": "string",
@@ -148,9 +158,9 @@ _SECTION_SCHEMA = {
     },
     "required": [
         "name", "tier", "rows", "seats_per_row", "origin_x", "origin_y", "rotation",
-        "seat_pitch", "row_pitch", "arc_radius", "offset_mode", "row_x_offset",
-        "alt_row_seat_delta", "numbering_scheme", "row_label_scheme", "row_label_start",
-        "removed_seats", "accessible_seats",
+        "seat_pitch", "row_pitch", "arc_radius", "row_alignment", "offset_mode",
+        "row_x_offset", "alt_row_seat_delta", "numbering_scheme", "row_label_scheme",
+        "row_label_start", "removed_seats", "accessible_seats",
     ],
     "additionalProperties": False,
 }
@@ -179,11 +189,16 @@ Guidelines:
 tier). Parse each block as its own section.
 - seats_per_row is the section's WIDEST row. For every shorter row, list the \
 printed numbers that are missing (relative to that widest row's numbering) in \
-removed_seats. Shorter rows almost always hug the aisle, so the missing seats \
-are the WALL-side ones: the highest odd numbers for odd_desc_left, the \
-highest even numbers for even_asc_right, the highest numbers for hundreds_flat \
+removed_seats: the highest odd numbers for odd_desc_left, the highest even \
+numbers for even_asc_right, the highest numbers for hundreds_flat/sequential \
 -- unless the chart clearly shows a mid-row gap, in which case remove exactly \
 the printed gap.
+- row_alignment: look at where the shorter rows sit. 'edge' when every row \
+keeps one edge or aisle aligned (typical left/right blocks -- the removal \
+convention above then also produces the right geometry automatically). \
+'center' when each row is centered on the block's axis (typical center \
+blocks that widen toward the back): STILL remove the highest numbers as \
+above -- the importer re-centers the rows itself.
 - rows counts every row POSITION front to back, including a row that is \
 entirely absent from a section (e.g. a cross-aisle where the center block has \
 no row D but the sides do): keep the position and put ALL of that row's seats \
@@ -193,9 +208,15 @@ row_label_start; seat numbers follow numbering_scheme, so with 'sequential' \
 the leftmost seat of every row is "1".
 - Curved/fanned rows: set arc_radius (front-row radius, in seat units -- \
 gentler curve = larger radius). Straight rows: arc_radius null.
-- Diagonal/raked side sections: use rotation (whole-block tilt) and/or \
-row_x_offset with offset_mode 'repeated' (each row shifted further than the \
-last, making a trapezoid).
+- Offset/stagger detection -- judge by the SEAT COLUMNS, not the row ends: \
+vertical columns = row_x_offset 0. Columns slanting steadily sideways going \
+back (a parallelogram/raked side block) = offset_mode 'repeated' with \
+row_x_offset set to the per-row shift in seat widths (positive shifts later \
+rows right; typically 0.3-1.0, use a negative value for a leftward lean). \
+Every OTHER row shifted about half a seat (brick/stadium stagger) = \
+offset_mode 'alternating' with row_x_offset 0.5 (and alt_row_seat_delta \
++1/-1 if alternating rows are one seat longer/shorter). A whole block \
+visibly tilted, rows no longer horizontal = rotation in degrees instead.
 - numbering_scheme: read the printed seat numbers. Odd numbers descending \
 toward the aisle = odd_desc_left; ascending evens = even_asc_right; rows \
 numbered 101/201/301 = hundreds; EVERY row restarting at 101 (a common \
@@ -395,6 +416,37 @@ def _seat_identity_list(value):
     return identities
 
 
+def _derived_center_offset(section):
+    """The row_x_offset (REPEATED mode) that approximately re-CENTERS a
+    section's ragged rows, derived from the per-row widths its removed_seats
+    imply. Removing the highest printed numbers trims grid positions from
+    one end, which leaves rows edge-aligned -- right for aisle-hugging side
+    blocks, wrong for a symmetric center block that widens toward the back.
+    Shifting each row by -seat_pitch/2 per extra seat re-centers it; since
+    row_x_offset is one linear term for the whole section, the slope is
+    anchored on the front row vs the WIDEST row (robust against a single
+    odd back row, e.g. a mix-desk cut-out) with a last-row fallback when the
+    front row IS the widest. Exact when the widening is uniform; a close
+    approximation staff can nudge in the editor otherwise."""
+    labels = generate_row_labels(
+        section["rows"], section["row_label_scheme"], section["row_label_start"]
+    )
+    removed_per_label = Counter(label for label, _ in section["removed_seats"])
+    widths = [
+        max(0, section["seats_per_row"] - removed_per_label.get(label, 0)) for label in labels
+    ]
+    occupied = [(index, width) for index, width in enumerate(widths) if width > 0]
+    if len(occupied) < 2:
+        return 0.0
+    first_index, first_width = occupied[0]
+    anchor_index, anchor_width = max(occupied, key=lambda pair: (pair[1], pair[0]))
+    if anchor_index == first_index:  # front row is the widest -- narrowing block
+        anchor_index, anchor_width = occupied[-1]
+    slope = (anchor_width - first_width) / (anchor_index - first_index)
+    # Same +/-2 cap the editor's slider and chart_editor_save enforce.
+    return max(-2.0, min(2.0, -section["seat_pitch"] * slope / 2.0))
+
+
 def validate_chart_spec(spec):
     """Normalise a raw parsed spec into something build_chart_from_spec can
     trust: every count clamped, every float coerced, every enum checked,
@@ -432,7 +484,8 @@ def validate_chart_spec(spec):
         numbering = raw.get("numbering_scheme")
         row_labels = raw.get("row_label_scheme")
         offset_mode = raw.get("offset_mode")
-        sections.append(
+        alignment = raw.get("row_alignment")
+        section = (
             {
                 "name": name[:255],
                 "tier": str(raw.get("tier") or "")[:100],
@@ -454,6 +507,14 @@ def validate_chart_spec(spec):
                 "accessible_seats": _seat_identity_list(raw.get("accessible_seats")),
             }
         )
+        section["row_alignment"] = alignment if alignment in ("edge", "center") else "edge"
+        # Fold "center" alignment into a concrete row_x_offset, but never
+        # override an offset the parse set explicitly (a centered AND raked
+        # block). Idempotent: re-validating a folded spec sees a non-zero
+        # offset and leaves it alone.
+        if section["row_alignment"] == "center" and not section["row_x_offset"]:
+            section["row_x_offset"] = _derived_center_offset(section)
+        sections.append(section)
 
     if not sections:
         raise ChartParsingError("No seating sections could be identified in this file.")

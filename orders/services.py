@@ -25,7 +25,7 @@ regardless, for Postgres parity (it does real work there; SQLite's
 serialization is what makes the same guarantee hold today).
 """
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import Sum
@@ -33,9 +33,21 @@ from django.utils import timezone
 
 from events import pricing
 from events.models import GAAllocation
+from promotions import services as promo_services
+from promotions.services import PromoError
 from venues.models import Section, Seat
 
 from .models import Hold, HoldSeat, PerformanceSeatBlock, Ticket, default_hold_expiry
+
+# Re-exported so views (and payments) can catch a promo failure right alongside
+# HoldError without importing the promotions app directly -- the storefront
+# already does `except services.HoldError` (see orders/views.py hold_create),
+# and a promo apply flashes its buyer-safe message the same way. PromoError is
+# deliberately NOT a subclass of HoldError: making it one would force the
+# promotions app to import orders and invert the dependency (promotions must
+# stay orders-agnostic -- see promotions/services.py's module docstring). Views
+# catch it explicitly instead.
+__all__ = ["PromoError"]  # re-export marker; the import above is what matters.
 
 
 class HoldError(Exception):
@@ -314,6 +326,10 @@ def set_ga_hold(*, organization, performance, session_key, user, price_tier, qua
         user=user,
         price_tier=price_tier,
         quantity=quantity,
+        # Snapshot the tier price now (mirrors HoldSeat.unit_amount for
+        # reserved seats) so a later PriceTier.amount edit can't change what
+        # this hold totals to or gets charged. See Hold.ga_unit_amount.
+        ga_unit_amount=price_tier.amount,
         expires_at=default_hold_expiry(),
     )
 
@@ -399,6 +415,44 @@ def set_reserved_hold(*, organization, performance, session_key, user, seat_ids)
     return hold
 
 
+@transaction.atomic
+def void_order(order):
+    """Void every live (valid/used) Ticket on `order` and release the
+    inventory it held. For GA, the performance's GAAllocation.sold is
+    decremented by the number of GA tickets voided (locked + floored at 0);
+    for reserved seats, voiding alone frees the seat -- the
+    unique_live_ticket_per_performance_seat constraint excludes void, so the
+    seat is immediately re-bookable through the normal sell flow (this is the
+    "cancel-and-reissue" building block: cancel here, then re-sell). Does NOT
+    change Order.status -- the caller decides whether this is a plain
+    cancellation (Order.Status.CANCELLED) or a refund
+    (Order.Status.REFUNDED). Idempotent: already-void tickets are skipped, so
+    calling twice frees inventory only once. Returns the count newly voided.
+    """
+    tickets = list(order.tickets.select_for_update().exclude(status=Ticket.Status.VOID))
+    if not tickets:
+        return 0
+
+    ga_count = sum(1 for ticket in tickets if ticket.seat_id is None)
+    Ticket.objects.filter(pk__in=[t.pk for t in tickets]).update(status=Ticket.Status.VOID)
+
+    # `and order.performance_id` is defensive for a null-performance order:
+    # a donation-only (or, later, pass-only) order has no performance and no
+    # tickets, so this branch is unreachable for it via ga_count anyway -- but
+    # guarding the FK read keeps a future mixed/edge case from dereferencing a
+    # null performance on the GAAllocation lookup below.
+    if ga_count and order.performance_id:
+        allocation = (
+            GAAllocation.objects.select_for_update()
+            .filter(performance=order.performance)
+            .first()
+        )
+        if allocation is not None:
+            allocation.sold = max(allocation.sold - ga_count, 0)
+            allocation.save(update_fields=["sold"])
+    return len(tickets)
+
+
 def cart_item_count(organization, session_key):
     """Total ticket count across the session's active (unexpired) holds --
     GA quantity plus one per held reserved seat. Read-only, cheap aggregate
@@ -413,16 +467,283 @@ def cart_item_count(organization, session_key):
     return ga_qty + seat_qty
 
 
+def ga_unit_amount(hold):
+    """The GA per-ticket price for `hold`: its frozen snapshot
+    (Hold.ga_unit_amount) if set, else the live PriceTier.amount as a fallback
+    for a hold created before the snapshot column existed. The single place
+    the GA money paths (hold_total, the Stripe line item, _fulfill_ga) read
+    the GA unit price, so all three agree and stay immune to a tier edit made
+    after the hold was created."""
+    if hold.ga_unit_amount is not None:
+        return hold.ga_unit_amount
+    return hold.price_tier.amount
+
+
 def hold_total(hold):
-    """Dollar total for a Hold: quantity * tier for GA, sum of each
-    HoldSeat's own snapshotted unit_amount for reserved (Phase C -- a
-    reserved seat's price may have come from a PricingZone, which doesn't
-    have a PriceTier to read .amount off of; unit_amount is the one field
-    that's always populated regardless of source -- see HoldSeat's
-    docstring)."""
+    """Dollar total for a Hold: quantity * snapshotted GA unit price for GA
+    (see ga_unit_amount), sum of each HoldSeat's own snapshotted unit_amount
+    for reserved (Phase C -- a reserved seat's price may have come from a
+    PricingZone, which doesn't have a PriceTier to read .amount off of;
+    unit_amount is the one field that's always populated regardless of source
+    -- see HoldSeat's docstring)."""
     if hold.price_tier_id and hold.quantity:
-        return hold.price_tier.amount * hold.quantity
+        return ga_unit_amount(hold) * hold.quantity
     total = Decimal("0.00")
     for hold_seat in hold.hold_seats.all():
         total += hold_seat.unit_amount
     return total
+
+
+# --- promo / discount money helpers -------------------------------------
+#
+# hold_total (above) stays the GROSS subtotal -- the pre-discount sum of every
+# line, unchanged, because existing tests and the Stripe LINE ITEMS both depend
+# on it staying gross (the hosted page shows list prices and a separate coupon
+# deduction -- see payments.services._line_items_for_hold). The discount is
+# layered on TOP via the two helpers below, so the net charge is a derived
+# figure, never something hold_total has to know about.
+
+
+def hold_currency(hold):
+    """The single charge currency for `hold` (a Stripe session, and therefore a
+    promo, is one currency). GA reads the snapshotted tier's currency; reserved
+    reads the first hold_seat's tier currency, falling back to the org's own
+    currency for a zone-priced seat (PricingZones carry no currency -- see
+    payments.services._line_items_for_hold, which resolves the per-line currency
+    the same way).
+
+    Lives HERE, not in payments, so both the promo path (apply_promo_code, which
+    must resolve the charge currency to validate a fixed-amount code against it)
+    and the Stripe path read one definition -- payments.services._hold_currency
+    is now a thin delegate to this. Kept in orders because it's pure hold data
+    with no Stripe dependency, and orders must not import payments (the money
+    path imports orders, never the reverse)."""
+    if hold.price_tier_id:
+        return hold.price_tier.currency
+    first = hold.hold_seats.select_related("price_tier").first()
+    if first is not None and first.price_tier_id:
+        return first.price_tier.currency
+    return hold.organization.currency
+
+
+def hold_discount(hold):
+    """The promo discount frozen on `hold` (Hold.discount_amount), coalescing
+    the "no code applied" null to 0.00 so callers can do plain Decimal math.
+    The single reader of the snapshot for the money paths -- the Stripe coupon
+    and fulfillment both go through here, so all agree and stay immune to a
+    later PromoCode edit (the snapshot pattern, mirroring ga_unit_amount)."""
+    return hold.discount_amount or Decimal("0.00")
+
+
+def hold_donation(hold):
+    """The donation added to `hold` (Hold.donation_amount), coalescing the "no
+    donation added" null to 0.00 so callers can do plain Decimal math. The
+    single reader of the snapshot for the money paths -- the Stripe donation
+    line item and fulfillment both go through here, so all agree and stay
+    immune to anything editing the cart afterward (the same snapshot pattern as
+    hold_discount / ga_unit_amount)."""
+    return hold.donation_amount or Decimal("0.00")
+
+
+def hold_grand_total(hold):
+    """The NET amount to charge for `hold`: the ticket subtotal net of the
+    promo discount, PLUS any donation added on top.
+
+        max(hold_total - hold_discount, 0.00) + hold_donation
+
+    Two deliberate structural choices:
+
+    - The ticket net is floored at 0.00 before the donation is added --
+      validate_code already forbids a discount that reaches or exceeds the
+      ticket subtotal (Stripe rejects a $0 charge), so the max() should never
+      actually clamp; it guarantees a discount can't turn negative and then
+      eat into the donation.
+    - The donation is added OUTSIDE the discount arithmetic, and this is the
+      whole point of not folding it into hold_total. The promo path reads
+      hold_total (the ticket GROSS) for both its min_order check and its
+      discount base (orders.services.apply_promo_code ->
+      promotions.services.validate_code / compute_discount). Because the
+      donation never enters hold_total, it is automatically (a) never
+      discounted by a percentage code, and (b) never counted toward a code's
+      minimum-order threshold. A buyer can't inflate a cart past a $50 minimum
+      with a $40 gift, and a 20%-off code discounts only the tickets, never the
+      donation -- both fall out for free from keeping the donation out of the
+      ticket-money math rather than from any special-case branch.
+
+    This is what payments.services charges and records as Order.total;
+    hold_total stays the ticket gross, hold_discount the ticket discount, and
+    hold_donation the add-on -- each reconstructable for reporting."""
+    ticket_net = max(hold_total(hold) - hold_discount(hold), Decimal("0.00"))
+    return ticket_net + hold_donation(hold)
+
+
+@transaction.atomic
+def apply_promo_code(*, organization, session_key, hold_id, code):
+    """Apply promo `code` to the session's hold, snapshotting the computed
+    discount onto it (Hold.promo_code / promo_code_text / discount_amount) so
+    the money paths charge a figure frozen at THIS moment, immune to any later
+    PromoCode edit. Returns the updated Hold. Applying a new code REPLACES any
+    code already on the hold (a buyer can swap codes freely pre-payment).
+
+    Scoped exactly like every other hold-consuming call in this module
+    (release_hold_by_id, checkout_view): the hold is looked up by
+    (organization, session_key, pk, unexpired), so a request can no more apply a
+    code to another tenant's or another session's hold than it can check one
+    out. A missing/expired hold or an unknown code raises PromoError with a
+    buyer-safe message; validate_code raises PromoError for every other "can't
+    apply" reason (window, cap, minimum, currency, zero-out).
+
+    Redemption is NOT counted here -- redemption_count is bumped only when the
+    order is actually PAID (payments.services.fulfill_hold -> record_redemption),
+    so an abandoned cart never burns a code's remaining uses. The code is locked
+    (for_update) while we snapshot, serializing concurrent applies of the same
+    code (Postgres row lock; SQLite's IMMEDIATE-mode whole-DB lock does the same
+    -- the module-level locking parity note applies here too)."""
+    # `hold_id` comes straight from POST data; a missing/garbled value must
+    # read as "no such hold" (buyer-safe PromoError below), not a ValueError
+    # 500 out of the pk filter.
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        hold_id = None
+    hold = (
+        Hold.objects.select_related("price_tier")
+        .filter(
+            organization=organization,
+            session_key=session_key,
+            pk=hold_id,
+            expires_at__gt=timezone.now(),
+        )
+        .first()
+    )
+    if hold is None:
+        raise PromoError("Your selection has expired. Please make your selection again.")
+
+    promo = promo_services.get_usable_code(organization, code, for_update=True)
+    if promo is None:
+        raise PromoError("That code isn't valid.")
+
+    currency = hold_currency(hold)
+    subtotal = hold_total(hold)
+    # Raises PromoError (buyer-safe) if the code isn't usable for this cart.
+    promo_services.validate_code(promo, subtotal=subtotal, currency=currency)
+
+    # Freeze the discount NOW -- see Hold.discount_amount's docstring for why a
+    # later PromoCode edit must not move this number.
+    hold.promo_code = promo
+    hold.promo_code_text = promo.code
+    hold.discount_amount = promo_services.compute_discount(promo, subtotal)
+    hold.save(update_fields=["promo_code", "promo_code_text", "discount_amount"])
+    return hold
+
+
+@transaction.atomic
+def remove_promo_code(*, organization, session_key, hold_id):
+    """Clear any applied promo code from the session's hold (the three snapshot
+    fields). Same tenant/session scoping as apply_promo_code. Silently no-ops if
+    the hold is already gone -- removing a code off a vanished cart is not an
+    error worth surfacing to the buyer."""
+    # Same POST-data tolerance as apply_promo_code: a garbled hold_id means
+    # "nothing to clear", never a 500.
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        return
+    hold = Hold.objects.filter(
+        organization=organization, session_key=session_key, pk=hold_id
+    ).first()
+    if hold is None:
+        return
+    hold.promo_code = None
+    hold.promo_code_text = ""
+    hold.discount_amount = None
+    hold.save(update_fields=["promo_code", "promo_code_text", "discount_amount"])
+
+
+# --- donation add-on (transactional) ------------------------------------
+#
+# The buyer-facing "add a donation to your order" cart control. Scoped exactly
+# like apply_promo_code (org + session + unexpired hold, with the same POST-data
+# int-coercion tolerance on hold_id), and freezes the gift onto the Hold the
+# same way a promo freezes its discount -- see Hold.donation_amount. The
+# donation deliberately does NOT touch hold_total, so it never interacts with
+# the promo math (see hold_grand_total).
+
+# Sanity ceiling on a single cart donation (major units). Not a business rule
+# so much as a fat-finger / abuse guard -- a five-figure gift through the public
+# add-on is almost certainly a typo or a probe, and a real major donor is a
+# box-office conversation, not a checkbox. Kept generous so ordinary giving is
+# never blocked.
+MAX_HOLD_DONATION = Decimal("10000")
+
+
+@transaction.atomic
+def set_hold_donation(*, organization, session_key, hold_id, amount, campaign):
+    """Add (or replace) a donation of `amount` for `campaign` on the session's
+    hold, snapshotting both onto it (Hold.donation_amount / donation_campaign)
+    so the money paths charge the figure frozen here. Returns the updated Hold.
+
+    Scoped exactly like apply_promo_code: the hold is looked up by
+    (organization, session_key, pk, unexpired), so a request can no more add a
+    donation to another tenant's or another session's hold than it can check one
+    out. `hold_id` comes straight from POST data, so a missing/garbled value
+    reads as "no such hold" (buyer-safe HoldError), not a 500 out of the pk
+    filter -- the same int-coercion tolerance apply_promo_code uses.
+
+    `amount` is validated to a positive, 2-dp Decimal no greater than
+    MAX_HOLD_DONATION; any bad input (non-numeric, <= 0, over the cap) raises
+    HoldError with a buyer-safe message. The gift rides OUTSIDE the promo/
+    discount math (see hold_grand_total), so it is never discounted and never
+    counts toward a code's minimum order."""
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        hold_id = None
+    hold = Hold.objects.filter(
+        organization=organization,
+        session_key=session_key,
+        pk=hold_id,
+        expires_at__gt=timezone.now(),
+    ).first()
+    if hold is None:
+        raise HoldError("Your selection has expired. Please make your selection again.")
+
+    # Coerce whatever the caller passed (a POSTed string, a float, a Decimal)
+    # into a clean 2-dp Decimal, treating anything unparseable as bad input
+    # rather than letting it explode downstream.
+    try:
+        amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        raise HoldError("Please enter a valid donation amount.")
+    if amount <= Decimal("0.00"):
+        raise HoldError("Please enter a donation amount greater than zero.")
+    if amount > MAX_HOLD_DONATION:
+        raise HoldError(
+            f"Donations through checkout are capped at {MAX_HOLD_DONATION:.0f}; "
+            "please contact the box office for a larger gift."
+        )
+
+    hold.donation_amount = amount
+    hold.donation_campaign = campaign
+    hold.save(update_fields=["donation_amount", "donation_campaign"])
+    return hold
+
+
+@transaction.atomic
+def clear_hold_donation(*, organization, session_key, hold_id):
+    """Remove any donation from the session's hold (both snapshot fields). Same
+    tenant/session scoping as set_hold_donation. Silently no-ops if the hold is
+    already gone -- clearing a gift off a vanished cart is not an error worth
+    surfacing to the buyer (mirrors remove_promo_code)."""
+    try:
+        hold_id = int(hold_id)
+    except (TypeError, ValueError):
+        return
+    hold = Hold.objects.filter(
+        organization=organization, session_key=session_key, pk=hold_id
+    ).first()
+    if hold is None:
+        return
+    hold.donation_amount = None
+    hold.donation_campaign = None
+    hold.save(update_fields=["donation_amount", "donation_campaign"])

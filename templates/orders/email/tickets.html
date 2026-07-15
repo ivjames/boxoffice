@@ -35,6 +35,15 @@
                 </div>
             {% endfor %}
 
+            {% if donation_item %}
+                <div style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 0 0 16px;">
+                    <p style="margin: 0 0 8px;"><strong>Plus a donation: ${{ donation_item.unit_amount }}</strong></p>
+                    {% if donation_item.donation_campaign.acknowledgment %}
+                        <p style="margin: 0; color: #374151;">{{ donation_item.donation_campaign.acknowledgment|linebreaksbr }}</p>
+                    {% endif %}
+                </div>
+            {% endif %}
+
             <p style="color: #6b7280; margin: 24px 0 0;">Thank you for your order — {{ organization.name }}</p>
         </div>
     </div>

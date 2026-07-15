@@ -1,0 +1,80 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}{{ guest.email }} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<a class="back-link" href="{% url 'dashboard_audience_list' %}">&larr; All audience</a>
+<div class="dash-header">
+    <h1>{{ guest.name|default:guest.email }}</h1>
+</div>
+<p class="muted">
+    {{ guest.email }} ·
+    {% if guest.marketing_opt_in %}
+        <span class="badge badge--active">Opted in</span>
+    {% else %}
+        <span class="badge badge--inactive">Opted out</span>
+    {% endif %}
+    {% if guest.marketing_opt_in_at %}
+        <span class="muted">(since {{ guest.marketing_opt_in_at|date:"M j, Y" }})</span>
+    {% endif %}
+</p>
+
+<h2>Tags &amp; notes</h2>
+<form method="post" class="dash-form">
+    {% csrf_token %}
+    {% for field in form %}
+        <div class="field">
+            {{ field.label_tag }}
+            {{ field }}
+            {{ field.errors }}
+            {% if field.help_text %}<p class="muted">{{ field.help_text }}</p>{% endif %}
+        </div>
+    {% endfor %}
+    <button type="submit" class="button">Save</button>
+</form>
+
+<h2>Orders</h2>
+{% if order_rows %}
+    <div class="dash-table-wrap">
+    <table class="dash-table">
+        <thead>
+            <tr><th>Order</th><th>Performance</th><th>Total</th><th>Status</th><th>Placed</th></tr>
+        </thead>
+        <tbody>
+        {% for row in order_rows %}
+            <tr>
+                <td><a href="{% url 'dashboard_order_detail' row.order.token %}">{{ row.order.token }}</a></td>
+                <td>{% if row.order.performance %}{{ row.order.performance.event.title }}{% else %}Donation{% endif %}</td>
+                <td>${{ row.order.total }}</td>
+                <td><span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span></td>
+                <td>{{ row.order.created_at|date:"M j Y g:i A" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+{% else %}
+    <p class="muted">No orders yet.</p>
+{% endif %}
+
+{% if pass_rows %}
+    <h2>Passes</h2>
+    <div class="dash-table-wrap">
+    <table class="dash-table">
+        <thead>
+            <tr><th>Product</th><th>Status</th><th>Purchased</th></tr>
+        </thead>
+        <tbody>
+        {% for pass_purchase in pass_rows %}
+            <tr>
+                <td>{{ pass_purchase.product.name|default:"—" }}</td>
+                <td><span class="badge badge--{{ pass_purchase.status }}">{{ pass_purchase.get_status_display }}</span></td>
+                <td>{{ pass_purchase.created_at|date:"M j Y" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+{% endif %}
+{% endblock %}

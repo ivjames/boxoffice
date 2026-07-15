@@ -61,7 +61,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-    {# WCAG seat-label contrast for the maps above; loads before Alpine's
-       deferred init so window.SeatContrast exists when the components run. #}
+    {# WCAG seat-label contrast for the maps above; loads before Alpine's deferred init so window.SeatContrast exists when the components run. #}
     <script src="{% static 'js/seat_contrast.js' %}"></script>
 {% endblock %}

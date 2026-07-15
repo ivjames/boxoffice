@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Your pass — {{ organization.name }}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; color: #1a1a1a; background: #f4f4f5; margin: 0; padding: 24px;">
+    <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 10px; overflow: hidden; border: 1px solid #e5e7eb;">
+        <div style="background: {{ organization.primary_color }}; padding: 24px; text-align: center;">
+            {% if logo_url %}
+                <img src="{{ logo_url }}" alt="{{ organization.name }}" height="40" style="height: 40px; width: auto; display: inline-block;">
+            {% else %}
+                <span style="color: #ffffff; font-size: 20px; font-weight: 700; letter-spacing: 0.01em;">{{ organization.name }}</span>
+            {% endif %}
+        </div>
+
+        <div style="padding: 24px;">
+            <h1 style="font-size: 20px; margin: 0 0 4px; color: {{ organization.primary_color }};">Your pass is ready</h1>
+            <p style="margin: 0 0 4px;"><strong>{{ product_name }}</strong></p>
+            <p style="margin: 0 0 16px; color: #374151;">Amount: ${{ amount }}</p>
+
+            {% if purchase %}
+                {% if purchase.kind == "flex" %}
+                    <p style="margin: 0 0 12px; color: #374151;">This is a <strong>flex pass</strong>: {{ purchase.credit_count }} credit{{ purchase.credit_count|pluralize }} to use however you like — 1 credit admits 1 seat to any covered performance.</p>
+                {% else %}
+                    <p style="margin: 0 0 12px; color: #374151;">This is a <strong>season pass</strong>: one admission per covered show — just pick the performance you want when you redeem.</p>
+                {% endif %}
+                {% if purchase.valid_from or purchase.valid_until %}
+                    <p style="margin: 0 0 12px; color: #6b7280; font-size: 14px;">Valid{% if purchase.valid_from %} from {{ purchase.valid_from|date:"M j, Y" }}{% endif %}{% if purchase.valid_until %} until {{ purchase.valid_until|date:"M j, Y" }}{% endif %}.</p>
+                {% endif %}
+            {% endif %}
+
+            <p style="margin: 16px 0 24px;">
+                <a href="{{ portal_url }}" style="display: inline-block; background: {{ organization.accent_color }}; color: #ffffff; text-decoration: none; font-weight: 600; padding: 10px 20px; border-radius: 6px;">Redeem your pass</a>
+            </p>
+
+            <p style="color: #6b7280; margin: 24px 0 0;">Thank you — {{ organization.name }}</p>
+        </div>
+    </div>
+</body>
+</html>

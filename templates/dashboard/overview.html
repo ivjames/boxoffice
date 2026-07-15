@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "dashboard/base.html" %}
 {% load showtimes %}
 
 {% block title %}Dashboard — {{ organization.name }}{% endblock %}
@@ -9,6 +9,34 @@
     <h1>Overview</h1>
 </div>
 
+{% if show_onboarding %}
+<div class="onboarding-card">
+    <div class="onboarding-card__header">
+        <h2>Getting started</h2>
+        <span class="onboarding-card__progress">{{ onboarding_done_count }} of {{ onboarding_total }} done</span>
+    </div>
+    <ul class="onboarding-list">
+        {% for step in onboarding_steps %}
+        <li class="onboarding-list__item{% if step.done %} is-done{% endif %}">
+            <span class="onboarding-list__check" aria-hidden="true">{% if step.done %}&#10003;{% else %}&#9675;{% endif %}</span>
+            {% if not step.done and step.url %}
+            <a href="{{ step.url }}" class="onboarding-list__label">{{ step.label }}</a>
+            {% elif not step.done and step.post_url and request.membership.can_manage_billing %}
+            {# An owner-only action (Stripe onboarding is POST + billing-gated) -- render it as a button, but only for the billing role who can actually complete it. #}
+            <span class="onboarding-list__label">{{ step.label }}</span>
+            <form method="post" action="{{ step.post_url }}" class="onboarding-list__action">
+                {% csrf_token %}
+                <button type="submit" class="button button--small">Start</button>
+            </form>
+            {% else %}
+            <span class="onboarding-list__label">{{ step.label }}</span>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 <div class="stat-row">
     <div class="stat-tile">
         <span class="stat-tile__value">{{ upcoming_performances|length }}</span>
@@ -18,24 +46,27 @@
         <span class="stat-tile__value">{{ tickets_sold }}</span>
         <span class="stat-tile__label">Tickets sold</span>
     </div>
+    {% if show_revenue %}
     <div class="stat-tile">
         <span class="stat-tile__value">${{ gross_revenue }}</span>
         <span class="stat-tile__label">Gross revenue (paid orders)</span>
     </div>
+    {% endif %}
 </div>
 
 <h2>Upcoming performances</h2>
 {% if upcoming_performances %}
 <div class="dash-table-wrap">
 <table class="dash-table">
-    <thead><tr><th>Event</th><th>When</th><th>Venue</th><th>Mode</th></tr></thead>
+    <thead><tr><th>Event</th><th>When</th><th>Venue</th><th>Mode</th><th></th></tr></thead>
     <tbody>
     {% for performance in upcoming_performances %}
         <tr>
-            <td>{{ performance.event.title }}</td>
+            <td><a href="{% url 'dashboard_performance_detail' performance.pk %}">{{ performance.event.title }}</a></td>
             <td>{% showtime performance.starts_at performance.venue.timezone "D, M j Y — g:i A" %}</td>
             <td>{{ performance.venue.name }}</td>
             <td>{{ performance.get_seating_mode_display }}</td>
+            <td><a href="{% url 'dashboard_performance_detail' performance.pk %}">Details &rarr;</a></td>
         </tr>
     {% endfor %}
     </tbody>
@@ -45,6 +76,7 @@
     <p class="muted">No upcoming performances.</p>
 {% endif %}
 
+{% if show_revenue %}
 <h2>Revenue by event</h2>
 <div class="dash-table-wrap">
 <table class="dash-table">
@@ -62,22 +94,23 @@
     </tbody>
 </table>
 </div>
+{% endif %}
 
 <h2>Sold / capacity by performance</h2>
 <div class="dash-table-wrap">
 <table class="dash-table">
-    <thead><tr><th>Event</th><th>When</th><th>Sold</th><th>Capacity</th><th>Revenue</th></tr></thead>
+    <thead><tr><th>Event</th><th>When</th><th>Sold</th><th>Capacity</th>{% if show_revenue %}<th>Revenue</th>{% endif %}</tr></thead>
     <tbody>
     {% for row in performance_rows %}
         <tr>
-            <td>{{ row.performance.event.title }}</td>
+            <td><a href="{% url 'dashboard_performance_detail' row.performance.pk %}">{{ row.performance.event.title }}</a></td>
             <td>{% showtime row.performance.starts_at row.performance.venue.timezone "M j Y g:i A" %}</td>
             <td>{{ row.sold }}</td>
             <td>{% if row.capacity is not None %}{{ row.capacity }}{% else %}—{% endif %}</td>
-            <td>${{ row.revenue }}</td>
+            {% if show_revenue %}<td>${{ row.revenue }}</td>{% endif %}
         </tr>
     {% empty %}
-        <tr><td colspan="5" class="muted">No performances yet.</td></tr>
+        <tr><td colspan="{% if show_revenue %}5{% else %}4{% endif %}" class="muted">No performances yet.</td></tr>
     {% endfor %}
     </tbody>
 </table>

@@ -24,7 +24,7 @@
             you, on your own subdomain.
         </p>
         <div class="hero__actions">
-            <a class="button" href="mailto:hello@boxo.show?subject=Boxo.show%20for%20my%20venue">Get in touch</a>
+            <a class="button" href="#contact">Get in touch</a>
             <a class="button button--secondary" href="#how">See how it works</a>
         </div>
         <p class="hero__note">One deployment, many venues — each with its own brand, catalog, and staff.</p>
@@ -93,6 +93,38 @@
         </div>
     </section>
 
+    <section class="landing-section" id="pricing">
+        <div class="boxo-wrap">
+            <div class="landing-section__head">
+                <p class="landing-section__eyebrow">Pricing, not paperwork</p>
+                <h2 class="landing-section__title">Keep more of every ticket dollar</h2>
+                <p class="landing-section__lede">
+                    We built a self-serve platform instead of a support team, and priced it
+                    like one: a low-to-no added platform fee, not a cut of your box office
+                    stacked on top of what Stripe already charges to process the card.
+                </p>
+            </div>
+            <div class="landing-grid">
+                <div class="landing-card landing-card--highlight">
+                    <h3>Low / no added platform fee</h3>
+                    <p>The platform fee is configurable per venue and defaults to zero — Stripe's own processing is the only cost baked in by default. You set your ticket prices; you keep what you charge.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>You're the merchant of record</h3>
+                    <p>Every charge runs through your own Stripe account via Stripe Connect. Funds settle directly to you and refunds come out of your own account — no platform middleman holding your money.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>The full patron-revenue toolkit, self-serve</h3>
+                    <p>Discount codes, season &amp; flex passes, donations, and email marketing to your own audience — all built in and yours to configure, with no add-on pricing and no sales call.</p>
+                </div>
+                <div class="landing-card">
+                    <h3>Support that doesn't make you wait</h3>
+                    <p>A growing help center and in-dashboard guides answer the questions that used to mean a support ticket — the trade for a low fee is putting the answers in front of you instead of behind a phone queue.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <section class="landing-section" id="white-label">
         <div class="boxo-wrap landing-split">
             <div class="landing-split__text">
@@ -142,10 +174,65 @@
         </div>
     </section>
 
-    <section class="landing-cta">
+    <section class="landing-cta" id="contact">
         <h2>Ready to run your own box office?</h2>
         <p>Tell us about your venue and we'll get you set up.</p>
-        <a class="button" href="mailto:hello@boxo.show?subject=Boxo.show%20for%20my%20venue">Get in touch</a>
+
+        {% if contact_sent %}
+            <div class="contact-form__success" role="status">
+                <h3>Thanks — message received.</h3>
+                <p>We'll read it and get back to you at the address you gave us, usually within a day or two.</p>
+            </div>
+        {% else %}
+            {# No novalidate: native browser validation catches an empty or #}
+            {# malformed field instantly, without a full-page POST round-trip #}
+            {# that re-renders at the top of the page (far from #contact).   #}
+            {# Server-side validation remains the real gate for anything     #}
+            {# that bypasses it -- see tenants/views.py contact().           #}
+            <form class="contact-form" method="post" action="{% url 'platform_contact' %}">
+                {% csrf_token %}
+
+                {% if contact_form.non_field_errors %}
+                    <div class="contact-form__errors" role="alert">
+                        {% for error in contact_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+                    </div>
+                {% endif %}
+
+                <div class="contact-form__row">
+                    <div class="contact-form__field">
+                        <label for="{{ contact_form.name.id_for_label }}">{{ contact_form.name.label }}</label>
+                        {{ contact_form.name }}
+                        {% for error in contact_form.name.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                    </div>
+                    <div class="contact-form__field">
+                        <label for="{{ contact_form.email.id_for_label }}">{{ contact_form.email.label }}</label>
+                        {{ contact_form.email }}
+                        {% for error in contact_form.email.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                    </div>
+                </div>
+
+                <div class="contact-form__field">
+                    <label for="{{ contact_form.venue.id_for_label }}">{{ contact_form.venue.label }}</label>
+                    {{ contact_form.venue }}
+                    {% for error in contact_form.venue.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                </div>
+
+                <div class="contact-form__field">
+                    <label for="{{ contact_form.message.id_for_label }}">{{ contact_form.message.label }}</label>
+                    {{ contact_form.message }}
+                    {% for error in contact_form.message.errors %}<p class="contact-form__error">{{ error }}</p>{% endfor %}
+                </div>
+
+                {# Honeypot -- visually removed and skipped by tab order/screen #}
+                {# readers; the view drops any submission that fills it in.    #}
+                <div class="contact-form__hp" aria-hidden="true">
+                    <label for="{{ contact_form.website.id_for_label }}">Website</label>
+                    {{ contact_form.website }}
+                </div>
+
+                <button type="submit" class="button">Send message</button>
+            </form>
+        {% endif %}
     </section>
 {% endblock %}
 

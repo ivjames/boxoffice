@@ -17,6 +17,8 @@ from django.utils import timezone
 
 from orders.models import Hold, Order
 from orders.test_views import StorefrontFixtureMixin, TenantClientMixin
+from passes.models import PassProduct, PassPurchase
+from payments.services import fulfill_hold_with_pass, fulfill_pass_purchase
 
 from . import services
 from .models import GuestAccount, normalize_email
@@ -302,3 +304,209 @@ class TicketPdfTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
         org_b, _ = self.build_org("org-b")
         resp = self.get_as("org-b", f"/tickets/{order.token}/pdf/")
         self.assertEqual(resp.status_code, 404)
+
+
+class DonationOnlyOrderPortalTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """Phase 2: the guest portal must render a donation-only order (no
+    performance, no tickets) as its own row, without 500ing -- see
+    templates/guests/portal.html's guard."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+
+    def _donation_order(self, email="donor@example.com", amount=Decimal("20.00")):
+        from donations.services import get_or_create_general_fund
+        from orders.models import OrderItem
+
+        campaign = get_or_create_general_fund(self.org)
+        guest, _ = GuestAccount.objects.get_or_create_for_email(self.org, email)
+        order = Order.objects.create(
+            organization=self.org,
+            performance=None,
+            buyer_email=email,
+            guest=guest,
+            total=amount,
+            status=Order.Status.PAID,
+        )
+        OrderItem.objects.create(
+            organization=self.org,
+            order=order,
+            kind=OrderItem.Kind.DONATION,
+            quantity=1,
+            unit_amount=amount,
+            donation_campaign=campaign,
+        )
+        return order, guest
+
+    def test_portal_renders_donation_only_order_without_500(self):
+        order, guest = self._donation_order()
+
+        # Sign in the same way the storefront does (session write) --
+        # mirrors guests.services.login_guest, which needs a real request
+        # object rather than the test client.
+        session = self.client.session
+        session["guest_account_id"] = guest.pk
+        session["guest_org_id"] = self.org.pk
+        session.save()
+
+        resp = self.get_as("org-a", "/account/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Donation")
+        self.assertContains(resp, "$20.00")
+        self.assertContains(resp, "View receipt")
+
+    def test_portal_mixes_ticket_and_donation_orders(self):
+        # A ticket order (normal row) alongside a donation-only order (the
+        # new row shape) for the same signed-in guest.
+        from orders.models import Order as OrderModel
+        from orders.models import Ticket as TicketModel
+
+        _event, performance, tier = self.build_ga(self.org, self.venue)
+        guest, _ = GuestAccount.objects.get_or_create_for_email(self.org, "buyer@example.com")
+        ticket_order = OrderModel.objects.create(
+            organization=self.org,
+            performance=performance,
+            buyer_email="buyer@example.com",
+            guest=guest,
+            total=Decimal("20.00"),
+            status=OrderModel.Status.PAID,
+        )
+        TicketModel.objects.create(organization=self.org, order=ticket_order, performance=performance)
+
+        from donations.services import get_or_create_general_fund
+        from orders.models import OrderItem
+
+        campaign = get_or_create_general_fund(self.org)
+        donation_order = OrderModel.objects.create(
+            organization=self.org,
+            performance=None,
+            buyer_email="buyer@example.com",
+            guest=guest,
+            total=Decimal("5.00"),
+            status=OrderModel.Status.PAID,
+        )
+        OrderItem.objects.create(
+            organization=self.org,
+            order=donation_order,
+            kind=OrderItem.Kind.DONATION,
+            quantity=1,
+            unit_amount=Decimal("5.00"),
+            donation_campaign=campaign,
+        )
+
+        session = self.client.session
+        session["guest_account_id"] = guest.pk
+        session["guest_org_id"] = self.org.pk
+        session.save()
+
+        resp = self.get_as("org-a", "/account/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "GA Show")  # the ticket order
+        self.assertContains(resp, "$5.00")  # the donation order
+
+
+class GuestPortalMyPassesTests(TenantClientMixin, StorefrontFixtureMixin, TestCase):
+    """Phase 3: the guest portal's "My passes" section (guests/views.py's
+    guest_portal + templates/guests/portal.html) -- active and exhausted
+    passes both render, each with the right remaining/redeemable state, and
+    the redeem button only appears when redeemable_now is True."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("org-a")
+        self.event, self.performance, self.tier = self.build_ga(self.org, self.venue, capacity=10)
+
+    def _sign_in(self, guest):
+        session = self.client.session
+        session["guest_account_id"] = guest.pk
+        session["guest_org_id"] = self.org.pk
+        session.save()
+
+    def _make_product(self, kind=PassProduct.Kind.FLEX, **kwargs):
+        defaults = dict(name="Flex 3-Pack", kind=kind, price=Decimal("30.00"), organization=self.org)
+        if kind == PassProduct.Kind.FLEX:
+            defaults["credit_count"] = kwargs.pop("credit_count", 3)
+        defaults.update(kwargs)
+        return PassProduct.objects.create(**defaults)
+
+    def test_no_passes_shows_empty_state_and_buy_link(self):
+        guest, _ = GuestAccount.objects.get_or_create_for_email(self.org, "buyer@example.com")
+        self._sign_in(guest)
+        resp = self.get_as("org-a", "/account/")
+        self.assertContains(resp, "My passes")
+        self.assertContains(resp, "No passes on this account yet")
+        self.assertContains(resp, "/passes/")
+
+    def test_active_flex_pass_shows_remaining_and_redeem_button(self):
+        product = self._make_product(credit_count=3)
+        order = fulfill_pass_purchase(
+            self.org,
+            product=product,
+            buyer_email="buyer@example.com",
+            buyer_name="Buyer",
+            provider="stub",
+            payment_ref="stub-1",
+        )
+        self._sign_in(order.guest)
+
+        resp = self.get_as("org-a", "/account/")
+        self.assertContains(resp, product.name)
+        self.assertContains(resp, "3 remaining")
+        self.assertContains(resp, "Active")
+        self.assertContains(resp, "Redeem")
+
+    def test_all_access_season_pass_shows_unlimited(self):
+        product = self._make_product(kind=PassProduct.Kind.SEASON)  # no events -> all-access
+        order = fulfill_pass_purchase(
+            self.org,
+            product=product,
+            buyer_email="season@example.com",
+            buyer_name="Season Holder",
+            provider="stub",
+            payment_ref="stub-2",
+        )
+        self._sign_in(order.guest)
+
+        resp = self.get_as("org-a", "/account/")
+        self.assertContains(resp, "Unlimited shows")
+
+    def test_exhausted_pass_shows_status_and_no_redeem_button(self):
+        product = self._make_product(credit_count=1)
+        order = fulfill_pass_purchase(
+            self.org,
+            product=product,
+            buyer_email="buyer@example.com",
+            buyer_name="Buyer",
+            provider="stub",
+            payment_ref="stub-3",
+        )
+        purchase = PassPurchase.objects.get(order=order)
+        hold = Hold.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            price_tier=self.tier,
+            quantity=1,
+            session_key="exhaust-session",
+        )
+        fulfill_hold_with_pass(hold, purchase, buyer_email="buyer@example.com", buyer_name="Buyer")
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.status, PassPurchase.Status.EXHAUSTED)
+
+        self._sign_in(order.guest)
+        resp = self.get_as("org-a", "/account/")
+        self.assertContains(resp, "Exhausted")
+        self.assertNotContains(resp, "Redeem<")
+
+    def test_other_guests_pass_not_shown(self):
+        product = self._make_product()
+        fulfill_pass_purchase(
+            self.org,
+            product=product,
+            buyer_email="someone-else@example.com",
+            buyer_name="",
+            provider="stub",
+            payment_ref="stub-4",
+        )
+        guest, _ = GuestAccount.objects.get_or_create_for_email(self.org, "buyer@example.com")
+        self._sign_in(guest)
+        resp = self.get_as("org-a", "/account/")
+        self.assertContains(resp, "No passes on this account yet")

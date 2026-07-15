@@ -1,3 +1,4 @@
+import csv
 import json
 from decimal import Decimal, InvalidOperation
 
@@ -14,16 +15,44 @@ from django.views.generic import CreateView, DetailView, ListView, UpdateView
 
 from accounts.invites import MemberExistsError, add_member
 from accounts.models import Membership
-from accounts.permissions import BoxOfficeRequiredMixin, ManagerRequiredMixin, manager_required, tenant_staff_required
+from accounts.permissions import (
+    BoxOfficeRequiredMixin,
+    ManagerRequiredMixin,
+    box_office_required,
+    manager_required,
+    tenant_staff_required,
+)
+from campaigns.emails import send_test_campaign_email
+from campaigns.models import CampaignSend, EmailCampaign
+from campaigns.services import CampaignStateError, audience_queryset, segment_recipient_count, start_campaign
+from donations.services import get_or_create_general_fund
 from events import zones as zone_services
 from events.models import Event, Performance, PriceTier, PricingZone, ZoneTemplate
 from events.zone_export import ZoneExportError, render_zone_map
-from orders.models import Order, Ticket
-from orders.services import get_seating_chart, performance_seats
-from venues import generation
+from guests.models import GuestAccount
+from orders.emails import send_order_receipt
+from orders.models import Order, OrderItem, PerformanceSeatBlock, Ticket
+from orders.services import get_seating_chart, performance_seats, void_order
+from passes.models import PassProduct, PassPurchase
+from passes.services import remaining_admissions, restore_redemptions_for_order
+from payments.services import RefundError, refund_order
+from promotions.models import PromoCode
+from venues import chart_parsing, generation
 from venues.models import Seat, SeatingChart, Section, Venue
 
-from .forms import EventForm, InviteMemberForm, PerformanceForm, PriceTierForm, SeatingChartForm, SectionForm
+from .forms import (
+    DonationSettingsForm,
+    EmailCampaignForm,
+    EventForm,
+    GuestTagsNotesForm,
+    InviteMemberForm,
+    PassProductForm,
+    PerformanceForm,
+    PriceTierForm,
+    PromoCodeForm,
+    SeatingChartForm,
+    SectionForm,
+)
 
 
 # --- overview / reports ---------------------------------------------------
@@ -31,11 +60,140 @@ from .forms import EventForm, InviteMemberForm, PerformanceForm, PriceTierForm, 
 
 @tenant_staff_required
 def overview(request):
-    """Any staff role can view the overview. Counts + reports are all scoped
+    """Box office and up get the overview. Counts + reports are all scoped
     to request.organization -- see accounts.permissions for how every
-    dashboard view gets there (login + Membership-in-this-org check)."""
+    dashboard view gets there (login + Membership-in-this-org check).
+
+    Scanners work the door only: they have no overview at all (the nav hides
+    it and login lands them on Scan), so a scanner who reaches this URL
+    directly is bounced to the scan screen rather than shown a page their
+    role isn't meant to see.
+
+    Revenue is a manager+ concern -- box office sells tickets and services
+    the door, it doesn't need the money reports -- so the gross-revenue tile,
+    the revenue-by-event table, and the per-performance revenue column are
+    only computed (and only rendered, see overview.html) for can_manage_events."""
+    if not request.membership.can_sell_tickets():
+        return redirect("scan_home")
+
     organization = request.organization
     now = timezone.now()
+    show_revenue = request.membership.can_manage_events()
+
+    # "Getting started" checklist -- manager+ only (same gate as show_revenue
+    # above: box office runs the door, it doesn't need setup nagging). Each
+    # step is a cheap .exists() query (~10 total), fine for a manager landing
+    # page. Auto-hides once every step is done (show_onboarding below) so an
+    # established theater never sees it again.
+    onboarding_steps = []
+    onboarding_done_count = 0
+    onboarding_total = 0
+    onboarding_all_done = False
+    if show_revenue:
+        onboarding_steps = [
+            {
+                "key": "stripe",
+                "label": "Connect Stripe payments",
+                "done": organization.stripe_charges_enabled,
+                # connect_start (payments.views) begins Stripe onboarding, but
+                # it's @billing_required + @require_POST -- narrower than this
+                # card's manager+ gate. So instead of a plain link (which would
+                # 403 a non-billing manager), the step carries a POST action the
+                # TEMPLATE renders as a button ONLY for a can_manage_billing
+                # user (owners); everyone else sees plain text. The billing role
+                # is exactly who can actually finish Stripe, so this is the one
+                # actionable path the setup guide points them to.
+                "url": None,
+                "post_url": reverse("connect_start"),
+                "help": "Payouts run through Stripe Connect.",
+            },
+            {
+                "key": "venue",
+                "label": "Add a venue",
+                "done": Venue.objects.filter(organization=organization).exists(),
+                "url": reverse("dashboard_venue_list"),
+                "help": "Where your shows happen.",
+            },
+            {
+                "key": "seating_chart",
+                "label": "Build a seating chart",
+                "done": SeatingChart.objects.filter(organization=organization).exists(),
+                "url": reverse("dashboard_venue_list"),
+                "help": "Charts live under each venue.",
+            },
+            {
+                "key": "event",
+                "label": "Create an event",
+                "done": Event.objects.filter(organization=organization).exists(),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "publish_event",
+                "label": "Publish an event",
+                "done": Event.objects.filter(
+                    organization=organization, status=Event.Status.PUBLISHED
+                ).exists(),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "price_tier",
+                "label": "Set ticket prices",
+                # A reserved-seat show can be priced entirely with PricingZones
+                # (the pricing resolver checks zones first and a seat needs no
+                # PriceTier at all), so a zone-only theater has prices set even
+                # with zero PriceTier rows -- count either as evidence, or this
+                # step would stay undone and the card never auto-hide for them.
+                "done": (
+                    PriceTier.objects.filter(organization=organization).exists()
+                    or PricingZone.objects.filter(organization=organization).exists()
+                ),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "performance_on_sale",
+                "label": "Put a performance on sale",
+                "done": Performance.objects.filter(
+                    organization=organization, status=Performance.Status.PUBLISHED
+                ).exists(),
+                "url": reverse("dashboard_event_list"),
+                "help": "",
+            },
+            {
+                "key": "teammate",
+                "label": "Invite a teammate",
+                "done": Membership.objects.filter(organization=organization)
+                .exclude(role=Membership.Role.OWNER)
+                .exists(),
+                "url": reverse("dashboard_team"),
+                "help": "",
+            },
+            {
+                "key": "branding",
+                "label": "Add your logo & colors",
+                "done": bool(organization.logo),
+                # No dedicated branding/settings page in the dashboard yet.
+                "url": None,
+                "help": "",
+            },
+            {
+                "key": "first_sale",
+                "label": "Make your first sale",
+                "done": Order.objects.filter(
+                    organization=organization, status=Order.Status.PAID
+                ).exists(),
+                # Informational only -- happens on the storefront, not a
+                # dashboard page.
+                "url": None,
+                "help": "Happens on your storefront once you're set up.",
+            },
+        ]
+        onboarding_total = len(onboarding_steps)
+        onboarding_done_count = sum(1 for step in onboarding_steps if step["done"])
+        onboarding_all_done = onboarding_done_count == onboarding_total
+    show_onboarding = show_revenue and not onboarding_all_done
 
     upcoming_performances = list(
         Performance.objects.filter(organization=organization, starts_at__gte=now)
@@ -50,29 +208,45 @@ def overview(request):
     # Revenue from paid orders, aggregated once per grouping rather than
     # per-row in the loops below. Keyed by performance / event id so the
     # per-performance table and the per-event table both read from a dict
-    # lookup instead of an N+1 of Sum() queries.
-    paid_orders = Order.objects.filter(organization=organization, status=Order.Status.PAID)
-    gross_revenue = paid_orders.aggregate(total=Sum("total"))["total"] or Decimal("0.00")
+    # lookup instead of an N+1 of Sum() queries. Skipped entirely for box
+    # office (show_revenue is False) -- no need to query money they can't see.
+    gross_revenue = Decimal("0.00")
+    revenue_by_performance = {}
+    event_revenue_rows = []
+    if show_revenue:
+        paid_orders = Order.objects.filter(organization=organization, status=Order.Status.PAID)
+        # gross_revenue stays computed off EVERY paid order -- donations
+        # included -- see this variable's use in overview.html; a donation
+        # is real revenue even though it reserves no performance.
+        gross_revenue = paid_orders.aggregate(total=Sum("total"))["total"] or Decimal("0.00")
 
-    revenue_by_performance = {
-        row["performance"]: row["revenue"]
-        for row in paid_orders.values("performance").annotate(revenue=Sum("total"))
-    }
+        # The per-performance and per-event groupings below are strictly a
+        # TICKETING view (a row per performance / per event), so a Phase 2
+        # donation-only order (Order.performance null) must be excluded --
+        # left in, it would group under a bogus "performance: None" /
+        # "event: None" bucket instead of just not appearing in a table that
+        # isn't about it.
+        ticketed_orders = paid_orders.filter(performance__isnull=False)
 
-    event_revenue_rows = [
-        {
-            "event_title": row["performance__event__title"],
-            "orders": row["orders"],
-            "revenue": row["revenue"],
+        revenue_by_performance = {
+            row["performance"]: row["revenue"]
+            for row in ticketed_orders.values("performance").annotate(revenue=Sum("total"))
         }
-        for row in (
-            # Group by event id (not title): two distinct events can share a
-            # title, and merging them would misreport per-event revenue.
-            paid_orders.values("performance__event", "performance__event__title")
-            .annotate(orders=Count("id"), revenue=Sum("total"))
-            .order_by("-revenue")
-        )
-    ]
+
+        event_revenue_rows = [
+            {
+                "event_title": row["performance__event__title"],
+                "orders": row["orders"],
+                "revenue": row["revenue"],
+            }
+            for row in (
+                # Group by event id (not title): two distinct events can share a
+                # title, and merging them would misreport per-event revenue.
+                ticketed_orders.values("performance__event", "performance__event__title")
+                .annotate(orders=Count("id"), revenue=Sum("total"))
+                .order_by("-revenue")
+            )
+        ]
 
     performance_rows = []
     for performance in (
@@ -102,11 +276,145 @@ def overview(request):
     context = {
         "upcoming_performances": upcoming_performances,
         "tickets_sold": tickets_sold,
+        "show_revenue": show_revenue,
         "gross_revenue": gross_revenue,
         "event_revenue_rows": event_revenue_rows,
         "performance_rows": performance_rows,
+        "show_onboarding": show_onboarding,
+        "onboarding_steps": onboarding_steps,
+        "onboarding_done_count": onboarding_done_count,
+        "onboarding_total": onboarding_total,
+        "onboarding_all_done": onboarding_all_done,
     }
     return render(request, "dashboard/overview.html", context)
+
+
+@box_office_required
+def performance_detail(request, pk):
+    """Box-office-facing detail for one performance (linked from the overview's
+    upcoming-shows list): a picture of the house (seating chart colored by
+    each seat's status for THIS performance), the ticket-sales summary, and a
+    guest lookup that finds a specific attendee's ticket by name / email /
+    code. Box office+ (managers/owners inherit it); scanners don't reach the
+    overview it's linked from, and this view is box_office-gated anyway.
+
+    Revenue stays a manager+ concern here too (mirrors the overview): box
+    office gets sold/capacity/checked-in counts, not the money."""
+    performance = get_object_or_404(
+        Performance.objects.filter(organization=request.organization).select_related(
+            "event", "venue", "seating_chart"
+        ),
+        pk=pk,
+    )
+    show_revenue = request.membership.can_manage_events()
+
+    tickets_qs = (
+        Ticket.objects.filter(organization=request.organization, performance=performance)
+        .select_related("seat", "seat__section", "order", "scanned_by")
+        .order_by("seat__section__ordering", "seat__row_label", "seat__number", "id")
+    )
+    live_tickets = list(tickets_qs.exclude(status=Ticket.Status.VOID))
+    sold = len(live_tickets)
+    checked_in = sum(1 for t in live_tickets if t.status == Ticket.Status.USED)
+
+    if performance.seating_mode == Performance.SeatingMode.GA:
+        allocation = getattr(performance, "ga_allocation", None)
+        capacity = allocation.capacity if allocation else None
+    else:
+        capacity = performance_seats(performance).count()
+
+    revenue = None
+    if show_revenue:
+        revenue = (
+            Order.objects.filter(
+                organization=request.organization,
+                performance=performance,
+                status=Order.Status.PAID,
+            ).aggregate(total=Sum("total"))["total"]
+            or Decimal("0.00")
+        )
+
+    # Guest / ticket lookup. Same fields the box office searches on the orders
+    # list (buyer name/email/code) plus the per-ticket holder name and code,
+    # scoped to THIS performance so a name search returns the seat/status the
+    # staffer actually needs at the window or door.
+    query = request.GET.get("q", "").strip()
+    search_results = None
+    if query:
+        search_results = list(
+            tickets_qs.filter(
+                Q(holder_name__icontains=query)
+                | Q(order__buyer_name__icontains=query)
+                | Q(order__buyer_email__icontains=query)
+                | Q(token=query)
+                | Q(order__token=query)
+            )
+        )
+
+    # Seat map. Reserved: a read-only map colored by each seat's status
+    # (sold / checked-in / blocked / available), with the holder's name in the
+    # tooltip. GA: the same inert "picture of the house" the storefront shows,
+    # since GA assigns no seats.
+    ga_seats_json = None
+    seats_json = None
+    if performance.seating_mode == Performance.SeatingMode.GA:
+        ga_seats_json = [
+            {
+                "id": seat.id,
+                "row": seat.row_label,
+                "number": seat.number,
+                "x": seat.x,
+                "y": seat.y,
+                "section": seat.section.name,
+            }
+            for seat in performance_seats(performance)
+        ]
+    else:
+        seat_ticket = {t.seat_id: t for t in live_tickets if t.seat_id is not None}
+        blocked = set(
+            PerformanceSeatBlock.objects.filter(performance=performance).values_list(
+                "seat_id", flat=True
+            )
+        )
+        seats_json = []
+        for seat in performance_seats(performance):
+            ticket = seat_ticket.get(seat.id)
+            if ticket is not None:
+                state = "used" if ticket.status == Ticket.Status.USED else "sold"
+                holder = ticket.holder_name or (
+                    ticket.order.buyer_name or ticket.order.buyer_email if ticket.order_id else ""
+                )
+            elif seat.id in blocked:
+                state, holder = "blocked", ""
+            else:
+                state, holder = "available", ""
+            seats_json.append(
+                {
+                    "id": seat.id,
+                    "row": seat.row_label,
+                    "number": seat.number,
+                    "x": seat.x,
+                    "y": seat.y,
+                    "section": seat.section.name,
+                    "state": state,
+                    "holder": holder,
+                }
+            )
+
+    context = {
+        "performance": performance,
+        "sold": sold,
+        "capacity": capacity,
+        "checked_in": checked_in,
+        "show_revenue": show_revenue,
+        "revenue": revenue,
+        "q": query,
+        "search_results": search_results,
+        "seating_mode": performance.seating_mode,
+        "ga_seats_json": ga_seats_json,
+        "seats_json": seats_json,
+    }
+    return render(request, "dashboard/performance_detail.html", context)
 
 
 # --- events / performances (manager+) -------------------------------------
@@ -398,6 +706,329 @@ def _save_reserved_prices(request, performance, sections):
     return {}
 
 
+# --- promo codes (manager+) -------------------------------------------------
+#
+# v1 is org-wide only (no per-event scoping yet -- see promotions.models.
+# PromoCode's docstring), so this is a flat list/create/edit CRUD, same shape
+# as EventListView/EventCreateView/EventUpdateView above. Codes are never
+# hard-deleted (is_active doubles as the archive flag): promo_deactivate is
+# the one mutation endpoint, toggling that flag in either direction.
+
+
+class PromoCodeListView(ManagerRequiredMixin, ListView):
+    template_name = "dashboard/promo_list.html"
+    context_object_name = "promos"
+
+    def get_queryset(self):
+        return PromoCode.objects.filter(organization=self.request.organization).order_by(
+            "-created_at"
+        )
+
+
+class PromoCodeCreateView(ManagerRequiredMixin, CreateView):
+    model = PromoCode
+    form_class = PromoCodeForm
+    template_name = "dashboard/promo_form.html"
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        form.instance.organization = self.request.organization
+        messages.success(self.request, f"Created promo code {form.instance.code}.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_promo_list")
+
+
+class PromoCodeUpdateView(ManagerRequiredMixin, UpdateView):
+    form_class = PromoCodeForm
+    template_name = "dashboard/promo_form.html"
+
+    def get_queryset(self):
+        return PromoCode.objects.filter(organization=self.request.organization)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        messages.success(self.request, f"Updated promo code {form.instance.code}.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_promo_list")
+
+
+@manager_required
+@require_POST
+def promo_deactivate(request, pk):
+    """Toggle a promo code's is_active flag -- doubles as BOTH "deactivate"
+    and "reactivate" (the button label flips based on current state; see
+    promo_list.html). Codes are never hard-deleted (PromoCode's docstring),
+    so this is the only way to retire/restore one. Org-scoped like every
+    other dashboard mutation: a pk for another org's code 404s."""
+    promo = get_object_or_404(PromoCode, pk=pk, organization=request.organization)
+    promo.is_active = not promo.is_active
+    promo.save(update_fields=["is_active"])
+    if promo.is_active:
+        messages.success(request, f"Reactivated {promo.code}.")
+    else:
+        messages.success(request, f"Deactivated {promo.code}.")
+    return redirect("dashboard_promo_list")
+
+
+# --- donations (manager+) --------------------------------------------------
+#
+# v1 is a single org-wide campaign (DonationCampaign's docstring), so there's
+# one settings form (not a list/create/edit CRUD like promo codes) plus a
+# report over paid donation OrderItems -- mirrors the promo section's shape
+# where it applies, and the existing dashboard CSV-export convention where
+# an endpoint takes `?format=csv` rather than a dedicated URL (see
+# donations_report below).
+
+
+@manager_required
+def donation_settings(request):
+    """Settings form for the org's single donation campaign -- on/off switch,
+    quick-pick preset amounts, and the nonprofit acknowledgment blurb. Loads
+    (creating on first visit) via get_or_create_general_fund, same as every
+    other donation entry point resolves "the org's campaign"."""
+    campaign = get_or_create_general_fund(request.organization)
+    if request.method == "POST":
+        form = DonationSettingsForm(request.POST, instance=campaign)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Donation settings saved.")
+            return redirect("dashboard_donation_settings")
+    else:
+        form = DonationSettingsForm(instance=campaign)
+    return render(request, "dashboard/donation_settings.html", {"form": form, "campaign": campaign})
+
+
+@manager_required
+def donations_report(request):
+    """Totals + a row per paid donation, org-scoped, with optional
+    ?start=YYYY-MM-DD&end=YYYY-MM-DD filters on Order.created_at.
+    `?format=csv` streams the same rows as a download instead of rendering
+    the HTML table -- mirrors the query-param CSV-export convention used
+    elsewhere in the dashboard rather than adding a second URL."""
+    organization = request.organization
+    items = (
+        OrderItem.objects.filter(
+            organization=organization, kind=OrderItem.Kind.DONATION, order__status=Order.Status.PAID
+        )
+        .select_related("order", "order__guest", "donation_campaign")
+        .order_by("-order__created_at")
+    )
+
+    start = request.GET.get("start", "").strip()
+    end = request.GET.get("end", "").strip()
+    if start:
+        items = items.filter(order__created_at__date__gte=start)
+    if end:
+        items = items.filter(order__created_at__date__lte=end)
+
+    total = items.aggregate(total=Sum("unit_amount"))["total"] or Decimal("0.00")
+
+    if request.GET.get("format") == "csv":
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="donations.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Date", "Order token", "Buyer email", "Buyer name", "Campaign", "Amount"])
+        for item in items:
+            writer.writerow(
+                [
+                    item.order.created_at.strftime("%Y-%m-%d %H:%M"),
+                    item.order.token,
+                    item.order.buyer_email,
+                    item.order.buyer_name,
+                    item.donation_campaign.name if item.donation_campaign_id else "",
+                    item.unit_amount,
+                ]
+            )
+        return response
+
+    return render(
+        request,
+        "dashboard/donation_report.html",
+        {"items": items, "total": total, "start": start, "end": end},
+    )
+
+
+# --- passes (manager+) ------------------------------------------------------
+#
+# Mirrors the promo-code CRUD shape above: flat list/create/edit, is_active
+# doubles as the archive/enable flag (a PassProduct is never hard-deleted --
+# its `purchases` PROTECT the row, same stance as PromoCode), pass_toggle is
+# the one flip-both-ways mutation endpoint. See passes.models.PassProduct's
+# docstring.
+
+
+class PassProductListView(ManagerRequiredMixin, ListView):
+    template_name = "dashboard/pass_list.html"
+    context_object_name = "products"
+
+    def get_queryset(self):
+        return PassProduct.objects.filter(organization=self.request.organization).order_by(
+            "-created_at"
+        )
+
+
+class PassProductCreateView(ManagerRequiredMixin, CreateView):
+    model = PassProduct
+    form_class = PassProductForm
+    template_name = "dashboard/pass_form.html"
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        form.instance.organization = self.request.organization
+        messages.success(self.request, f"Created “{form.instance.name}”.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_pass_list")
+
+
+class PassProductUpdateView(ManagerRequiredMixin, UpdateView):
+    form_class = PassProductForm
+    template_name = "dashboard/pass_form.html"
+
+    def get_queryset(self):
+        return PassProduct.objects.filter(organization=self.request.organization)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        messages.success(self.request, f"Updated “{form.instance.name}”.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_pass_list")
+
+
+@manager_required
+@require_POST
+def pass_toggle(request, pk):
+    """Toggle a pass product's is_active flag -- doubles as BOTH "deactivate"
+    (hide from the storefront, block new sales) and "reactivate". Mirrors
+    promo_deactivate exactly; past PassPurchases are untouched either way
+    (their entitlement terms were already snapshotted at purchase -- see
+    PassPurchase's docstring)."""
+    product = get_object_or_404(PassProduct, pk=pk, organization=request.organization)
+    product.is_active = not product.is_active
+    product.save(update_fields=["is_active"])
+    if product.is_active:
+        messages.success(request, f"Reactivated {product.name}.")
+    else:
+        messages.success(request, f"Deactivated {product.name}.")
+    return redirect("dashboard_pass_list")
+
+
+@manager_required
+def pass_report(request):
+    """Sold passes (paid PASS OrderItems), date-filterable + CSV export --
+    same shape as donations_report above -- plus OUTSTANDING LIABILITY: how
+    many admissions the theater still owes against live (ACTIVE) purchases,
+    and roughly what they're worth. A REFUNDED purchase, or a flex purchase
+    that's run dry (EXHAUSTED), owes nothing more, so only ACTIVE purchases
+    count.
+
+    flex_value_outstanding is computed in PYTHON per purchase (fine at v1
+    scale, per the roadmap note) as credits_remaining * (price paid /
+    credit_count). "Price paid" is purchase.order.total: fulfill_pass_purchase
+    always creates exactly one Order with total=product.price for a pass sale
+    (no promo/donation can attach to it), so the order total IS the price paid
+    for that pass -- no second query into its OrderItems needed."""
+    organization = request.organization
+    items = (
+        OrderItem.objects.filter(
+            organization=organization, kind=OrderItem.Kind.PASS, order__status=Order.Status.PAID
+        )
+        .select_related("order", "order__guest", "pass_product")
+        .order_by("-order__created_at")
+    )
+
+    start = request.GET.get("start", "").strip()
+    end = request.GET.get("end", "").strip()
+    if start:
+        items = items.filter(order__created_at__date__gte=start)
+    if end:
+        items = items.filter(order__created_at__date__lte=end)
+
+    total = items.aggregate(total=Sum("unit_amount"))["total"] or Decimal("0.00")
+
+    if request.GET.get("format") == "csv":
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="passes.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Date", "Order token", "Buyer email", "Product", "Amount"])
+        for item in items:
+            writer.writerow(
+                [
+                    item.order.created_at.strftime("%Y-%m-%d %H:%M"),
+                    item.order.token,
+                    item.order.buyer_email,
+                    item.pass_product.name if item.pass_product_id else "",
+                    item.unit_amount,
+                ]
+            )
+        return response
+
+    active_purchases = PassPurchase.objects.filter(
+        organization=organization, status=PassPurchase.Status.ACTIVE
+    ).select_related("order")
+
+    flex_credits_outstanding = 0
+    flex_value_outstanding = Decimal("0.00")
+    season_admissions_outstanding = 0
+    # All-events (empty covered_events) season passes are unbounded -- see
+    # passes.services.remaining_admissions's docstring -- so they're counted
+    # separately rather than folded into the numeric admissions total.
+    unbounded_season_count = 0
+    for purchase in active_purchases:
+        if purchase.kind == PassProduct.Kind.FLEX:
+            remaining = purchase.credits_remaining or 0
+            flex_credits_outstanding += remaining
+            if purchase.credit_count and remaining:
+                price_paid = purchase.order.total if purchase.order_id else Decimal("0.00")
+                flex_value_outstanding += (price_paid / purchase.credit_count) * remaining
+        else:
+            remaining = remaining_admissions(purchase)
+            if remaining is None:
+                unbounded_season_count += 1
+            else:
+                season_admissions_outstanding += remaining
+
+    flex_value_outstanding = flex_value_outstanding.quantize(Decimal("0.01"))
+
+    return render(
+        request,
+        "dashboard/pass_report.html",
+        {
+            "items": items,
+            "total": total,
+            "start": start,
+            "end": end,
+            "flex_credits_outstanding": flex_credits_outstanding,
+            "flex_value_outstanding": flex_value_outstanding,
+            "season_admissions_outstanding": season_admissions_outstanding,
+            "unbounded_season_count": unbounded_season_count,
+        },
+    )
+
+
 # --- orders (box_office+) -------------------------------------------------
 
 
@@ -446,7 +1077,120 @@ class OrderDetailView(BoxOfficeRequiredMixin, DetailView):
         context["tickets"] = self.object.tickets.select_related(
             "seat", "seat__section", "scanned_by"
         ).order_by("id")
+        # Phase 2: a kind-aware line-item table -- a ticket item shows its
+        # existing seat/tier text, a donation item shows the gift amount +
+        # campaign, so a donation-only order's detail page has something to
+        # show besides the (now-guarded) performance line and an empty
+        # tickets table. select_related covers every FK a line item's kind
+        # might read from, so the template never N+1s per row.
+        context["items"] = self.object.items.select_related(
+            "price_tier", "pricing_zone", "seat", "donation_campaign", "pass_product"
+        ).order_by("id")
+        # Phase 3: a REDEMPTION order (one that spent a pass on seats) carries
+        # PassRedemption rows -- summarize them per pass so the detail page can
+        # show "Redeemed with <product>: N ticket(s) (N credit(s))" without a
+        # row-per-ticket table. Grouped in Python (not a template {% regroup %}
+        # sum) since credits_used needs summing, not just counting.
+        redemption_groups = {}
+        for redemption in self.object.pass_redemptions.select_related(
+            "pass_purchase__product"
+        ):
+            group = redemption_groups.setdefault(
+                redemption.pass_purchase_id,
+                {"product": redemption.pass_purchase.product, "count": 0, "credits": 0},
+            )
+            group["count"] += 1
+            group["credits"] += redemption.credits_used
+        context["pass_redemption_summary"] = list(redemption_groups.values())
         return context
+
+
+# --- order actions (box_office+) ------------------------------------------
+#
+# The staff order surface used to be read-only; these three POST actions are
+# what the built-in help center already tells box office they can do (resend
+# tickets, cancel/void, refund -- see helpcenter/builtins.py). Each is
+# org-scoped by token (a box-office user can't touch another tenant's order)
+# and gated to box_office+.
+
+
+def _org_order(request, token):
+    return get_object_or_404(
+        Order.objects.filter(organization=request.organization), token=token
+    )
+
+
+@box_office_required
+@require_POST
+def order_resend(request, token):
+    """Re-send the confirmation email for an order (e.g. the buyer lost it or
+    gave a typo'd address that's since been corrected) -- tickets, or (Phase
+    2) a donation acknowledgment for a donation-only order, via the
+    send_order_receipt dispatcher (orders.emails)."""
+    order = _org_order(request, token)
+    if not order.buyer_email:
+        messages.error(request, "This order has no email address on file to send to.")
+        return redirect("dashboard_order_detail", token=order.token)
+    try:
+        send_order_receipt(order, request)
+    except Exception:  # delivery/transport failure -- don't 500 the dashboard
+        messages.error(request, "Couldn't send the email just now. Please try again.")
+    else:
+        messages.success(request, f"Resent the receipt to {order.buyer_email}.")
+    return redirect("dashboard_order_detail", token=order.token)
+
+
+@box_office_required
+@require_POST
+def order_cancel(request, token):
+    """Cancel an order: void its tickets and free the inventory (see
+    orders.services.void_order) without moving any money. Use this for a comp/
+    test order or when a refund is handled outside the system; use Refund when
+    the buyer paid via Stripe and should get their money back."""
+    order = _org_order(request, token)
+    if order.status in (Order.Status.CANCELLED, Order.Status.REFUNDED):
+        messages.info(request, "That order is already cancelled.")
+        return redirect("dashboard_order_detail", token=order.token)
+    voided = void_order(order)
+    # Phase 3: a cancelled PASS-REDEMPTION order comped its tickets against a
+    # PassPurchase's entitlement (season event slot / flex credits) -- voiding
+    # the tickets alone doesn't give that entitlement back. restore_redemptions_
+    # for_order deletes the order's PassRedemption rows (freeing a season event
+    # slot) and restores any burned flex credits. A no-op (returns 0) for the
+    # common case of an order that never redeemed a pass. dashboard may import
+    # passes; orders may not (see passes.services' dependency-direction note),
+    # which is why this lives here rather than in orders.services.void_order.
+    restore_redemptions_for_order(order)
+    order.status = Order.Status.CANCELLED
+    order.save(update_fields=["status"])
+    messages.success(
+        request, f"Cancelled the order and released {voided} ticket(s) back to inventory."
+    )
+    return redirect("dashboard_order_detail", token=order.token)
+
+
+@box_office_required
+@require_POST
+def order_refund(request, token):
+    """Refund a paid order in full (Stripe Refund on the connected account for
+    a real charge; a recorded reversal for a stub/test order), voiding its
+    tickets and freeing inventory -- see payments.services.refund_order.
+    Idempotent: refunding an order that isn't currently paid is a no-op."""
+    order = _org_order(request, token)
+    try:
+        refunded = refund_order(order)
+    except RefundError:
+        messages.error(
+            request,
+            "Stripe couldn't process the refund. Check the order in the Stripe "
+            "dashboard and try again.",
+        )
+        return redirect("dashboard_order_detail", token=order.token)
+    if refunded:
+        messages.success(request, "Refunded the order and voided its tickets.")
+    else:
+        messages.info(request, "That order isn't in a refundable state.")
+    return redirect("dashboard_order_detail", token=order.token)
 
 
 # --- seating chart builder (manager+) --------------------------------------
@@ -491,6 +1235,51 @@ class SeatingChartListView(ManagerRequiredMixin, ListView):
         context = super().get_context_data(**kwargs)
         context["venue"] = self.venue
         return context
+
+
+@manager_required
+@require_POST
+def chart_parse_upload(request, venue_pk):
+    """POST target of the chart list page's "Import from image/PDF" form:
+    runs the uploaded file through venues.chart_parsing (Claude vision ->
+    parametric section spec -> generated seats) and drops staff into the
+    live chart editor to review/refine the result. Manager-gated and
+    venue-scoped like every other chart mutation; every failure mode comes
+    back as a flash message on the chart list rather than a 500."""
+    venue = get_object_or_404(Venue, pk=venue_pk, organization=request.organization)
+    back = redirect("dashboard_chart_list", venue.pk)
+
+    upload = request.FILES.get("file")
+    if upload is None:
+        messages.error(request, "Choose an image or PDF of your seating chart first.")
+        return back
+    media_type = chart_parsing.media_type_for_upload(upload.name, upload.content_type)
+    if media_type is None:
+        messages.error(request, "Unsupported file type. Upload a PNG, JPEG, GIF, WebP image or a PDF.")
+        return back
+    if upload.size > chart_parsing.MAX_UPLOAD_BYTES:
+        messages.error(request, "File is too large (20 MB max).")
+        return back
+
+    try:
+        spec = chart_parsing.parse_chart_file(upload.read(), media_type)
+        chart = chart_parsing.build_chart_from_spec(
+            venue, spec, name=(request.POST.get("name") or "").strip() or None
+        )
+    except chart_parsing.ChartParsingError as exc:
+        messages.error(request, str(exc))
+        return back
+
+    seat_count = Seat.objects.filter(organization=request.organization, section__chart=chart).count()
+    usage_line = chart_parsing.describe_usage(spec.get("usage"))
+    messages.success(
+        request,
+        f"Parsed {chart.sections.count()} section(s) / {seat_count} seat(s) from "
+        f"{upload.name}{f' ({usage_line})' if usage_line else ''}. Review the layout "
+        "below -- the parse is a starting point, so check counts and positions "
+        "before selling against it.",
+    )
+    return redirect("dashboard_chart_editor", chart.pk)
 
 
 class SeatingChartCreateView(ManagerRequiredMixin, CreateView):
@@ -750,7 +1539,7 @@ def _section_color(index):
 _SECTION_PARAM_FIELDS = [
     "origin_x", "origin_y", "rotation", "seat_pitch", "row_pitch", "row_x_offset",
     "arc_radius", "offset_mode", "alt_row_seat_delta", "rows", "seats_per_row",
-    "numbering_scheme", "row_label_scheme", "pivot_mode", "pivot_x", "pivot_y",
+    "numbering_scheme", "row_label_scheme", "row_label_start", "pivot_mode", "pivot_x", "pivot_y",
 ]
 
 
@@ -909,6 +1698,8 @@ def chart_editor_save(request, pk):
                     setattr(section, field, max(-2.0, min(2.0, float(raw[field]))))
                 elif field in ("rows", "seats_per_row"):
                     setattr(section, field, max(1, int(raw[field])))
+                elif field == "row_label_start":
+                    setattr(section, field, max(0, int(raw[field])))
                 else:
                     setattr(section, field, float(raw[field]))
         except (TypeError, ValueError):
@@ -1423,3 +2214,253 @@ def team_remove(request, pk):
     target.delete()
     messages.success(request, f"Removed {email} from the team.")
     return redirect("dashboard_team")
+
+
+# --- audience / CRM (manager+, Phase 4) -------------------------------------
+#
+# The guest list + per-guest detail. Mirrors the donations/passes report
+# shape (search/filter GET params, `?format=csv` export) rather than a plain
+# ListView, since audience_queryset (campaigns.services) already does all the
+# filtering/annotation work -- this view is a thin GET-param-to-kwargs
+# translation over it, same division of labor as donations_report/pass_report
+# over their own OrderItem querysets.
+
+
+@manager_required
+def audience_list(request):
+    organization = request.organization
+    search = request.GET.get("search", "").strip()
+    tag = request.GET.get("tag", "").strip()
+    # opt_in is a tri-state GET param ("" = everyone, "1" = opted in, "0" =
+    # opted out) -- translated to audience_queryset's True/False/None kwarg.
+    opt_in_param = request.GET.get("opt_in", "").strip()
+    opt_in = {"1": True, "0": False}.get(opt_in_param)
+
+    guests = audience_queryset(organization, search=search, opt_in=opt_in, tag=tag)
+
+    if request.GET.get("format") == "csv":
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="audience.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Email", "Name", "Opted in", "Orders", "Lifetime value", "Tags"])
+        for guest in guests:
+            writer.writerow(
+                [
+                    guest.email,
+                    guest.name,
+                    "yes" if guest.marketing_opt_in else "no",
+                    guest.order_count,
+                    guest.ltv or Decimal("0.00"),
+                    guest.tags,
+                ]
+            )
+        return response
+
+    return render(
+        request,
+        "dashboard/audience_list.html",
+        {"guests": guests, "search": search, "tag": tag, "opt_in": opt_in_param},
+    )
+
+
+@manager_required
+def audience_detail(request, pk):
+    """One guest's CRM record: order/pass history (read-only) plus the
+    editable tags/notes form. Consent itself is never editable here -- see
+    GuestTagsNotesForm's docstring -- only the guest's own portal toggle or
+    the unsubscribe link can change marketing_opt_in."""
+    organization = request.organization
+    guest = get_object_or_404(GuestAccount.objects.for_organization(organization), pk=pk)
+
+    if request.method == "POST":
+        form = GuestTagsNotesForm(request.POST, instance=guest)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Saved.")
+            return redirect("dashboard_audience_detail", pk=guest.pk)
+    else:
+        form = GuestTagsNotesForm(instance=guest)
+
+    # Same order-history query shape as guests.views.guest_portal's own "My
+    # tickets" list -- this is the staff-facing mirror of that self-service
+    # view, over the same rows.
+    orders = (
+        Order.objects.for_organization(organization)
+        .filter(guest=guest)
+        .select_related("performance", "performance__event", "performance__venue")
+        .prefetch_related("tickets")
+        .order_by("-created_at")
+    )
+    order_rows = [{"order": order, "ticket_count": order.tickets.count()} for order in orders]
+
+    pass_rows = list(
+        PassPurchase.objects.filter(organization=organization, guest=guest)
+        .select_related("product")
+        .order_by("-created_at")
+    )
+
+    return render(
+        request,
+        "dashboard/audience_detail.html",
+        {"guest": guest, "form": form, "order_rows": order_rows, "pass_rows": pass_rows},
+    )
+
+
+# --- email campaigns (manager+, Phase 4) ------------------------------------
+#
+# Mirrors the pass-product CRUD shape (flat list/create/edit CBVs) with one
+# difference: a campaign is only editable while DRAFT (EmailCampaignUpdateView's
+# get_queryset), since triggering it (start_campaign) fixes its content as
+# sent history -- there's no is_active toggle here, a campaign's STATUS
+# lifecycle (draft -> sending -> sent/cancelled) already gates everything.
+
+
+class EmailCampaignListView(ManagerRequiredMixin, ListView):
+    template_name = "dashboard/campaign_list.html"
+    context_object_name = "campaigns"
+
+    def get_queryset(self):
+        return EmailCampaign.objects.filter(organization=self.request.organization).order_by(
+            "-created_at"
+        )
+
+
+class EmailCampaignCreateView(ManagerRequiredMixin, CreateView):
+    model = EmailCampaign
+    form_class = EmailCampaignForm
+    template_name = "dashboard/campaign_form.html"
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        form.instance.organization = self.request.organization
+        form.instance.created_by = self.request.user
+        messages.success(self.request, f"Created “{form.instance.name}”.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_campaign_detail", args=[self.object.pk])
+
+
+class EmailCampaignUpdateView(ManagerRequiredMixin, UpdateView):
+    form_class = EmailCampaignForm
+    template_name = "dashboard/campaign_form.html"
+
+    def get_queryset(self):
+        # Draft-only editable: once a campaign has been triggered
+        # (start_campaign flips it SENDING) its content is fixed send
+        # history, mirrored by CampaignForm's own "only DRAFT" gate server-
+        # side -- a pk for a non-draft campaign 404s here rather than
+        # silently allowing an edit that can no longer affect what was sent.
+        return EmailCampaign.objects.filter(
+            organization=self.request.organization, status=EmailCampaign.Status.DRAFT
+        )
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["organization"] = self.request.organization
+        return kwargs
+
+    def form_valid(self, form):
+        messages.success(self.request, f"Updated “{form.instance.name}”.")
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse("dashboard_campaign_detail", args=[self.object.pk])
+
+
+@manager_required
+def campaign_detail(request, pk):
+    """Campaign summary: sent/failed/skipped/pending counts over its
+    CampaignSend rows, plus the failed list (what a manager needs to
+    investigate a bad send) and, while still DRAFT, a live recipient-count
+    preview for the send-confirmation control (campaign_send's template)."""
+    campaign = get_object_or_404(
+        EmailCampaign.objects.filter(organization=request.organization), pk=pk
+    )
+    counts = campaign.sends.aggregate(
+        sent=Count("id", filter=Q(status=CampaignSend.Status.SENT)),
+        failed=Count("id", filter=Q(status=CampaignSend.Status.FAILED)),
+        skipped=Count("id", filter=Q(status=CampaignSend.Status.SKIPPED)),
+        pending=Count(
+            "id",
+            filter=Q(status__in=[CampaignSend.Status.PENDING, CampaignSend.Status.SENDING]),
+        ),
+    )
+    failed_sends = list(
+        campaign.sends.filter(status=CampaignSend.Status.FAILED)
+        .select_related("guest")
+        .order_by("-created_at")[:200]
+    )
+    recipient_preview = None
+    if campaign.status == EmailCampaign.Status.DRAFT:
+        recipient_preview = segment_recipient_count(campaign)
+
+    return render(
+        request,
+        "dashboard/campaign_detail.html",
+        {
+            "campaign": campaign,
+            "counts": counts,
+            "failed_sends": failed_sends,
+            "recipient_preview": recipient_preview,
+        },
+    )
+
+
+@manager_required
+def campaign_preview(request, pk):
+    """Live recipient-count endpoint the composer's fetch() hits (see
+    campaign_form.html) -- the exact same segment_recipient_count the send
+    confirmation and the eventual fan-out use, so the number shown while
+    composing never disagrees with what start_campaign actually queues."""
+    campaign = get_object_or_404(
+        EmailCampaign.objects.filter(organization=request.organization), pk=pk
+    )
+    return JsonResponse({"count": segment_recipient_count(campaign)})
+
+
+@manager_required
+@require_POST
+def campaign_test(request, pk):
+    """Send a one-off preview of the campaign to the acting staffer's own
+    email (send_test_campaign_email) -- no CampaignSend rows, no status
+    change; see that function's docstring."""
+    campaign = get_object_or_404(
+        EmailCampaign.objects.filter(organization=request.organization), pk=pk
+    )
+    if not request.user.email:
+        messages.error(request, "Your account has no email address to send a test to.")
+        return redirect("dashboard_campaign_detail", pk=campaign.pk)
+    try:
+        send_test_campaign_email(campaign, request.user.email)
+    except Exception:  # delivery/transport failure -- don't 500 the dashboard
+        messages.error(request, "Couldn't send the test email just now. Please try again.")
+    else:
+        messages.success(request, f"Sent a test email to {request.user.email}.")
+    return redirect("dashboard_campaign_detail", pk=campaign.pk)
+
+
+@manager_required
+@require_POST
+def campaign_send(request, pk):
+    """Trigger the campaign (campaigns.services.start_campaign): materializes
+    its segment into PENDING CampaignSend rows and flips DRAFT -> SENDING for
+    the cron batch sender to work through. CampaignStateError (already
+    sending/sent/cancelled -- e.g. a double-click) is caught and flashed
+    rather than 500ing; the confirm step lives in the template (a JS confirm()
+    naming the live recipient count from campaign_detail's preview) since the
+    actual trigger here is a single idempotent-enough POST."""
+    campaign = get_object_or_404(
+        EmailCampaign.objects.filter(organization=request.organization), pk=pk
+    )
+    try:
+        count = start_campaign(campaign)
+    except CampaignStateError as exc:
+        messages.error(request, str(exc))
+        return redirect("dashboard_campaign_detail", pk=campaign.pk)
+    messages.success(request, f"Queued {count} recipient{'s' if count != 1 else ''}.")
+    return redirect("dashboard_campaign_detail", pk=campaign.pk)

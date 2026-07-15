@@ -1,6 +1,15 @@
 {% with url_name=request.resolver_match.url_name %}
 <nav class="dash-nav" aria-label="Dashboard section">
-    <a href="{% url 'dashboard_overview' %}" class="{% if url_name == 'dashboard_overview' %}is-active{% endif %}">Overview</a>
+    {# Venue wordmark. Links to the dashboard home for box office+; plain text for scanners, who land on Scan. #}
+    {% if request.membership.can_sell_tickets %}
+        <a href="{% url 'dashboard_overview' %}" class="dash-nav__brand">{% if organization.logo %}<img src="{{ organization.logo.url }}" alt="" class="dash-nav__logo">{% endif %}{{ organization.name }}</a>
+    {% else %}
+        <span class="dash-nav__brand">{% if organization.logo %}<img src="{{ organization.logo.url }}" alt="" class="dash-nav__logo">{% endif %}{{ organization.name }}</span>
+    {% endif %}
+    {% if request.membership.can_sell_tickets %}
+        {# Overview starts at box office and up -- scanners land on Scan, no reports. #}
+        <a href="{% url 'dashboard_overview' %}" class="{% if url_name == 'dashboard_overview' or url_name == 'dashboard_performance_detail' %}is-active{% endif %}">Overview</a>
+    {% endif %}
     {% if request.membership.can_manage_events %}
         <a href="{% url 'dashboard_event_list' %}"
            class="{% if url_name == 'dashboard_event_list' or url_name == 'dashboard_event_create' or url_name == 'dashboard_event_detail' or url_name == 'dashboard_event_update' or url_name == 'dashboard_performance_create' or url_name == 'dashboard_performance_update' or url_name == 'dashboard_performance_price_tiers' or url_name == 'dashboard_performance_pricing_zones' %}is-active{% endif %}">Events</a>
@@ -8,6 +17,22 @@
     {% if request.membership.can_manage_events %}
         <a href="{% url 'dashboard_venue_list' %}"
            class="{% if url_name == 'dashboard_venue_list' or url_name == 'dashboard_chart_list' or url_name == 'dashboard_chart_create' or url_name == 'dashboard_chart_detail' or url_name == 'dashboard_chart_update' or url_name == 'dashboard_section_create' or url_name == 'dashboard_section_update' or url_name == 'dashboard_chart_editor' %}is-active{% endif %}">Seating</a>
+    {% endif %}
+    {% if request.membership.can_manage_events %}
+        <a href="{% url 'dashboard_promo_list' %}"
+           class="{% if url_name == 'dashboard_promo_list' or url_name == 'dashboard_promo_create' or url_name == 'dashboard_promo_update' %}is-active{% endif %}">Promos</a>
+    {% endif %}
+    {% if request.membership.can_manage_events %}
+        <a href="{% url 'dashboard_donation_report' %}"
+           class="{% if url_name == 'dashboard_donation_report' or url_name == 'dashboard_donation_settings' %}is-active{% endif %}">Donations</a>
+    {% endif %}
+    {% if request.membership.can_manage_events %}
+        <a href="{% url 'dashboard_pass_list' %}"
+           class="{% if url_name == 'dashboard_pass_list' or url_name == 'dashboard_pass_create' or url_name == 'dashboard_pass_update' or url_name == 'dashboard_pass_report' %}is-active{% endif %}">Passes</a>
+    {% endif %}
+    {% if request.membership.can_manage_events %}
+        <a href="{% url 'dashboard_audience_list' %}"
+           class="{% if url_name == 'dashboard_audience_list' or url_name == 'dashboard_audience_detail' or url_name == 'dashboard_campaign_list' or url_name == 'dashboard_campaign_create' or url_name == 'dashboard_campaign_update' or url_name == 'dashboard_campaign_detail' %}is-active{% endif %}">Audience</a>
     {% endif %}
     {% if request.membership.can_sell_tickets %}
         <a href="{% url 'dashboard_order_list' %}"
@@ -20,7 +45,13 @@
         <a href="{% url 'dashboard_team' %}"
            class="{% if url_name == 'dashboard_team' %}is-active{% endif %}">Team</a>
     {% endif %}
-    <a href="{% url 'home' %}" class="dash-nav__storefront">View storefront</a>
+    {# Help is ungated -- every staff role, incl. scanners (house rules / door FAQ matter most at the door). #}
+    <a href="{% url 'dashboard_help' %}"
+       class="{% if url_name == 'dashboard_help' or url_name == 'dashboard_help_manage' or url_name == 'dashboard_help_create' or url_name == 'dashboard_help_update' %}is-active{% endif %}">Help</a>
+    {% if request.membership.can_sell_tickets %}
+        {# Storefront preview starts at box office -- scanners work the door only. #}
+        <a href="{% url 'home' %}" class="dash-nav__storefront">View storefront</a>
+    {% endif %}
     <span class="muted dash-nav__whoami">{{ request.user.email }} · {{ request.membership.get_role_display }}</span>
     <form method="post" action="{% url 'logout' %}" class="dash-nav__logout">
         {% csrf_token %}

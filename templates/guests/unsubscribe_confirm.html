@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}{% if invalid %}Unsubscribe link{% else %}Email preferences{% endif %} — {{ organization.name }}{% endblock %}
+
+{% block content %}
+    <a class="back-link" href="{% url 'home' %}">&larr; Back to {{ organization.name }}</a>
+
+    {% if invalid %}
+        <h1>That link isn't valid</h1>
+        <p class="muted">
+            This unsubscribe link is invalid or has expired. If you'd like to
+            update your email preferences, sign in to
+            <a href="{% url 'guest_portal' %}">your account</a> instead.
+        </p>
+    {% elif resubscribed %}
+        <h1>You're subscribed again</h1>
+        <p class="muted">
+            {{ guest.email }} will hear from {{ organization.name }} about
+            upcoming shows and events.
+        </p>
+        <p><a class="button" href="{% url 'guest_portal' %}">Go to my account</a></p>
+    {% else %}
+        <h1>You've been unsubscribed</h1>
+        <p class="muted">
+            {{ guest.email }} won't receive any more marketing emails from
+            {{ organization.name }}. You'll still get order/ticket receipts
+            for anything you buy.
+        </p>
+        <form method="post" action="{% url 'guest_unsubscribe' %}">
+            {% csrf_token %}
+            <input type="hidden" name="token" value="{{ token }}">
+            <input type="hidden" name="action" value="resubscribe">
+            <button type="submit" class="button button--secondary">Resubscribe</button>
+        </form>
+    {% endif %}
+{% endblock %}

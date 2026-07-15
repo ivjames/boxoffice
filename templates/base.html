@@ -1,4 +1,4 @@
-{% load static %}<!DOCTYPE html>
+{% load static pass_tags %}<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -9,6 +9,7 @@
          the page use the full screen under the notch. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}</title>
+    <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
     <style>
         :root {
@@ -51,6 +52,13 @@
                 {% if organization %}
                     <a href="{% url 'home' %}" class="site-nav__link{% if request.resolver_match.url_name == 'home' %} is-active{% endif %}">Events</a>
                     <a href="{% url 'guest_portal' %}" class="site-nav__link{% if request.resolver_match.url_name == 'guest_portal' %} is-active{% endif %}">My tickets</a>
+                    <a href="{% url 'faq' %}" class="site-nav__link{% if request.resolver_match.url_name == 'faq' %} is-active{% endif %}">Help</a>
+                    {% if donations_enabled %}
+                        <a href="{% url 'donate' %}" class="site-nav__link{% if request.resolver_match.url_name == 'donate' %} is-active{% endif %}">Donate</a>
+                    {% endif %}
+                    {% if passes_enabled %}
+                        <a href="{% url 'passes' %}" class="site-nav__link{% if request.resolver_match.url_name == 'passes' or request.resolver_match.url_name == 'pass_detail' %} is-active{% endif %}">Passes</a>
+                    {% endif %}
                     <a href="{% url 'cart' %}" class="site-nav__link site-nav__cart{% if request.resolver_match.url_name == 'cart' %} is-active{% endif %}">
                         Cart
                         {% if cart_count %}<span class="site-nav__badge">{{ cart_count }}</span>{% endif %}
@@ -89,6 +97,18 @@
     {% endblock %}
 
     <main class="site-main" id="main-content">
+        {% if redeeming_pass %}
+            <div class="redeem-banner" role="status">
+                <span>
+                    Redeeming with {{ redeeming_pass.product.name|default:"your pass" }} —
+                    {% pass_remaining_label redeeming_pass %}
+                </span>
+                <form method="post" action="{% url 'pass_redeem_exit' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="button button--secondary button--sm">Exit redeem mode</button>
+                </form>
+            </div>
+        {% endif %}
         {% if messages %}
             <ul class="messages">
                 {% for message in messages %}
@@ -110,6 +130,7 @@
             </span>
             <nav class="site-footer__nav">
                 <a href="{% url 'home' %}">Home</a>
+                {% if organization %}<a href="{% url 'faq' %}">Help &amp; FAQ</a>{% endif %}
                 {% if show_admin_link and not organization %}<a href="/admin/">Admin</a>{% endif %}
             </nav>
         </div>

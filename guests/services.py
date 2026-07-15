@@ -15,6 +15,7 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.urls import reverse
+from django.utils import timezone
 
 from .models import GuestAccount
 from .tokens import make_login_token
@@ -126,3 +127,71 @@ def send_login_link(guest, request):
     )
     email.attach_alternative(html_body, "text/html")
     email.send(fail_silently=False)
+
+
+# --- Marketing consent ----------------------------------------------------
+#
+# Consent for the campaigns app (see campaigns/) lives on GuestAccount as
+# marketing_opt_in + marketing_opt_in_at. There are exactly two ways it can be
+# SET, and both funnel through here so the "never silently opt someone back
+# out" rule is enforced in one place rather than re-implemented at each call
+# site (checkout fulfillment, the portal toggle, the unsubscribe view):
+#
+#   record_marketing_opt_in -- one-way OPT-IN only (checkout tickbox). It can
+#       turn consent on but can NEVER turn it off.
+#   set_marketing_opt_in    -- the two-way setter for the deliberate controls
+#       (the portal preference toggle, the one-click unsubscribe link).
+
+
+def record_marketing_opt_in(guest):
+    """Idempotently opt `guest` in to marketing, stamping marketing_opt_in_at
+    with the moment consent was first given.
+
+    ONE-WAY on purpose. This is the CHECKOUT path (payments.services.fulfill_*
+    calls it when the buyer ticked the opt-in box), and a purchase can only ever
+    ADD consent, never remove it: if the box is left UN-ticked on a later
+    purchase we must NOT call this at all (the caller guards on the flag), and
+    even if we did, this only writes when marketing_opt_in is currently False --
+    so an already-subscribed guest who buys again without re-ticking is never
+    silently opted back OUT. Flipping consent off is exclusively the job of the
+    portal toggle / unsubscribe link via set_marketing_opt_in below.
+
+    No-op on a None guest (a Stripe session may carry no email, so fulfillment
+    can hand us guest=None -- see GuestAccountManager.get_or_create_for_email).
+    Writes only the two consent columns, so it never races an unrelated
+    concurrent update to name/tags/notes."""
+    if guest is None:
+        return
+    if guest.marketing_opt_in:
+        return
+    guest.marketing_opt_in = True
+    guest.marketing_opt_in_at = timezone.now()
+    guest.save(update_fields=["marketing_opt_in", "marketing_opt_in_at"])
+
+
+def set_marketing_opt_in(guest, opted_in):
+    """Two-way consent setter for the DELIBERATE controls -- the guest portal's
+    marketing preference toggle and the one-click unsubscribe link.
+
+    True  -> opt in, stamping marketing_opt_in_at ONLY if newly turning on
+             (so re-affirming an existing subscription doesn't reset the
+             "first consented" timestamp -- same idempotence as
+             record_marketing_opt_in).
+    False -> opt out, but RETAIN marketing_opt_in_at as an audit record of when
+             they had been subscribed (we clear the bool, not the history).
+
+    No-op on a None guest. Only the changed columns are written."""
+    if guest is None:
+        return
+    if opted_in:
+        if guest.marketing_opt_in:
+            return
+        guest.marketing_opt_in = True
+        guest.marketing_opt_in_at = timezone.now()
+        guest.save(update_fields=["marketing_opt_in", "marketing_opt_in_at"])
+    else:
+        if not guest.marketing_opt_in:
+            return
+        guest.marketing_opt_in = False
+        # marketing_opt_in_at intentionally left standing (audit trail).
+        guest.save(update_fields=["marketing_opt_in"])

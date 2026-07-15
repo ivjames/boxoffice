@@ -6,6 +6,7 @@ dev.py / prod.py, which both `from .base import *` and then adjust.
 from pathlib import Path
 
 import environ
+from django.templatetags.static import static
 
 # BASE_DIR = repo root (config/settings/base.py -> config/settings -> config -> repo root)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -36,6 +37,9 @@ def harden_sqlite(databases):
     return databases
 
 INSTALLED_APPS = [
+    "unfold",  # must precede django.contrib.admin (template overrides)
+    "unfold.contrib.forms",
+    "unfold.contrib.filters",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -47,10 +51,15 @@ INSTALLED_APPS = [
     "guests",
     "venues",
     "events",
+    "promotions",
+    "donations",
+    "passes",
+    "campaigns",
     "orders",
     "payments",
     "dashboard",
     "scanning",
+    "helpcenter",
 ]
 
 MIDDLEWARE = [
@@ -95,6 +104,14 @@ TEMPLATES = [
                 "guests.context_processors.guest_account",
                 # Exposes the session's live cart item count as `cart_count`.
                 "orders.context_processors.cart_count",
+                # Exposes whether donations are switched on for this tenant as
+                # `donations_enabled` (nav link, cart add-on gating).
+                "donations.context_processors.donation_nav",
+                # Exposes whether passes are switched on for this tenant as
+                # `passes_enabled` (nav link), and the session's in-progress
+                # redemption as `redeeming_pass` (redeem-mode banner, cart/
+                # checkout "Redeem with pass" gating).
+                "passes.context_processors.pass_nav",
                 # Exposes settings.ENABLE_TEST_CHECKOUT as `test_checkout_enabled`.
                 "payments.context_processors.test_checkout_enabled",
                 # Exposes the resolved deploy stamp as `app_version` (footer).
@@ -160,6 +177,37 @@ RESERVED_SUBDOMAINS = set(
 # this suffix off the Host header to find the subdomain.
 BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
 
+# --- Stripe Connect (platform account) -----------------------------------
+# boxo.show is the platform Stripe account; each theater is a connected
+# (Express) account onboarded through it. Unlike the old bring-your-own-key
+# model, these are PLATFORM-wide credentials set once here (via env), not
+# per-tenant rows: the one secret key authenticates every call (with
+# `stripe_account=<acct_id>` selecting the theater for a direct charge), and
+# the one webhook secret verifies the single Connect endpoint that receives
+# every theater's events. See payments/services.py + payments/views.py.
+STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
+STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
+STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
+
+# Platform take rate applied to each order as a Stripe application fee on the
+# direct charge (payments.services.application_fee_amount): PLATFORM_FEE_PERCENT
+# percent of the order total plus PLATFORM_FEE_FIXED_CENTS flat. BOTH DEFAULT
+# TO 0 -- i.e. no cut -- which is deliberate: the fee MECHANISM ships now, but
+# the actual rate is set later, per the launch plan. A per-theater override
+# lives on Organization.platform_fee_percent. With a 0 rate no application fee
+# is sent at all (Stripe rejects an explicit fee of 0).
+PLATFORM_FEE_PERCENT = env.int("PLATFORM_FEE_PERCENT", default=0)
+PLATFORM_FEE_FIXED_CENTS = env.int("PLATFORM_FEE_FIXED_CENTS", default=0)
+
+# --- Campaign email sender (Phase 4) -------------------------------------
+# Max CampaignSend rows the cron batch sender
+# (campaigns.management.commands.send_campaign_emails) drains per run. Caps how
+# many SMTP round-trips one tick makes so a large blast paces out across ticks
+# rather than blocking a single run -- the same one-thing-per-tick discipline
+# the Hold sweeper / tenant provisioner use. Tune up on a fast transactional
+# provider, down on a rate-limited SMTP relay.
+CAMPAIGN_BATCH_SIZE = env.int("CAMPAIGN_BATCH_SIZE", default=50)
+
 # --- TEST CHECKOUT (env-gated fake-payment path) -------------------------
 # When True, orders/views.py's checkout_test view (and the "Pay (TEST -- no
 # real charge)" button it powers, see templates/orders/checkout.html +
@@ -177,9 +225,55 @@ BASE_DOMAIN = env("BASE_DOMAIN", default="localhost")
 # warning next to ENABLE_TEST_CHECKOUT.
 ENABLE_TEST_CHECKOUT = env.bool("ENABLE_TEST_CHECKOUT", default=False)
 
+# --- Login throttling ----------------------------------------------------
+# Cache-backed rate limit on the staff login and the guest magic-link request
+# (accounts/throttle.py), to blunt password-guessing and email-bombing. After
+# LOGIN_RATELIMIT_MAX_ATTEMPTS failures from one IP within
+# LOGIN_RATELIMIT_WINDOW_SECONDS, further attempts are refused until the
+# window rolls off. Effectiveness depends on a SHARED cache across gunicorn
+# workers -- prod configures a file-based cache in the app dir for exactly
+# this reason (dev/test use the default per-process LocMemCache, which is
+# fine there). Set MAX_ATTEMPTS to 0 to disable entirely.
+LOGIN_RATELIMIT_MAX_ATTEMPTS = env.int("LOGIN_RATELIMIT_MAX_ATTEMPTS", default=10)
+LOGIN_RATELIMIT_WINDOW_SECONDS = env.int("LOGIN_RATELIMIT_WINDOW_SECONDS", default=900)
+
+# Where the landing page's contact-form notification email goes (the form
+# stores every inquiry in the DB regardless -- this is the heads-up copy,
+# sent only once email delivery is configured; see tenants/emails.py and
+# DEPLOY.md "Mail"). The address is intentionally NOT published anywhere on
+# the site -- the form replaced the old mailto: links.
+PLATFORM_CONTACT_EMAIL = env("PLATFORM_CONTACT_EMAIL", default="hello@boxo.show")
+
 # Surface a convenience "Admin" link (-> /admin/) in the platform-host nav and
 # footer. Default False: the public marketing landing page (prod) deliberately
 # does not advertise the superuser surface. The staging/beta deploy sets
 # SHOW_ADMIN_LINK=true so operators can reach the admin from its landing page.
 # /admin/ itself is always reachable directly regardless of this flag.
 SHOW_ADMIN_LINK = env.bool("SHOW_ADMIN_LINK", default=False)
+
+# --- AI SEATING-CHART PARSING (venues/chart_parsing.py) --------------------
+# The dashboard's "Import from image/PDF" flow and the parse_seating_chart
+# management command send the uploaded chart to the Claude API (vision) and
+# build a parametric SeatingChart from the result. Both fail with a clear
+# "not configured" error when no API key is available -- every other part of
+# the app works without one. When ANTHROPIC_API_KEY is unset here, the
+# anthropic SDK's own environment resolution is the fallback.
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+CHART_PARSING_MODEL = env("CHART_PARSING_MODEL", default="claude-opus-4-8")
+
+# --- django-unfold (admin reskin) -----------------------------------------
+# Branding for the /admin/ skin. The functional site_header/site_title
+# strings in config/urls.py remain the fallback for anything unfold doesn't
+# cover.
+UNFOLD = {
+    "SITE_TITLE": "Boxo.show admin",
+    "SITE_HEADER": "Boxo.show",
+    "SITE_SUBHEADER": "Platform administration",
+    # Denser change forms: label sits beside the input instead of above it.
+    "COMPRESSED_FIELDS": True,
+    # Density overrides for tables/sidebar (admin-only stylesheet — resolved
+    # lazily per request so the WhiteNoise manifest hash is picked up).
+    "STYLES": [
+        lambda request: static("css/admin-density.css"),
+    ],
+}

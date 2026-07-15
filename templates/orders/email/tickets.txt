@@ -11,5 +11,8 @@ Tickets in this order:
 - Ticket {{ forloop.counter }}{% if row.ticket.seat %} — {{ row.ticket.seat.section.name }} {{ row.ticket.seat.row_label }}{{ row.ticket.seat.number }}{% endif %} ({{ row.ticket.token }})
 {% endfor %}
 Show the QR code on the tickets page (or this email, if your client displays images) at the door.
-
+{% if donation_item %}
+Plus a donation: ${{ donation_item.unit_amount }}
+{% if donation_item.donation_campaign.acknowledgment %}{{ donation_item.donation_campaign.acknowledgment }}
+{% endif %}{% endif %}
 Thank you for your order — {{ organization.name }}

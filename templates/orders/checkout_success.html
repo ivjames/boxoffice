@@ -13,15 +13,23 @@
     <h1>Thanks!</h1>
 
     {% if order %}
-        <p>
-            Your payment went through and your tickets for
-            <strong>{{ order.performance.event.title }}</strong> are ready.
-        </p>
-        <p>
-            {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ·
-            {{ order.performance.venue.name }}
-        </p>
-        <p><a class="button" href="{% url 'ticket_detail' order.token %}">View your tickets</a></p>
+        {% if order.performance %}
+            <p>
+                Your payment went through and your tickets for
+                <strong>{{ order.performance.event.title }}</strong> are ready.
+            </p>
+            <p>
+                {% showtime order.performance.starts_at order.performance.venue.timezone "D, M j Y — g:i A" %} ·
+                {{ order.performance.venue.name }}
+            </p>
+            <p><a class="button" href="{% url 'ticket_detail' order.token %}">View your tickets</a></p>
+        {% else %}
+            <p>Thank you for your donation!</p>
+            {% if donation_item.donation_campaign.acknowledgment %}
+                <p class="muted">{{ donation_item.donation_campaign.acknowledgment|linebreaksbr }}</p>
+            {% endif %}
+            <p><a class="button" href="{% url 'ticket_detail' order.token %}">View your receipt</a></p>
+        {% endif %}
         <p class="muted">A confirmation email was also sent to {{ order.buyer_email }}.</p>
     {% else %}
         <div class="empty-state">

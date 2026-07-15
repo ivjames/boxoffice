@@ -1,0 +1,38 @@
+name: CI
+
+# Runs the test suite on pushes to and PRs against staging (the beta-first
+# integration branch -- see CLAUDE.md / DEPLOY.md) and main. There is no
+# reviewer gate in this repo, so this is the safety net before a change ships
+# to beta.boxo.show.
+on:
+  push:
+    branches: [staging, main]
+  pull_request:
+    branches: [staging, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Collect static (WhiteNoise manifest)
+        # STORAGES uses the manifest storage even for tests, so static lookups
+        # raise "Missing staticfiles manifest entry" without this -- see
+        # CLAUDE.md "Verifying".
+        run: python manage.py collectstatic --noinput
+
+      - name: Run tests
+        # Dev settings (SQLite, zero external services) -- pytest.ini already
+        # points DJANGO_SETTINGS_MODULE at config.settings.dev. The
+        # multiprocess-concurrency tests run too; they're part of a normal run.
+        run: python -m pytest -q

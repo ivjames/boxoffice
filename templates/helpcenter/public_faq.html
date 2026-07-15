@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Help & FAQ — {{ organization.name }}{% endblock %}
+
+{% block content %}
+<div class="page-narrow help-page">
+    <h1>Help &amp; FAQ</h1>
+    <p class="muted help-intro">Answers about tickets, venue rules and visiting {{ organization.name }}.</p>
+
+    {% for group in groups %}
+        <section class="help-group">
+            <h2 class="help-group__heading">{{ group.label }}</h2>
+            {% for article in group.articles %}
+                {% include "helpcenter/_article.html" with article=article show_visibility=False can_manage=False %}
+            {% endfor %}
+        </section>
+    {% empty %}
+        <p class="muted">No help articles are available yet.</p>
+    {% endfor %}
+
+    <p class="help-contact muted">
+        Still need help? Contact the box office at
+        <a href="mailto:{{ organization.contact_email }}">{{ organization.contact_email }}</a>.
+    </p>
+</div>
+{% endblock %}

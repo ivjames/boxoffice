@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Passes — {{ organization.name }}{% endblock %}
+
+{% block content %}
+<a class="back-link" href="{% url 'home' %}">&larr; Continue browsing</a>
+<h1>Season & flex passes</h1>
+
+{% if products %}
+    <div class="pass-list">
+        {% for product in products %}
+            <div class="pass-card">
+                <h2>{{ product.name }}</h2>
+                <p class="muted">
+                    {% if product.kind == 'season' %}
+                        See every show once
+                    {% else %}
+                        {{ product.credit_count }} credit{{ product.credit_count|pluralize }} — use them on any covered show
+                    {% endif %}
+                </p>
+                <p><strong>${{ product.price }}</strong></p>
+                {% if product.valid_from or product.valid_until %}
+                    <p class="muted">
+                        Valid {{ product.valid_from|date:"M j Y"|default:"now" }} &ndash; {{ product.valid_until|date:"M j Y"|default:"…" }}
+                    </p>
+                {% endif %}
+                <a class="button" href="{% url 'pass_detail' product.pk %}">Buy</a>
+            </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <div class="empty-state">
+        <p>No passes are available right now.</p>
+    </div>
+{% endif %}
+{% endblock %}

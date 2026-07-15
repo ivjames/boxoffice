@@ -4,9 +4,12 @@ from types import SimpleNamespace
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
+from django.core import mail
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.management import CommandError, call_command
 from django.template import Context, Template
@@ -17,7 +20,7 @@ from django.utils import timezone
 from events.models import Event, GAAllocation, Performance, PriceTier
 from events.timezones import in_venue_tz
 from tenants.admin import OrganizationAdmin, OrganizationAdminForm
-from tenants.models import Organization
+from tenants.models import ContactInquiry, Organization
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
 
@@ -30,30 +33,17 @@ def _completed(returncode=0, stdout="", stderr=""):
 
 
 class OrganizationAdminFormTests(TestCase):
-    """The admin form gives Organization sensible widgets: write-only Stripe
-    secrets, native color pickers, and validated dropdowns for timezone and
-    currency. The change form also carries a per-object provision button."""
+    """The admin form gives Organization sensible widgets: read-only Stripe
+    Connect status (account id + capability flags, set by onboarding/webhook,
+    not hand-edited), native color pickers, and validated dropdowns for
+    timezone and currency. The change form also carries a per-object provision
+    button."""
 
     def setUp(self):
         self.admin_user = get_user_model().objects.create_superuser(
             email="admin@boxo.show", password="pw"
         )
         self.client.force_login(self.admin_user)
-
-    # --- write-only secret handling (form-level) ---
-
-    def test_blank_secret_keeps_the_current_value(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
-        form = OrganizationAdminForm(instance=org)
-        form.cleaned_data = {"stripe_secret_key": ""}
-        # A blank submit must not wipe the live key.
-        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_EXISTING")
-
-    def test_new_secret_overwrites(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_EXISTING")
-        form = OrganizationAdminForm(instance=org)
-        form.cleaned_data = {"stripe_secret_key": "sk_live_NEW"}
-        self.assertEqual(form.clean_stripe_secret_key(), "sk_live_NEW")
 
     # --- server-side validation of timezone/currency (not just a dropdown) ---
 
@@ -74,12 +64,20 @@ class OrganizationAdminFormTests(TestCase):
     def _change_url(self, org):
         return reverse("admin:tenants_organization_change", args=[org.pk])
 
-    def test_stored_secret_never_reaches_the_html(self):
-        org = make_org("roxy", stripe_secret_key="sk_live_TOPSECRET")
+    def test_connect_status_is_shown_read_only(self):
+        """The connected-account id and capability flags are driven by the
+        onboarding flow + account.updated webhook, so the admin surfaces them
+        read-only rather than as editable inputs a superuser could desync from
+        Stripe's real state."""
+        org = make_org("roxy")
+        org.stripe_account_id = "acct_readonly_check"
+        org.save(update_fields=["stripe_account_id"])
         resp = self.client.get(self._change_url(org))
-        self.assertNotContains(resp, "sk_live_TOPSECRET")
-        # Rendered as a password input, not a plain text field.
-        self.assertContains(resp, 'type="password"')
+        self.assertContains(resp, "Stripe Connect")
+        self.assertContains(resp, "acct_readonly_check")
+        # Read-only field: value is displayed, but there's no editable input
+        # named stripe_account_id to post a hand-typed acct_… through.
+        self.assertNotContains(resp, 'name="stripe_account_id"')
 
     def test_widgets_are_pickers_and_dropdowns(self):
         org = make_org("roxy")
@@ -648,3 +646,177 @@ class ShowtimeRenderingTests(TestCase):
         )
         rendered = tmpl.render(Context({"dt": self.DT}))
         self.assertEqual(rendered, "Thu, Jan 14 2027 — 9:00 PM")
+
+
+class SeoRoutesTests(TestCase):
+    """robots.txt, sitemap.xml, and favicon (BO-10). The sitemap must be
+    tenant-scoped: a tenant host lists only its own published upcoming events,
+    and the platform host lists no tenant catalog at all."""
+
+    def setUp(self):
+        self.org = make_org("roxy")
+        self.venue = Venue.objects.create(organization=self.org, name="Main")
+        self.event = Event.objects.create(
+            organization=self.org, title="Hamlet", slug="hamlet", status=Event.Status.PUBLISHED
+        )
+        Performance.objects.create(
+            organization=self.org, event=self.event, venue=self.venue,
+            starts_at=timezone.now() + timezone.timedelta(days=5),
+            seating_mode=Performance.SeatingMode.GA, status=Performance.Status.PUBLISHED,
+        )
+
+    def test_robots_txt_disallows_staff_paths_and_links_sitemap(self):
+        resp = self.client.get("/robots.txt", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "text/plain")
+        body = resp.content.decode()
+        self.assertIn("Disallow: /dashboard/", body)
+        self.assertIn("Disallow: /scan/", body)
+        self.assertIn("Sitemap: http://roxy.localhost/sitemap.xml", body)
+
+    def test_sitemap_lists_published_event_on_tenant_host(self):
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/xml", resp["Content-Type"])
+        body = resp.content.decode()
+        self.assertIn("http://roxy.localhost/events/hamlet/", body)
+        self.assertIn("http://roxy.localhost/faq/", body)
+
+    def test_sitemap_hides_draft_event(self):
+        self.event.status = Event.Status.DRAFT
+        self.event.save(update_fields=["status"])
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="roxy.localhost")
+        self.assertNotIn("hamlet", resp.content.decode())
+
+    def test_platform_host_sitemap_leaks_no_tenant_catalog(self):
+        # No tenant subdomain -> platform host; must not list any org's events.
+        resp = self.client.get("/sitemap.xml", HTTP_HOST="localhost")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("hamlet", resp.content.decode())
+
+    def test_favicon_ico_redirects_to_static_svg(self):
+        resp = self.client.get("/favicon.ico", HTTP_HOST="roxy.localhost")
+        self.assertEqual(resp.status_code, 301)
+        self.assertIn("favicon", resp["Location"])
+
+
+class PlatformContactFormTests(TestCase):
+    """The landing page's "Get in touch" contact form (platform host only).
+    It replaced the mailto:hello@boxo.show CTAs so the live site publishes no
+    raw email address: submissions are stored as ContactInquiry rows (the
+    source of truth, triaged in /admin) and a courtesy email notification is
+    layered on top only when email delivery is configured."""
+
+    def setUp(self):
+        # The IP throttle counts in the (per-process) LocMemCache, which
+        # tests share -- start each test with a clean window.
+        cache.clear()
+
+    VALID = {
+        "name": "Alex Rivera",
+        "email": "alex@roxy.example",
+        "venue": "The Roxy Theater",
+        "message": "We run a 200-seat house and want to sell online.",
+    }
+
+    def _tenant_host(self):
+        make_org("roxy")
+        return "roxy.localhost"
+
+    # --- the landing page itself ------------------------------------------
+
+    def test_landing_shows_form_and_no_mailto(self):
+        resp = self.client.get("/")  # default testserver host -> platform
+        self.assertContains(resp, 'action="/contact/"')
+        self.assertContains(resp, 'id="contact"')
+        self.assertNotContains(resp, "mailto:")
+
+    def test_landing_sent_flag_swaps_form_for_thanks(self):
+        resp = self.client.get("/?sent=1")
+        self.assertContains(resp, "message received")
+        self.assertNotContains(resp, 'action="/contact/"')
+
+    # --- submitting ---------------------------------------------------------
+
+    def test_valid_post_stores_inquiry_and_redirects(self):
+        resp = self.client.post("/contact/", self.VALID)
+        self.assertRedirects(resp, "/?sent=1#contact", fetch_redirect_response=False)
+        inquiry = ContactInquiry.objects.get()
+        self.assertEqual(inquiry.name, "Alex Rivera")
+        self.assertEqual(inquiry.email, "alex@roxy.example")
+        self.assertEqual(inquiry.venue, "The Roxy Theater")
+        self.assertFalse(inquiry.is_handled)
+
+    def test_valid_post_sends_notification_with_reply_to(self):
+        # Tests run on the locmem backend, which email_delivery_configured()
+        # treats as working -- so the courtesy notification goes out.
+        self.client.post("/contact/", self.VALID)
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, [settings.PLATFORM_CONTACT_EMAIL])
+        self.assertEqual(sent.reply_to, ["alex@roxy.example"])
+        self.assertIn("The Roxy Theater", sent.body)
+
+    def test_notification_skipped_while_smtp_unconfigured_but_row_saved(self):
+        # The blank-EMAIL_HOST prod state (see DEPLOY.md "Mail"): the lead is
+        # never lost -- only the courtesy email is skipped.
+        with override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend", EMAIL_HOST=""
+        ):
+            resp = self.client.post("/contact/", self.VALID)
+        self.assertRedirects(resp, "/?sent=1#contact", fetch_redirect_response=False)
+        self.assertEqual(ContactInquiry.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_invalid_post_rerenders_with_errors_and_stores_nothing(self):
+        data = dict(self.VALID, email="not-an-email")
+        resp = self.client.post("/contact/", data)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "contact-form__error")
+        self.assertContains(resp, 'value="Alex Rivera"')  # inputs preserved
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+
+    def test_overlong_email_is_a_field_error_not_a_500(self):
+        # forms.EmailField without max_length allows up to 320 chars; the
+        # model column is varchar(254). On Postgres the create() would blow
+        # up AFTER validation passed -- so the form must cap at 254 and turn
+        # this into an ordinary field error.
+        data = dict(self.VALID, email="a" * 243 + "@example.com")  # 255 chars
+        resp = self.client.post("/contact/", data)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "contact-form__error")
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+
+    # --- abuse guards -------------------------------------------------------
+
+    def test_honeypot_pretends_success_but_stores_and_sends_nothing(self):
+        data = dict(self.VALID, website="https://spam.example")
+        resp = self.client.post("/contact/", data)
+        # Indistinguishable from success, so a bot can't tell it was caught...
+        self.assertRedirects(resp, "/?sent=1#contact", fetch_redirect_response=False)
+        # ...but nothing was kept and nobody was notified.
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(LOGIN_RATELIMIT_MAX_ATTEMPTS=2)
+    def test_ip_throttle_caps_stored_inquiries(self):
+        for i in range(2):
+            self.client.post("/contact/", dict(self.VALID, name=f"Sender {i}"))
+        resp = self.client.post("/contact/", dict(self.VALID, name="One Too Many"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Too many messages")
+        self.assertEqual(ContactInquiry.objects.count(), 2)
+
+    # --- host scoping -------------------------------------------------------
+
+    def test_contact_404s_on_tenant_hosts(self):
+        host = self._tenant_host()
+        self.assertEqual(
+            self.client.post("/contact/", self.VALID, HTTP_HOST=host).status_code, 404
+        )
+        self.assertEqual(self.client.get("/contact/", HTTP_HOST=host).status_code, 404)
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+
+    def test_get_redirects_to_form_section(self):
+        resp = self.client.get("/contact/")
+        self.assertRedirects(resp, "/#contact", fetch_redirect_response=False)

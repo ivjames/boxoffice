@@ -8,12 +8,17 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
+
+from unittest.mock import patch
+
+from django.core import mail
 
 from accounts.models import Membership
 from accounts.tests import StaffFixtureMixin, host_for
 from events.models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
-from orders.models import Order, Ticket
+from orders.models import Order, Payment, Ticket
 from orders.services import get_seating_chart
 from venues.generation import generate_seats
 from venues.models import Seat, SeatingChart, Section, Venue
@@ -96,12 +101,20 @@ class RoleGateTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         user = self.roles[role]
         self.client.force_login(user)
 
-    def test_overview_open_to_every_role(self):
-        for role in ["owner", "manager", "box_office", "scanner"]:
+    def test_overview_open_to_box_office_and_above(self):
+        # Scanners work the door only -- the overview isn't theirs, so a
+        # scanner who lands on it is bounced to the scan screen.
+        for role in ["owner", "manager", "box_office"]:
             self.client.logout()
             self._login_as(role)
             resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
             self.assertEqual(resp.status_code, 200, f"{role} should reach the overview")
+
+    def test_scanner_overview_redirects_to_scan(self):
+        self._login_as("scanner")
+        resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["Location"], reverse("scan_home"))
 
     def test_event_list_manager_and_above_only(self):
         for role, expected in [("owner", 200), ("manager", 200), ("box_office", 403), ("scanner", 403)]:
@@ -452,6 +465,109 @@ class OverviewReportTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         titles = [p.event.title for p in resp.context["upcoming_performances"]]
         self.assertIn("GA Show", titles)
         self.assertNotIn("Past", titles)
+
+
+class OverviewRevenueGateTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """Revenue is manager+ only: box office sells tickets and services the
+    door, it doesn't need the money reports (see dashboard.views.overview)."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("roxy")
+        _event, self.performance, _tier = self.build_ga_event(self.org, self.venue)
+        self.make_paid_order(self.org, self.performance, "60.00")
+
+    def test_box_office_overview_hides_revenue(self):
+        user = self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0]
+        self.client.force_login(user)
+        resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.context["show_revenue"])
+        self.assertNotContains(resp, "Gross revenue")
+        self.assertNotContains(resp, "Revenue by event")
+
+    def test_manager_overview_shows_revenue(self):
+        user = self.make_staff(self.org, Membership.Role.MANAGER)[0]
+        self.client.force_login(user)
+        resp = self.client.get("/dashboard/", HTTP_HOST=host_for("roxy"))
+        self.assertTrue(resp.context["show_revenue"])
+        self.assertContains(resp, "Gross revenue")
+        self.assertEqual(resp.context["gross_revenue"], Decimal("60.00"))
+
+
+class PerformanceDetailTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """The show-detail page linked from the overview's upcoming-shows list:
+    seating chart + ticket summary + guest lookup, box_office-gated with
+    revenue held to manager+ (dashboard.views.performance_detail)."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("roxy")
+        _event, self.perf, self.section, self.seats = self.build_reserved_event(
+            self.org, self.venue, n_seats=3
+        )
+        self.order = Order.objects.create(
+            organization=self.org, performance=self.perf, buyer_email="jo@example.com",
+            buyer_name="Jo Buyer", total=Decimal("25.00"), status=Order.Status.PAID,
+        )
+        self.ticket = Ticket.objects.create(
+            organization=self.org, order=self.order, performance=self.perf,
+            seat=self.seats[0], holder_name="Guest One",
+        )
+
+    def _url(self):
+        return reverse("dashboard_performance_detail", args=[self.perf.pk])
+
+    def test_box_office_and_above_can_view_scanner_cannot(self):
+        for role, expected in [
+            (Membership.Role.OWNER, 200),
+            (Membership.Role.MANAGER, 200),
+            (Membership.Role.BOX_OFFICE, 200),
+            (Membership.Role.SCANNER, 403),
+        ]:
+            self.client.logout()
+            self.client.force_login(self.make_staff(self.org, role)[0])
+            resp = self.client.get(self._url(), HTTP_HOST=host_for("roxy"))
+            self.assertEqual(resp.status_code, expected, f"{role} -> performance detail")
+
+    def test_summary_counts_and_seat_states(self):
+        self.client.force_login(self.make_staff(self.org, Membership.Role.OWNER)[0])
+        resp = self.client.get(self._url(), HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.context["sold"], 1)
+        self.assertEqual(resp.context["capacity"], 3)
+        states = {s["id"]: s["state"] for s in resp.context["seats_json"]}
+        self.assertEqual(states[self.seats[0].id], "sold")
+        self.assertEqual(states[self.seats[1].id], "available")
+
+    def test_revenue_hidden_from_box_office(self):
+        self.client.force_login(self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0])
+        resp = self.client.get(self._url(), HTTP_HOST=host_for("roxy"))
+        self.assertFalse(resp.context["show_revenue"])
+        self.assertIsNone(resp.context["revenue"])
+
+    def test_guest_search_finds_ticket_by_holder_name(self):
+        self.client.force_login(self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0])
+        resp = self.client.get(self._url() + "?q=Guest One", HTTP_HOST=host_for("roxy"))
+        self.assertEqual([t.pk for t in resp.context["search_results"]], [self.ticket.pk])
+        self.assertContains(resp, self.ticket.token)
+
+    def test_guest_search_by_buyer_email(self):
+        self.client.force_login(self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0])
+        resp = self.client.get(self._url() + "?q=jo@example.com", HTTP_HOST=host_for("roxy"))
+        self.assertEqual([t.pk for t in resp.context["search_results"]], [self.ticket.pk])
+
+    def test_guest_search_no_match(self):
+        self.client.force_login(self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0])
+        resp = self.client.get(self._url() + "?q=nobody", HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.context["search_results"], [])
+
+    def test_cross_org_performance_404s(self):
+        other_org, other_venue = self.build_org("other")
+        _e, other_perf, _s, _seats = self.build_reserved_event(other_org, other_venue, slug="x")
+        self.client.force_login(self.make_staff(self.org, Membership.Role.OWNER)[0])
+        resp = self.client.get(
+            reverse("dashboard_performance_detail", args=[other_perf.pk]),
+            HTTP_HOST=host_for("roxy"),
+        )
+        self.assertEqual(resp.status_code, 404)
 
 
 class ChartBuilderRoleGateTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
@@ -1883,3 +1999,96 @@ class PricingZoneExportTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         resp = self.client.get(self._export_url(performance2.pk), HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.content.startswith(b"\x89PNG"))
+
+
+class OrderActionsTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """The staff order actions (BO-4): resend tickets, cancel/void, refund.
+    Gated to box_office+, org-scoped by token, and correct about freeing
+    inventory + recording the reversal."""
+
+    def setUp(self):
+        self.org, self.venue = self.build_org("roxy")
+        self.event, self.performance, self.tier = self.build_ga_event(
+            self.org, self.venue, capacity=10, sold=2
+        )
+        self.box_office, self.pw = self.make_staff(self.org, Membership.Role.BOX_OFFICE)
+        self.client.force_login(self.box_office)
+
+    def _order(self, provider="stripe", provider_ref="pi_test_123"):
+        order = self.make_paid_order(self.org, self.performance, "40.00", n_tickets=2)
+        Payment.objects.create(
+            organization=self.org, order=order, provider=provider, amount=Decimal("40.00"),
+            status="succeeded", provider_ref=provider_ref,
+        )
+        return order
+
+    def _post(self, order, action):
+        return self.client.post(
+            f"/dashboard/orders/{order.token}/{action}/", HTTP_HOST=host_for("roxy")
+        )
+
+    def test_resend_sends_email(self):
+        order = self._order()
+        resp = self._post(order, "resend")
+        self.assertRedirects(resp, f"/dashboard/orders/{order.token}/", fetch_redirect_response=False)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["buyer@example.com"])
+
+    def test_cancel_voids_tickets_and_frees_ga_inventory(self):
+        order = self._order()
+        self.assertEqual(self.performance.ga_allocation.sold, 2)
+        self._post(order, "cancel")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.CANCELLED)
+        self.assertEqual(order.tickets.exclude(status=Ticket.Status.VOID).count(), 0)
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)  # 2 freed
+
+    def test_refund_stripe_order_calls_stripe_and_marks_refunded(self):
+        order = self._order(provider="stripe", provider_ref="pi_test_123")
+        with patch("payments.services.stripe.Refund.create") as mock_refund:
+            mock_refund.return_value = type("R", (), {"id": "re_test_1"})()
+            self._post(order, "refund")
+            mock_refund.assert_called_once()
+            _, kwargs = mock_refund.call_args
+            self.assertEqual(kwargs["payment_intent"], "pi_test_123")
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDED)
+        self.assertEqual(order.tickets.exclude(status=Ticket.Status.VOID).count(), 0)
+        self.assertTrue(order.payments.filter(status="refunded", provider_ref="re_test_1").exists())
+        self.performance.ga_allocation.refresh_from_db()
+        self.assertEqual(self.performance.ga_allocation.sold, 0)
+
+    def test_refund_stub_order_needs_no_stripe_call(self):
+        order = self._order(provider="stub", provider_ref="stub-abc")
+        with patch("payments.services.stripe.Refund.create") as mock_refund:
+            self._post(order, "refund")
+            mock_refund.assert_not_called()
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.REFUNDED)
+
+    def test_refund_is_idempotent(self):
+        order = self._order(provider="stub", provider_ref="stub-abc")
+        self._post(order, "refund")
+        with patch("payments.services.stripe.Refund.create") as mock_refund:
+            self._post(order, "refund")  # second time: no-op
+            mock_refund.assert_not_called()
+        self.assertEqual(order.payments.filter(status="refunded").count(), 1)
+
+    def test_scanner_cannot_act_on_orders(self):
+        scanner, _ = self.make_staff(self.org, Membership.Role.SCANNER, email="s@roxy.example.com")
+        self.client.force_login(scanner)
+        order = self._order()
+        resp = self._post(order, "cancel")
+        self.assertEqual(resp.status_code, 403)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+
+    def test_cannot_act_on_another_orgs_order(self):
+        org_b, venue_b = self.build_org("other")
+        _, perf_b, _ = self.build_ga_event(org_b, venue_b, slug="b-show")
+        order_b = self.make_paid_order(org_b, perf_b, "40.00", n_tickets=1)
+        resp = self._post(order_b, "cancel")  # box_office is logged into roxy
+        self.assertEqual(resp.status_code, 404)
+        order_b.refresh_from_db()
+        self.assertEqual(order_b.status, Order.Status.PAID)

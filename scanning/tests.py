@@ -378,6 +378,20 @@ class ScanHomeViewTests(ScanFixtureMixin, TestCase):
         self.assertContains(resp, "Scan tickets")
         self.assertContains(resp, "qrScanner()")
 
+    def test_scanner_nav_hides_view_storefront(self):
+        # A door scanner has no reason to jump to the public storefront, so the
+        # shared dashboard nav (surfaced in the scan screen's burger menu)
+        # drops the link for them -- box office and up still get it.
+        self.client.force_login(self.scanner_user)
+        resp = self.client.get("/scan/", HTTP_HOST=host_for("roxy"))
+        self.assertNotContains(resp, "View storefront")
+
+    def test_box_office_nav_keeps_view_storefront(self):
+        box_office, _ = StaffFixtureMixin().make_staff(self.org, Membership.Role.BOX_OFFICE)
+        self.client.force_login(box_office)
+        resp = self.client.get("/dashboard/orders/", HTTP_HOST=host_for("roxy"))
+        self.assertContains(resp, "View storefront")
+
     def test_manual_entry_redeems_valid_ticket(self):
         self.client.force_login(self.scanner_user)
         resp = self.client.post(

@@ -1,0 +1,60 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Promo codes — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<div class="dash-header">
+    <h1>Promo codes</h1>
+    <a class="button" href="{% url 'dashboard_promo_create' %}">New promo code</a>
+</div>
+
+<div class="dash-table-wrap">
+<table class="dash-table">
+    <thead>
+        <tr>
+            <th>Code</th>
+            <th>Type / Value</th>
+            <th>Window</th>
+            <th>Redemptions</th>
+            <th>Active</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for promo in promos %}
+        <tr>
+            <td>{{ promo.code }}</td>
+            <td>{% if promo.kind == 'percent' %}{{ promo.value }}%{% else %}${{ promo.value }}{% endif %}</td>
+            <td>
+                {% if promo.starts_at or promo.ends_at %}
+                    {{ promo.starts_at|date:"M j Y"|default:"…" }} &ndash; {{ promo.ends_at|date:"M j Y"|default:"…" }}
+                {% else %}
+                    always
+                {% endif %}
+            </td>
+            <td>{{ promo.redemption_count }} / {% if promo.max_redemptions %}{{ promo.max_redemptions }}{% else %}&infin;{% endif %}</td>
+            <td>
+                {% if promo.is_active %}
+                    <span class="badge badge--active">Active</span>
+                {% else %}
+                    <span class="badge badge--inactive">Inactive</span>
+                {% endif %}
+            </td>
+            <td class="dash-table__actions">
+                <a href="{% url 'dashboard_promo_update' promo.pk %}">Edit</a>
+                <form method="post" action="{% url 'dashboard_promo_toggle' promo.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="button button--secondary button--sm">
+                        {% if promo.is_active %}Deactivate{% else %}Reactivate{% endif %}
+                    </button>
+                </form>
+            </td>
+        </tr>
+    {% empty %}
+        <tr><td colspan="6" class="muted">No promo codes yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endblock %}

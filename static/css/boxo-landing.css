@@ -361,6 +361,15 @@
   margin: 0 auto 28px;
 }
 
+/* Optional lede paragraph under a section head (spec: pricing section). */
+.platform-landing .landing-section__lede {
+  margin: 12px 0 0;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.7;
+  color: var(--boxo-text-secondary);
+}
+
 /* -- feature grid ------------------------------------------------------ */
 
 .platform-landing .landing-grid {
@@ -382,6 +391,15 @@
   border-color: var(--boxo-gold);
   box-shadow: none;
   transform: none;
+}
+
+/* Highlight variant — the lead pricing claim gets a permanent gold border
+   and glow instead of only on hover, so it reads first in the grid (spec:
+   pricing section, "the low/no platform fee" card). */
+.platform-landing .landing-card--highlight {
+  background: linear-gradient(180deg, rgba(201, 162, 75, 0.14), rgba(0, 0, 0, 0));
+  border-color: var(--boxo-gold);
+  box-shadow: 0 0 32px rgba(201, 162, 75, 0.1);
 }
 
 .platform-landing .landing-card h3 {
@@ -731,6 +749,126 @@
 
 .platform-landing .landing-cta .button:hover {
   background: var(--boxo-gold-bright);
+}
+
+/* -- contact form (replaces the old mailto CTA) ------------------------ */
+
+.platform-landing .contact-form {
+  max-width: 640px;
+  margin: 28px auto 0;
+  text-align: left;
+}
+
+.platform-landing .contact-form__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.platform-landing .contact-form__field {
+  margin-bottom: 16px;
+}
+
+.platform-landing .contact-form__field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--boxo-text-secondary);
+}
+
+.platform-landing .contact-form__field input,
+.platform-landing .contact-form__field textarea {
+  width: 100%;
+  padding: 12px 14px;
+  font-family: var(--boxo-font-body);
+  font-size: 16px;
+  font-weight: var(--boxo-weight-body);
+  color: var(--boxo-text-primary);
+  background: rgba(243, 233, 214, 0.06);
+  border: 1px solid var(--boxo-line);
+  border-radius: var(--boxo-radius-sm);
+  transition: border-color var(--boxo-transition-fast);
+}
+
+.platform-landing .contact-form__field input::placeholder,
+.platform-landing .contact-form__field textarea::placeholder {
+  color: var(--boxo-text-muted);
+  opacity: 0.6;
+}
+
+.platform-landing .contact-form__field input:focus,
+.platform-landing .contact-form__field textarea:focus {
+  outline: none;
+  border-color: var(--boxo-gold-bright);
+}
+
+.platform-landing .contact-form textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+.platform-landing .contact-form .button {
+  margin-top: 4px;
+}
+
+/* Error text needs its own red -- the token palette has none -- picked
+   light enough to hold >=7:1 contrast on the --boxo-ink background. */
+.platform-landing .contact-form__error,
+.platform-landing .contact-form__errors {
+  color: #f2b8b5;
+  font-size: 14px;
+  margin: 6px 0 0;
+}
+
+.platform-landing .contact-form__errors {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(242, 184, 181, 0.4);
+  border-radius: var(--boxo-radius-sm);
+}
+
+.platform-landing .contact-form__errors p {
+  margin: 0;
+  color: inherit;
+}
+
+/* Honeypot: visually gone (not display:none -- some naive bots skip
+   truly hidden fields, and we WANT them to fill it). */
+.platform-landing .contact-form__hp {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.platform-landing .contact-form__success {
+  max-width: 640px;
+  margin: 28px auto 0;
+  padding: 24px 28px;
+  border: 1px solid var(--boxo-gold);
+  border-radius: var(--boxo-radius-sm);
+  background: rgba(201, 162, 75, 0.08);
+}
+
+.platform-landing .contact-form__success h3 {
+  margin: 0 0 8px;
+  color: var(--boxo-gold-bright);
+}
+
+.platform-landing .contact-form__success p {
+  margin: 0;
+  color: var(--boxo-text-secondary);
+}
+
+@media (max-width: 767px) {
+  .platform-landing .contact-form__row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
 }
 
 /* -- reduced motion ---------------------------------------------------- */

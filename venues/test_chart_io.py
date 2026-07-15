@@ -55,6 +55,27 @@ class ChartIOTests(TestCase):
         self.assertTrue(row_a["seats"][0]["accessible"])
         self.assertFalse(row_a["seats"][1]["accessible"])
 
+    def test_row_label_start_round_trips(self):
+        parterre = Section.objects.create(
+            organization=self.org,
+            chart=self.chart,
+            name="Parterre",
+            ordering=2,
+            row_label_start=12,  # first row is N, continuing the A-M orchestra
+        )
+        generate_seats(parterre, [3, 3])
+        self.assertEqual(
+            sorted(set(parterre.seats.values_list("row_label", flat=True))), ["N", "P"]
+        )
+
+        data = export_chart_data(self.chart)
+        imported = import_chart_data(self.venue, data, name="Reimported house")
+        reimported = imported.sections.get(name="Parterre")
+        self.assertEqual(reimported.row_label_start, 12)
+        self.assertEqual(
+            sorted(set(reimported.seats.values_list("row_label", flat=True))), ["N", "P"]
+        )
+
     def test_round_trip_is_lossless(self):
         data = export_chart_data(self.chart)
         imported = import_chart_data(self.venue, data, name="Reimported house")

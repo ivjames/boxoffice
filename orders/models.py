@@ -1,5 +1,6 @@
 import secrets
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -75,9 +76,75 @@ class Hold(TenantScopedModel):
         PriceTier, on_delete=models.CASCADE, null=True, blank=True, related_name="holds"
     )
     quantity = models.PositiveIntegerField(null=True, blank=True)
+    # Snapshot of the GA tier price at hold-creation time -- the GA analogue
+    # of HoldSeat.unit_amount for reserved seats. Frozen here so hold_total(),
+    # the Stripe line item, and _fulfill_ga all charge/record the price the
+    # buyer saw, immune to a PriceTier.amount edit made between hold creation
+    # and payment. Nullable only so it can be added without a data migration;
+    # set_ga_hold always populates it on new GA holds, and the GA money paths
+    # fall back to the live tier amount when it's null (a hold in flight
+    # across the deploy that added this column). See orders.services.
+    ga_unit_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
 
     # Reserved-seat selection.
     seats = models.ManyToManyField(Seat, through="HoldSeat", related_name="holds", blank=True)
+
+    # --- Promo / discount snapshot (same sacred pattern as ga_unit_amount /
+    # HoldSeat.unit_amount above) --------------------------------------------
+    # A buyer may apply ONE promo code to the whole hold (orders.services.
+    # apply_promo_code). The discount is COMPUTED AND FROZEN at apply time and
+    # stored here, so a later PromoCode edit -- a changed value, currency, even
+    # deactivation -- can't change what this hold is charged: the money paths
+    # (hold_grand_total, the Stripe coupon, fulfill_hold's Order.total) all read
+    # discount_amount, never re-derive it off the live PromoCode. The FK is
+    # kept only to (a) bump redemption_count at fulfillment (record_redemption)
+    # and (b) let a later edit see which code was used; it is SET_NULL so
+    # deleting/archiving a code never orphans or deletes a hold mid-checkout,
+    # and promo_code_text preserves what the buyer actually typed regardless.
+    promo_code = models.ForeignKey(
+        "promotions.PromoCode",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="holds",
+    )
+    # The code string as applied -- the human-readable label for the discount
+    # line on the cart, the Stripe coupon name, and the Order snapshot. Survives
+    # the PromoCode row being deleted (unlike promo_code above), mirroring how
+    # OrderItem.unit_amount survives its tier/zone being deleted.
+    promo_code_text = models.CharField(max_length=32, blank=True, default="")
+    # The frozen discount in major units. Null = no code applied (distinct from
+    # a $0.00 discount, which validate_code forbids anyway). hold_discount()
+    # coalesces null -> 0.00 for the money math.
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # --- Donation add-on snapshot (same freeze-at-add-time pattern as
+    # ga_unit_amount / discount_amount above) -------------------------------
+    # A buyer may add ONE donation to the cart alongside their tickets
+    # (orders.services.set_hold_donation). The gift amount is SNAPSHOTTED here
+    # at add time so the money paths (hold_grand_total, the Stripe donation
+    # line item, fulfill_hold's donation OrderItem) all charge/record the amount
+    # the buyer chose, immune to anything else. Null = no donation added
+    # (distinct from a $0.00 gift, which set_hold_donation forbids);
+    # hold_donation() coalesces null -> 0.00 for the math. The donation rides
+    # OUTSIDE the promo/discount math on purpose -- see hold_grand_total's
+    # docstring for why (a donation is never discounted and never counts toward
+    # a code's min_order).
+    donation_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Which campaign the pending gift is for -- provenance carried onto the
+    # fulfilled OrderItem.donation_campaign. Nullable + SET_NULL for the same
+    # reason as OrderItem.donation_campaign: retiring/deleting a campaign
+    # mid-checkout must never orphan or delete a hold. donation_amount stays the
+    # authoritative snapshot regardless.
+    donation_campaign = models.ForeignKey(
+        "donations.DonationCampaign",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="holds",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -196,7 +263,19 @@ class Order(TenantScopedModel):
         CANCELLED = "cancelled", "Cancelled"
         REFUNDED = "refunded", "Refunded"
 
-    performance = models.ForeignKey(Performance, on_delete=models.PROTECT, related_name="orders")
+    # Phase 2 foundation makes this NULLABLE (was a required FK). v1 RULE: set
+    # whenever the order has any ticket line, so a ticketed order still points
+    # at its performance exactly as before; NULL only for a donation-only order
+    # (and, later, a pass-only order) -- kinds of order that reserve no
+    # performance inventory and mint no ticket, so there's no performance to
+    # attach. Kept PROTECT: a performance with real (ticketed) orders still
+    # can't be hard-deleted out from under them; a donation-only order simply
+    # isn't among what PROTECT guards, because its FK is null. Every read of
+    # order.performance on a money/inventory path is now guarded for null (see
+    # order_services.void_order's GA branch and payments.services).
+    performance = models.ForeignKey(
+        Performance, on_delete=models.PROTECT, null=True, blank=True, related_name="orders"
+    )
     buyer_email = models.EmailField()
     buyer_name = models.CharField(max_length=255, blank=True)
     # The buyer's per-theater guest account, keyed off buyer_email at
@@ -212,6 +291,18 @@ class Order(TenantScopedModel):
         blank=True,
         related_name="orders",
     )
+    # Order.total is the NET amount actually charged (gross subtotal MINUS the
+    # promo discount) -- it's what Stripe collected and what a refund reverses,
+    # so it must be the discounted figure, not the sticker price. The gross is
+    # recoverable as total + discount_amount when a report needs it. OrderItem
+    # rows stay GROSS (each at its full unit_amount); the discount is carried
+    # once here as an order-level line rather than smeared across items -- this
+    # matches the Stripe coupon/receipt shape (line items at list price, a
+    # single coupon deduction) and keeps per-seat/per-item pricing honest for
+    # accounting. See payments.services.fulfill_hold, which snapshots these two
+    # fields off the Hold at fulfillment.
+    promo_code_text = models.CharField(max_length=32, blank=True, default="")
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
     total = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
 
@@ -258,25 +349,90 @@ class Order(TenantScopedModel):
     def __str__(self):
         return f"Order {self.token} ({self.status})"
 
+    @property
+    def gross_total(self):
+        """Pre-discount subtotal: `total` (the docstring above explains it's
+        NET -- what was actually charged) plus the frozen `discount_amount`
+        snapshot. The inverse of how `total` was computed at fulfillment;
+        used by the dashboard order-detail page to show a Subtotal line
+        alongside the net Total without any template-side arithmetic."""
+        return self.total + self.discount_amount
+
 
 class OrderItem(TenantScopedModel):
-    """Phase C note: `price_tier` is nullable -- a zone-priced reserved
-    seat's OrderItem carries `pricing_zone` instead (whichever of the two
-    priced it at fulfillment time, mirroring HoldSeat -- see its docstring,
-    including why there's deliberately no check constraint requiring one of
-    them to stay set: a zone can be deleted after an order that used it was
-    already fulfilled, SET_NULLing `pricing_zone` here too). `unit_amount`
-    is copied verbatim from the fulfilled HoldSeat's own snapshot
+    """A single line on an Order. Phase 2 foundation makes OrderItem
+    poly-KIND: `kind` discriminates a ticket line from a donation line (and,
+    later, a pass line -- see docs/ROADMAP.md Phase 2/3), so donations and
+    passes ride the same Order/OrderItem/Payment shape the ticket money path
+    already uses instead of bolting on parallel tables. A donation line
+    carries kind=DONATION, quantity=1, unit_amount=<gift amount>, and no
+    seat/tier/zone; a ticket line is kind=TICKET (the historical default,
+    which is why the column db_default-backfills existing rows to "ticket").
+
+    Phase C note: `price_tier` is nullable -- a zone-priced reserved seat's
+    OrderItem carries `pricing_zone` instead (whichever of the two priced it
+    at fulfillment time, mirroring HoldSeat -- see its docstring, including
+    why there's deliberately no check constraint requiring one of them to
+    stay set: a zone can be deleted after an order that used it was already
+    fulfilled, SET_NULLing `pricing_zone` here too). `unit_amount` is copied
+    verbatim from the fulfilled HoldSeat's own snapshot
     (payments.services._fulfill_reserved), so an OrderItem's price is fixed
     the moment payment is fulfilled and immune to any later zone/template/
-    tier edit -- or the zone/tier being deleted outright."""
+    tier edit -- or the zone/tier being deleted outright. A donation line's
+    unit_amount is the same kind of snapshot: the gift amount frozen at
+    fulfillment, never re-read off the campaign."""
+
+    class Kind(models.TextChoices):
+        TICKET = "ticket", "Ticket"
+        DONATION = "donation", "Donation"
+        PASS = "pass", "Pass"
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
+    # What this line IS. Defaults to TICKET both in Python and at the DB
+    # level (db_default) so the column backfills every pre-Phase-2 row to
+    # "ticket" without a data migration -- same pattern as
+    # Organization.infra_status (tenants/models.py). Widening to PASS is a
+    # Phase 3 concern; the choice is defined now so the discriminator is
+    # stable from the foundation on.
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.TICKET, db_default="ticket"
+    )
     price_tier = models.ForeignKey(
         PriceTier, on_delete=models.PROTECT, null=True, blank=True, related_name="order_items"
     )
     pricing_zone = models.ForeignKey(
         PricingZone, on_delete=models.SET_NULL, null=True, blank=True, related_name="order_items"
+    )
+    # Provenance for a donation line: which campaign the gift was for. Nullable
+    # + SET_NULL for exactly the same reason as pricing_zone above -- a campaign
+    # can be retired/deleted after an order that gave to it was already
+    # fulfilled, and that must never orphan or delete the paid OrderItem.
+    # unit_amount stays the AUTHORITATIVE snapshot of what was charged; this FK
+    # is provenance/reporting only and is never re-read to derive the amount
+    # (same stance as price_tier/pricing_zone for a ticket line).
+    donation_campaign = models.ForeignKey(
+        "donations.DonationCampaign",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="order_items",
+    )
+    # Provenance for a PASS line (Phase 3): which pass product was sold on this
+    # order. Nullable + SET_NULL for exactly the same reason as
+    # donation_campaign above -- a pass product can be archived/deleted after an
+    # order that sold it was already fulfilled, and that must never orphan or
+    # delete the paid OrderItem. unit_amount stays the AUTHORITATIVE snapshot of
+    # what was charged (the pass's price at purchase); this FK is provenance/
+    # reporting only, never re-read to derive the amount (same stance as
+    # price_tier/pricing_zone for a ticket line, donation_campaign for a gift).
+    # Note a $0 pass REDEMPTION order carries ticket lines, not a PASS line --
+    # this FK is only ever set on the one-time PURCHASE order.
+    pass_product = models.ForeignKey(
+        "passes.PassProduct",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="order_items",
     )
     seat = models.ForeignKey(
         Seat, on_delete=models.PROTECT, null=True, blank=True, related_name="order_items"
@@ -288,6 +444,12 @@ class OrderItem(TenantScopedModel):
         indexes = TenantScopedModel.Meta.indexes + [models.Index(fields=["order"])]
 
     def __str__(self):
+        if self.kind == self.Kind.DONATION:
+            label = self.donation_campaign.name if self.donation_campaign_id else "Donation"
+            return f"Donation ${self.unit_amount} ({label}) on order {self.order_id}"
+        if self.kind == self.Kind.PASS:
+            label = self.pass_product.name if self.pass_product_id else "Pass"
+            return f"Pass ${self.unit_amount} ({label}) on order {self.order_id}"
         if self.pricing_zone_id:
             label = self.pricing_zone.name
         elif self.price_tier_id:

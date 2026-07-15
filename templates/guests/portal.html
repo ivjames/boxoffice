@@ -15,26 +15,100 @@
     </div>
     <p class="muted">Signed in as {{ guest.email }}.</p>
 
+    <div class="portal-preferences">
+        <p class="muted">
+            Email updates:
+            {% if guest.marketing_opt_in %}
+                <span class="badge badge--active">Subscribed</span>
+            {% else %}
+                <span class="badge badge--inactive">Not subscribed</span>
+            {% endif %}
+        </p>
+        <form method="post" action="{% url 'guest_preferences' %}" class="portal-preferences__form">
+            {% csrf_token %}
+            <label>
+                <input type="checkbox" name="marketing_opt_in" value="on" {% if guest.marketing_opt_in %}checked{% endif %}>
+                Email me about upcoming shows and events
+            </label>
+            <button type="submit" class="button button--secondary button--sm">Save preferences</button>
+        </form>
+    </div>
+
+    <h2>My passes</h2>
+    {% if pass_rows %}
+        <div class="pass-list">
+            {% for row in pass_rows %}
+                <div class="pass-card">
+                    <h3>{{ row.pass_purchase.product.name|default:"Pass" }}</h3>
+                    <p class="muted">
+                        {% if row.pass_purchase.kind == 'season' %}
+                            One admission per show
+                        {% else %}
+                            {{ row.pass_purchase.credit_count }} credit pass
+                        {% endif %}
+                    </p>
+                    <p>
+                        {% if row.remaining is None %}
+                            Unlimited shows
+                        {% else %}
+                            {{ row.remaining }} remaining
+                        {% endif %}
+                    </p>
+                    {% if row.pass_purchase.valid_from or row.pass_purchase.valid_until %}
+                        <p class="muted">
+                            Valid {{ row.pass_purchase.valid_from|date:"M j Y"|default:"now" }} &ndash; {{ row.pass_purchase.valid_until|date:"M j Y"|default:"…" }}
+                        </p>
+                    {% endif %}
+                    <p><span class="badge badge--{{ row.pass_purchase.status }}">{{ row.pass_purchase.get_status_display }}</span></p>
+                    {% if row.redeemable %}
+                        <form method="post" action="{% url 'pass_redeem_start' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="pass_id" value="{{ row.pass_purchase.pk }}">
+                            <button type="submit" class="button button--secondary button--sm">Redeem</button>
+                        </form>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No passes on this account yet.</p>
+            <p class="muted"><a href="{% url 'passes' %}">Browse passes</a> to buy one.</p>
+        </div>
+    {% endif %}
+
+    <h2>My tickets</h2>
     {% if order_rows %}
         <div class="order-list">
             {% for row in order_rows %}
                 <div class="order-list__item">
                     <div class="order-list__main">
-                        <h2>{{ row.order.performance.event.title }}</h2>
-                        <p>
-                            {% showtime row.order.performance.starts_at row.order.performance.venue.timezone "D, M j Y — g:i A" %} ·
-                            {{ row.order.performance.venue.name }}
-                        </p>
-                        <p class="muted">
-                            {{ row.ticket_count }} ticket{{ row.ticket_count|pluralize }} ·
-                            ${{ row.order.total }} ·
-                            <span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span>
-                        </p>
+                        {% if row.order.performance %}
+                            <h2>{{ row.order.performance.event.title }}</h2>
+                            <p>
+                                {% showtime row.order.performance.starts_at row.order.performance.venue.timezone "D, M j Y — g:i A" %} ·
+                                {{ row.order.performance.venue.name }}
+                            </p>
+                            <p class="muted">
+                                {{ row.ticket_count }} ticket{{ row.ticket_count|pluralize }} ·
+                                ${{ row.order.total }} ·
+                                <span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span>
+                            </p>
+                        {% else %}
+                            <h2>Donation · ${{ row.order.total }}</h2>
+                            <p class="muted">
+                                <span class="badge badge--{{ row.order.status }}">{{ row.order.get_status_display }}</span>
+                            </p>
+                        {% endif %}
                         <p class="muted">Ordered {{ row.order.created_at|date:"M j, Y" }}</p>
                     </div>
                     <div class="order-list__actions">
-                        <a class="button" href="{% url 'ticket_detail' token=row.order.token %}">View / print</a>
-                        <a class="button button--secondary" href="{% url 'ticket_pdf' token=row.order.token %}">Download PDF</a>
+                        {% if row.order.performance %}
+                            <a class="button" href="{% url 'ticket_detail' token=row.order.token %}">View / print</a>
+                            <a class="button button--secondary" href="{% url 'ticket_pdf' token=row.order.token %}">Download PDF</a>
+                        {% else %}
+                            <a class="button" href="{% url 'ticket_detail' token=row.order.token %}">View receipt</a>
+                        {% endif %}
                     </div>
                 </div>
             {% endfor %}

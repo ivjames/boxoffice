@@ -29,6 +29,7 @@ const NUMBERING_SEQUENTIAL = "sequential";
 const NUMBERING_ODD_DESC_LEFT = "odd_desc_left";
 const NUMBERING_EVEN_ASC_RIGHT = "even_asc_right";
 const NUMBERING_HUNDREDS = "hundreds";
+const NUMBERING_HUNDREDS_FLAT = "hundreds_flat";
 
 const ROW_LABEL_ALL_LETTERS = "all_letters";
 
@@ -37,11 +38,14 @@ const LETTERS_SKIP_IO = LETTERS_ALL.filter((c) => c !== "I" && c !== "O");
 
 // -- row labels / seat numbers (mirrors generate_row_labels / generate_seat_numbers) --
 
-function generateRowLabels(count, scheme) {
+function generateRowLabels(count, scheme, start = 0) {
+    // `start` mirrors Section.row_label_start: offset into the label
+    // sequence so a section can continue the house's letters (Parterre
+    // starting at N behind an A-M Orchestra) -- see generate_row_labels.
     const letters = scheme === ROW_LABEL_ALL_LETTERS ? LETTERS_ALL : LETTERS_SKIP_IO;
     const n = letters.length;
     const labels = [];
-    for (let i = 0; i < count; i++) {
+    for (let i = start; i < start + count; i++) {
         const group = Math.floor(i / n);
         const index = i % n;
         labels.push(letters[index].repeat(group + 1));
@@ -59,6 +63,11 @@ function generateSeatNumbers(seatCount, scheme, rowIndex) {
     if (scheme === NUMBERING_HUNDREDS) {
         const base = (rowIndex + 1) * 100;
         return Array.from({ length: seatCount }, (_, i) => base + i + 1);
+    }
+    if (scheme === NUMBERING_HUNDREDS_FLAT) {
+        // Continental center-block style: every row restarts at 101 --
+        // mirrors generate_seat_numbers's HUNDREDS_FLAT branch.
+        return Array.from({ length: seatCount }, (_, i) => 100 + i + 1);
     }
     return Array.from({ length: seatCount }, (_, i) => i + 1);
 }
@@ -235,7 +244,9 @@ function computeSectionSeats(section, { removedIds, accessibleIds } = {}) {
     const rowCounts = computeRowCounts(
         section.rows, section.seats_per_row, section.offset_mode, section.alt_row_seat_delta
     );
-    const labels = generateRowLabels(rowCounts.length, section.row_label_scheme);
+    const labels = generateRowLabels(
+        rowCounts.length, section.row_label_scheme, section.row_label_start || 0
+    );
     const seats = [];
     rowCounts.forEach((seatCount, rowIndex) => {
         const rowLabel = labels[rowIndex];

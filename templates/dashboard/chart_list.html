@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "dashboard/base.html" %}
 
 {% block title %}Seating charts — {{ venue.name }}{% endblock %}
 
@@ -25,5 +25,21 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
+
+<div class="dash-panel chart-parse-panel">
+    <h2>Import from an image or PDF</h2>
+    <p class="muted">
+        Have a picture of your house's seating chart? Upload it and we'll read the
+        sections, rows and seats and build a first draft of the chart for you --
+        you review and fine-tune the result in the visual editor before it's used
+        anywhere. Supports PNG, JPEG, GIF, WebP and PDF (20&nbsp;MB max).
+    </p>
+    <form method="post" action="{% url 'dashboard_chart_parse' venue.pk %}" enctype="multipart/form-data" class="chart-parse-form">
+        {% csrf_token %}
+        <input type="file" name="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" required>
+        <input type="text" name="name" placeholder="Chart name (optional)" maxlength="255">
+        <button type="submit" class="button">Parse &amp; build chart</button>
+    </form>
 </div>
 {% endblock %}

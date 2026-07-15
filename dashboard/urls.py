@@ -156,6 +156,11 @@ urlpatterns = [
         name="dashboard_chart_list",
     ),
     path(
+        "dashboard/venues/<int:venue_pk>/charts/parse/",
+        views.chart_parse_upload,
+        name="dashboard_chart_parse",
+    ),
+    path(
         "dashboard/venues/<int:venue_pk>/charts/new/",
         views.SeatingChartCreateView.as_view(),
         name="dashboard_chart_create",

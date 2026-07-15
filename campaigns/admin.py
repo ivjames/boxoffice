@@ -1,10 +1,12 @@
 from django.contrib import admin
 
+from unfold.admin import ModelAdmin as UnfoldModelAdmin
+
 from .models import CampaignSend, EmailCampaign
 
 
 @admin.register(EmailCampaign)
-class EmailCampaignAdmin(admin.ModelAdmin):
+class EmailCampaignAdmin(UnfoldModelAdmin):
     list_display = (
         "name",
         "organization",
@@ -20,7 +22,7 @@ class EmailCampaignAdmin(admin.ModelAdmin):
 
 
 @admin.register(CampaignSend)
-class CampaignSendAdmin(admin.ModelAdmin):
+class CampaignSendAdmin(UnfoldModelAdmin):
     list_display = ("email", "campaign", "organization", "status", "created_at", "sent_at")
     list_filter = ("organization", "status")
     search_fields = ("email",)

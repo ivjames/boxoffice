@@ -71,6 +71,7 @@ def export_chart_data(chart):
                 "tier": section.tier,
                 "numbering_scheme": section.numbering_scheme,
                 "row_label_scheme": section.row_label_scheme,
+                "row_label_start": section.row_label_start,
                 "layout": {
                     "origin_x": section.origin_x,
                     "origin_y": section.origin_y,
@@ -168,6 +169,7 @@ def import_chart_data(venue, data, *, name=None, replace=False):
             row_label_scheme=section_data.get(
                 "row_label_scheme", Section.RowLabelScheme.SKIP_IO
             ),
+            row_label_start=section_data.get("row_label_start", 0),
             origin_x=layout.get("origin_x", 0.0),
             origin_y=layout.get("origin_y", 0.0),
             rotation=layout.get("rotation", 0.0),

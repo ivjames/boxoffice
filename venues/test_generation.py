@@ -58,6 +58,21 @@ class RowLabelTests(TestCase):
         labels = generate_row_labels(5, Section.RowLabelScheme.SKIP_IO)
         self.assertEqual(labels, ["A", "B", "C", "D", "E"])
 
+    def test_row_label_start_continues_the_house_sequence(self):
+        # Section.row_label_start: a Parterre behind an A-M orchestra starts
+        # at N (skip_io index 12); a Balcony behind that starts at V (19).
+        self.assertEqual(
+            generate_row_labels(7, Section.RowLabelScheme.SKIP_IO, start=12),
+            ["N", "P", "Q", "R", "S", "T", "U"],
+        )
+        self.assertEqual(
+            generate_row_labels(5, Section.RowLabelScheme.SKIP_IO, start=19),
+            ["V", "W", "X", "Y", "Z"],
+        )
+        # Offsetting past the single letters rolls into doubles, same as an
+        # unoffsetted long section would.
+        self.assertEqual(generate_row_labels(2, Section.RowLabelScheme.SKIP_IO, start=23), ["Z", "AA"])
+
 
 class SeatNumberTests(TestCase):
     def test_sequential(self):
@@ -84,6 +99,17 @@ class SeatNumberTests(TestCase):
         )
         self.assertEqual(
             generate_seat_numbers(3, Section.NumberingScheme.HUNDREDS, row_index=1), [201, 202, 203]
+        )
+
+    def test_hundreds_flat_restarts_every_row(self):
+        # Continental center-block style: 101, 102, ... on EVERY row.
+        self.assertEqual(
+            generate_seat_numbers(3, Section.NumberingScheme.HUNDREDS_FLAT, row_index=0),
+            [101, 102, 103],
+        )
+        self.assertEqual(
+            generate_seat_numbers(3, Section.NumberingScheme.HUNDREDS_FLAT, row_index=1),
+            [101, 102, 103],
         )
 
 

@@ -1,0 +1,45 @@
+/* Density overrides for the unfold-skinned /admin/ (platform-operator
+   surface only — loaded via UNFOLD["STYLES"], never on tenant storefronts
+   or the staff dashboard). Unfold's defaults are airy; tenant ops at
+   dozens-to-hundreds of rows wants tighter tables, forms, and sidebar.
+
+   Unfold sets sizes with Tailwind utility classes (h-[45px] cells,
+   min-h-[59px] form rows, py-2 inputs), so overrides here must out-rank
+   single-class utility selectors — the id/two-class selectors below do. */
+
+/* Changelists: shorter fixed-height rows, tighter cell padding, smaller type */
+#result_list {
+    font-size: 0.8125rem;
+}
+
+#result_list th,
+#result_list td {
+    height: 34px;              /* unfold: h-[45px] */
+    padding-top: 0.1875rem;
+    padding-bottom: 0.1875rem;
+}
+
+/* Change forms: drop the 59px row floor and tighten the row rhythm */
+.form-row .field-line {
+    min-height: 0;             /* unfold: min-h-[59px] */
+    padding-top: 0.375rem;     /* unfold: py-2.5 */
+    padding-bottom: 0.375rem;
+}
+
+/* Shorter text inputs / selects (checkbox, radio, file, color left alone —
+   shrinking a color input's padding collapses its swatch to a sliver) */
+.form-row .field-line input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="color"]),
+.form-row .field-line select,
+.form-row .field-line textarea {
+    padding-top: 0.3125rem;    /* unfold: py-2 */
+    padding-bottom: 0.3125rem;
+}
+
+/* Sidebar: shorter nav rows so every model group fits without scrolling */
+#nav-sidebar-inner {
+    font-size: 0.8125rem;
+}
+
+#nav-sidebar-inner a[id^="link-"] {
+    height: 30px;              /* unfold: h-[38px] */
+}

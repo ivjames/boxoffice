@@ -18,7 +18,12 @@ class PlatformContactForm(forms.Form):
         label="Your name",
         widget=forms.TextInput(attrs={"autocomplete": "name", "placeholder": "Alex Rivera"}),
     )
+    # max_length matches the model column (EmailField's 254): without it the
+    # form accepts up to 320 chars, which validates here but overflows the
+    # varchar(254) on the Postgres upgrade path -- a 500 instead of a field
+    # error, and a lost lead.
     email = forms.EmailField(
+        max_length=254,
         label="Email",
         widget=forms.EmailInput(
             attrs={"autocomplete": "email", "placeholder": "you@example.com"}

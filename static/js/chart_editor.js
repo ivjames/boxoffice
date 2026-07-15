@@ -213,6 +213,7 @@ function makeSection(raw) {
         seats_per_row: raw.seats_per_row,
         numbering_scheme: raw.numbering_scheme,
         row_label_scheme: raw.row_label_scheme,
+        row_label_start: raw.row_label_start || 0,
         removedIds: new Set((raw.removed_seats || []).map(([r, n]) => seatKey(r, n))),
         accessibleIds: new Set((raw.accessible_seats || []).map(([r, n]) => seatKey(r, n))),
         seatCount: 0,
@@ -399,6 +400,7 @@ function chartEditor(config) {
                 seats_per_row: section.seats_per_row,
                 numbering_scheme: section.numbering_scheme,
                 row_label_scheme: section.row_label_scheme,
+                row_label_start: section.row_label_start,
                 pivot_mode: section.pivot_mode,
                 pivot_x: section.pivot_x,
                 pivot_y: section.pivot_y,
@@ -1738,6 +1740,7 @@ function chartEditor(config) {
                         tier: this.newSectionForm.tier || "",
                         numbering_scheme: "sequential",
                         row_label_scheme: "skip_io",
+                        row_label_start: "0",
                     }),
                 });
                 let data = null;

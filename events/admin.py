@@ -1,9 +1,13 @@
 from django.contrib import admin
 
+from unfold.admin import ModelAdmin as UnfoldModelAdmin
+from unfold.admin import StackedInline as UnfoldStackedInline
+from unfold.admin import TabularInline as UnfoldTabularInline
+
 from .models import Event, GAAllocation, Performance, PriceTier, PricingZone, ZoneTemplate
 
 
-class PerformanceInline(admin.TabularInline):
+class PerformanceInline(UnfoldTabularInline):
     model = Performance
     extra = 0
     fields = ("venue", "starts_at", "seating_mode", "status")
@@ -11,7 +15,7 @@ class PerformanceInline(admin.TabularInline):
 
 
 @admin.register(Event)
-class EventAdmin(admin.ModelAdmin):
+class EventAdmin(UnfoldModelAdmin):
     list_display = ("title", "organization", "status", "category", "created_at")
     list_filter = ("organization", "status", "category")
     search_fields = ("title", "slug", "description")
@@ -19,13 +23,13 @@ class EventAdmin(admin.ModelAdmin):
     inlines = [PerformanceInline]
 
 
-class GAAllocationInline(admin.StackedInline):
+class GAAllocationInline(UnfoldStackedInline):
     model = GAAllocation
     extra = 0
 
 
 @admin.register(Performance)
-class PerformanceAdmin(admin.ModelAdmin):
+class PerformanceAdmin(UnfoldModelAdmin):
     list_display = ("event", "venue", "starts_at", "seating_mode", "status", "organization")
     list_filter = ("organization", "seating_mode", "status", "venue")
     search_fields = ("event__title",)
@@ -33,7 +37,7 @@ class PerformanceAdmin(admin.ModelAdmin):
 
 
 @admin.register(PriceTier)
-class PriceTierAdmin(admin.ModelAdmin):
+class PriceTierAdmin(UnfoldModelAdmin):
     """Staff can set BOTH `performance` and `section` here to create a
     per-performance override (a higher/lower price for that section on one
     specific performance) -- the dashboard CRUD only ever creates the GA
@@ -58,20 +62,20 @@ class PriceTierAdmin(admin.ModelAdmin):
 
 
 @admin.register(GAAllocation)
-class GAAllocationAdmin(admin.ModelAdmin):
+class GAAllocationAdmin(UnfoldModelAdmin):
     list_display = ("performance", "capacity", "sold", "organization")
     list_filter = ("organization",)
 
 
 @admin.register(ZoneTemplate)
-class ZoneTemplateAdmin(admin.ModelAdmin):
+class ZoneTemplateAdmin(UnfoldModelAdmin):
     list_display = ("name", "color", "organization")
     list_filter = ("organization",)
     search_fields = ("name",)
 
 
 @admin.register(PricingZone)
-class PricingZoneAdmin(admin.ModelAdmin):
+class PricingZoneAdmin(UnfoldModelAdmin):
     list_display = ("name", "amount", "color", "performance", "template", "organization")
     list_filter = ("organization", "performance")
     search_fields = ("name", "performance__event__title")

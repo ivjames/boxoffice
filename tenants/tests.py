@@ -776,6 +776,17 @@ class PlatformContactFormTests(TestCase):
         self.assertContains(resp, 'value="Alex Rivera"')  # inputs preserved
         self.assertEqual(ContactInquiry.objects.count(), 0)
 
+    def test_overlong_email_is_a_field_error_not_a_500(self):
+        # forms.EmailField without max_length allows up to 320 chars; the
+        # model column is varchar(254). On Postgres the create() would blow
+        # up AFTER validation passed -- so the form must cap at 254 and turn
+        # this into an ordinary field error.
+        data = dict(self.VALID, email="a" * 243 + "@example.com")  # 255 chars
+        resp = self.client.post("/contact/", data)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "contact-form__error")
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+
     # --- abuse guards -------------------------------------------------------
 
     def test_honeypot_pretends_success_but_stores_and_sends_nothing(self):

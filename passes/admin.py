@@ -1,10 +1,12 @@
 from django.contrib import admin
 
+from unfold.admin import ModelAdmin as UnfoldModelAdmin
+
 from .models import PassProduct, PassPurchase, PassRedemption
 
 
 @admin.register(PassProduct)
-class PassProductAdmin(admin.ModelAdmin):
+class PassProductAdmin(UnfoldModelAdmin):
     list_display = ("name", "organization", "kind", "price", "credit_count", "is_active", "created_at")
     list_filter = ("organization", "kind", "is_active")
     search_fields = ("name",)
@@ -13,7 +15,7 @@ class PassProductAdmin(admin.ModelAdmin):
 
 
 @admin.register(PassPurchase)
-class PassPurchaseAdmin(admin.ModelAdmin):
+class PassPurchaseAdmin(UnfoldModelAdmin):
     list_display = ("id", "organization", "product", "kind", "status", "credits_remaining", "created_at")
     list_filter = ("organization", "kind", "status")
     search_fields = ("order__buyer_email", "guest__email")
@@ -23,7 +25,7 @@ class PassPurchaseAdmin(admin.ModelAdmin):
 
 
 @admin.register(PassRedemption)
-class PassRedemptionAdmin(admin.ModelAdmin):
+class PassRedemptionAdmin(UnfoldModelAdmin):
     list_display = ("id", "organization", "pass_purchase", "event", "performance", "credits_used", "face_value", "created_at")
     list_filter = ("organization",)
     readonly_fields = ("created_at",)

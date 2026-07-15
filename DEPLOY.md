@@ -24,7 +24,7 @@ both have bitten a real deploy:
 
 ```bash
 doctl account get          # provision-site's DNS step fails hard if doctl isn't authed
-python3 --version          # need >= 3.10 for Django 5.2
+python3 --version          # need >= 3.11 (django-unfold's floor; Django 5.2 itself only needs 3.10)
 apt-get install -y python3-venv python3-dev   # often absent on a Node-first box
 ```
 
@@ -142,6 +142,16 @@ start it by hand once:
 ```bash
 pm2 start deploy/ecosystem.config.js
 pm2 save
+```
+
+**One time per droplet — install pm2's boot hook, or the app won't come back
+after a reboot.** `pm2 save` only writes the process dump; without the systemd
+hook nothing replays it at boot. This bites hard here because the `boxoffice`
+pm2 app also fronts every `*.boxo.show` tenant subdomain.
+
+```bash
+pm2 startup systemd -u root --hp /root   # run the sudo command it prints, once
+systemctl is-enabled pm2-root            # verify -> should print `enabled`
 ```
 
 `bin/boxoffice serve` execs:

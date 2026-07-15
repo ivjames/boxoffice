@@ -5,6 +5,8 @@ from django.contrib import admin, messages
 from django.shortcuts import redirect
 from django.urls import path
 
+from unfold.admin import ModelAdmin as UnfoldModelAdmin
+
 from .models import ContactInquiry, Organization
 
 # Sorted list of IANA zones for the timezone dropdown — replaces the free-text
@@ -57,7 +59,7 @@ class OrganizationAdminForm(forms.ModelForm):
 
 
 @admin.register(Organization)
-class OrganizationAdmin(admin.ModelAdmin):
+class OrganizationAdmin(UnfoldModelAdmin):
     form = OrganizationAdminForm
     change_form_template = "admin/tenants/organization/change_form.html"
 
@@ -165,7 +167,7 @@ class OrganizationAdmin(admin.ModelAdmin):
 
 
 @admin.register(ContactInquiry)
-class ContactInquiryAdmin(admin.ModelAdmin):
+class ContactInquiryAdmin(UnfoldModelAdmin):
     """Triage surface for landing-page contact-form submissions. The
     submission itself is read-only (it's what the prospective venue actually
     wrote -- editing it in place would falsify the record); the only workflow

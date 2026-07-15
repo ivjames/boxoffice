@@ -6,6 +6,7 @@ dev.py / prod.py, which both `from .base import *` and then adjust.
 from pathlib import Path
 
 import environ
+from django.templatetags.static import static
 
 # BASE_DIR = repo root (config/settings/base.py -> config/settings -> config -> repo root)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -36,6 +37,9 @@ def harden_sqlite(databases):
     return databases
 
 INSTALLED_APPS = [
+    "unfold",  # must precede django.contrib.admin (template overrides)
+    "unfold.contrib.forms",
+    "unfold.contrib.filters",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -246,3 +250,30 @@ PLATFORM_CONTACT_EMAIL = env("PLATFORM_CONTACT_EMAIL", default="hello@boxo.show"
 # SHOW_ADMIN_LINK=true so operators can reach the admin from its landing page.
 # /admin/ itself is always reachable directly regardless of this flag.
 SHOW_ADMIN_LINK = env.bool("SHOW_ADMIN_LINK", default=False)
+
+# --- AI SEATING-CHART PARSING (venues/chart_parsing.py) --------------------
+# The dashboard's "Import from image/PDF" flow and the parse_seating_chart
+# management command send the uploaded chart to the Claude API (vision) and
+# build a parametric SeatingChart from the result. Both fail with a clear
+# "not configured" error when no API key is available -- every other part of
+# the app works without one. When ANTHROPIC_API_KEY is unset here, the
+# anthropic SDK's own environment resolution is the fallback.
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+CHART_PARSING_MODEL = env("CHART_PARSING_MODEL", default="claude-opus-4-8")
+
+# --- django-unfold (admin reskin) -----------------------------------------
+# Branding for the /admin/ skin. The functional site_header/site_title
+# strings in config/urls.py remain the fallback for anything unfold doesn't
+# cover.
+UNFOLD = {
+    "SITE_TITLE": "Boxo.show admin",
+    "SITE_HEADER": "Boxo.show",
+    "SITE_SUBHEADER": "Platform administration",
+    # Denser change forms: label sits beside the input instead of above it.
+    "COMPRESSED_FIELDS": True,
+    # Density overrides for tables/sidebar (admin-only stylesheet — resolved
+    # lazily per request so the WhiteNoise manifest hash is picked up).
+    "STYLES": [
+        lambda request: static("css/admin-density.css"),
+    ],
+}

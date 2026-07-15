@@ -120,3 +120,38 @@ class TenantScopedModel(models.Model):
     class Meta:
         abstract = True
         indexes = [models.Index(fields=["organization"])]
+
+
+class ContactInquiry(models.Model):
+    """A "Get in touch" submission from the platform landing page's contact
+    form. Deliberately platform-level (NOT TenantScopedModel): these are
+    prospective venues writing to Boxo.show itself, before any Organization
+    exists for them.
+
+    The DB row is the source of truth -- the form works (and leads are never
+    lost) even while outbound mail is unconfigured. A courtesy email
+    notification is layered on top only when delivery actually works; see
+    tenants/emails.py and DEPLOY.md's "Mail" section.
+    """
+
+    name = models.CharField(max_length=120)
+    email = models.EmailField()
+    venue = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="The venue/theater the sender is asking about (optional).",
+    )
+    message = models.TextField(max_length=5000)
+
+    # Triage flag for /admin: flipped by the "Mark handled" action once
+    # someone has replied. Submission fields above stay read-only there.
+    is_handled = models.BooleanField(default=False, db_default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name_plural = "contact inquiries"
+
+    def __str__(self):
+        return f"{self.name} <{self.email}>"

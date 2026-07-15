@@ -1,11 +1,25 @@
-from django.http import HttpResponse, JsonResponse
+import logging
+
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.templatetags.static import static as static_url
 from django.urls import reverse
 from django.utils import timezone
 
+from accounts import throttle
 from events.models import Event, Performance
 from orders import services
+
+from .emails import notify_contact_inquiry
+from .forms import PlatformContactForm
+from .models import ContactInquiry
+
+logger = logging.getLogger(__name__)
+
+# accounts.throttle scope for the landing contact form: caps how many
+# inquiries one IP can submit per window (same knobs as the login throttle,
+# LOGIN_RATELIMIT_* -- see config/settings/base.py).
+_CONTACT_THROTTLE_SCOPE = "platform-contact"
 
 
 def healthz(request):
@@ -96,6 +110,61 @@ def _card_pricing_and_availability(performance):
     return min_price, available
 
 
+def contact(request):
+    """POST target for the landing page's "Get in touch" form. Platform host
+    only -- on a tenant subdomain this endpoint doesn't exist (404), the same
+    isolation stance as home(): a theater's storefront never grows platform
+    surfaces. GET just bounces to the form section.
+
+    The inquiry is stored in the DB (ContactInquiry, triaged in /admin), so
+    the form works before outbound mail is set up; notify_contact_inquiry
+    layers a best-effort email on top once it is. Two abuse guards: the
+    form's honeypot (bots get the success redirect but write nothing, so
+    they can't tell they were caught) and the shared cache-backed IP
+    throttle (accounts/throttle.py) capping stored inquiries per window.
+    """
+    if request.organization is not None:
+        raise Http404
+    if request.method != "POST":
+        return redirect(reverse("home") + "#contact")
+
+    form = PlatformContactForm(request.POST)
+    if not form.is_valid():
+        # Re-render the landing with the bound form so field errors show
+        # inline in the #contact section, inputs preserved.
+        return render(
+            request,
+            "tenants/platform_landing.html",
+            {"contact_form": form, "contact_sent": False},
+        )
+
+    if form.is_spam():
+        logger.info("Contact form honeypot tripped; dropping submission.")
+        return redirect(reverse("home") + "?sent=1#contact")
+
+    if throttle.is_locked_out(_CONTACT_THROTTLE_SCOPE, request):
+        form.add_error(
+            None,
+            "Too many messages from your network just now — please wait a few "
+            "minutes and try again.",
+        )
+        return render(
+            request,
+            "tenants/platform_landing.html",
+            {"contact_form": form, "contact_sent": False},
+        )
+
+    inquiry = ContactInquiry.objects.create(
+        name=form.cleaned_data["name"],
+        email=form.cleaned_data["email"],
+        venue=form.cleaned_data["venue"],
+        message=form.cleaned_data["message"],
+    )
+    throttle.register_failure(_CONTACT_THROTTLE_SCOPE, request)
+    notify_contact_inquiry(inquiry)
+    return redirect(reverse("home") + "?sent=1#contact")
+
+
 def home(request):
     """
     Root URL. Renders the tenant storefront home (published events with at
@@ -105,7 +174,16 @@ def home(request):
     that case, so the platform host never leaks a theater's catalog.
     """
     if request.organization is None:
-        return render(request, "tenants/platform_landing.html")
+        return render(
+            request,
+            "tenants/platform_landing.html",
+            {
+                "contact_form": PlatformContactForm(),
+                # PRG landing: contact() redirects here with ?sent=1#contact,
+                # which swaps the form for a thank-you card.
+                "contact_sent": request.GET.get("sent") == "1",
+            },
+        )
 
     now = timezone.now()
     events = Event.objects.for_organization(request.organization).filter(

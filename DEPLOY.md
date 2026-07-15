@@ -229,14 +229,19 @@ rather than burning them against a dead transport. Wire up SMTP (`.env`'s
 RFC 8058 bulk-sender requirement), pointing at the same signed unsubscribe link
 carried in the email body. Tune throughput with `CAMPAIGN_BATCH_SIZE` in `.env`.
 
-## Mail (do this before contact addresses go on the live site)
+## Mail (outbound sends + the hello@ mailbox)
 
-The live site publishes email addresses in three places, and none of them
-work until this section is done:
+The live site touches email in three ways, and this section makes all of
+them real:
 
-- **`hello@boxo.show`** — the landing page's "Get in touch" CTA
-  (`templates/tenants/platform_landing.html`, hero + footer). With no MX
-  records on `boxo.show`, mail to it **hard-bounces** today.
+- **The landing page's "Get in touch" contact form** — deliberately NOT a
+  published address (there is no `mailto:` anywhere on the platform host).
+  Inquiries are stored in the DB (`tenants.ContactInquiry`, triaged in
+  `/admin` → Contact inquiries) with **zero mail dependency**, so lead
+  capture works before any of this section is done. Once outbound SMTP is
+  configured, each inquiry additionally emails a heads-up to
+  `PLATFORM_CONTACT_EMAIL` (default `hello@boxo.show`), with Reply-To set
+  to the prospective venue.
 - **`no-reply@boxo.show`** — the From address on every ticket confirmation,
   guest magic-link, and campaign email (`DEFAULT_FROM_EMAIL`).
 - **each tenant's `contact_email`** — published on their public FAQ page by
@@ -244,13 +249,13 @@ work until this section is done:
 
 Nothing crashes while mail is unconfigured — the app degrades on purpose
 (guest sign-in shows the magic link on screen, the campaign worker leaves
-sends `pending`, and a receipt email that can't send never invalidates the
-order — the buyer's tickets page still works; the stub-checkout path logs
-the failure, the Stripe webhook path lets Stripe retry). But a published
-contact address that bounces is worse than no address, so wire this up in
-the same pass that puts contact info on the site. All the DNS below lives in
-the DigitalOcean `boxo.show` zone, so every record is one `doctl` command
-from the droplet.
+sends `pending`, contact inquiries still land in `/admin`, and a receipt
+email that can't send never invalidates the order — the buyer's tickets
+page still works; the stub-checkout path logs the failure, the Stripe
+webhook path lets Stripe retry). But real ticket sales need real receipt
+emails, and leads deserve replies from a `boxo.show` address — so do this
+before venues go live. All the DNS below lives in the DigitalOcean
+`boxo.show` zone, so every record is one `doctl` command from the droplet.
 
 The chosen stack — same pairing as capcrop: **Resend** relays everything the
 app sends, **Zoho Mail** hosts the `hello@boxo.show` mailbox (free tier, for
@@ -327,12 +332,15 @@ SDK, no API integration.
 ### 2. Inbound: Zoho Mail hosts hello@boxo.show
 
 DigitalOcean hosts the DNS zone but sells no mailboxes — until MX records
-exist, every `@boxo.show` address bounces. Zoho Mail's free tier (up to 5
-users; web + mobile clients — IMAP/POP is a paid feature) hosts a **real
-mailbox**, so replies go out *as* `hello@boxo.show` — which reads far more
-legit to a venue you're trying to onboard than a forward answered from a
-personal address. "For now": outgrowing it later just means repointing the
-MX records; nothing else in this section changes.
+exist, every `@boxo.show` address bounces. `hello@boxo.show` isn't published
+anywhere (the contact form replaced it), but it still needs to exist: it's
+where contact-form notifications and DMARC reports go, and — more
+importantly — the address you **reply to leads from**. Zoho Mail's free tier
+(up to 5 users; web + mobile clients — IMAP/POP is a paid feature) hosts a
+real mailbox, so those replies go out *as* `hello@boxo.show` — which reads
+far more legit to a venue you're trying to onboard than a personal address.
+"For now": outgrowing it later just means repointing the MX records; nothing
+else in this section changes.
 
 1. In the Zoho Mail admin console, add `boxo.show` and prove ownership with
    the TXT code it issues:

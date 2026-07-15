@@ -233,6 +233,13 @@ ENABLE_TEST_CHECKOUT = env.bool("ENABLE_TEST_CHECKOUT", default=False)
 LOGIN_RATELIMIT_MAX_ATTEMPTS = env.int("LOGIN_RATELIMIT_MAX_ATTEMPTS", default=10)
 LOGIN_RATELIMIT_WINDOW_SECONDS = env.int("LOGIN_RATELIMIT_WINDOW_SECONDS", default=900)
 
+# Where the landing page's contact-form notification email goes (the form
+# stores every inquiry in the DB regardless -- this is the heads-up copy,
+# sent only once email delivery is configured; see tenants/emails.py and
+# DEPLOY.md "Mail"). The address is intentionally NOT published anywhere on
+# the site -- the form replaced the old mailto: links.
+PLATFORM_CONTACT_EMAIL = env("PLATFORM_CONTACT_EMAIL", default="hello@boxo.show")
+
 # Surface a convenience "Admin" link (-> /admin/) in the platform-host nav and
 # footer. Default False: the public marketing landing page (prod) deliberately
 # does not advertise the superuser surface. The staging/beta deploy sets

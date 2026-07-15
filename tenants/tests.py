@@ -4,9 +4,12 @@ from types import SimpleNamespace
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
+from django.core import mail
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.management import CommandError, call_command
 from django.template import Context, Template
@@ -17,7 +20,7 @@ from django.utils import timezone
 from events.models import Event, GAAllocation, Performance, PriceTier
 from events.timezones import in_venue_tz
 from tenants.admin import OrganizationAdmin, OrganizationAdminForm
-from tenants.models import Organization
+from tenants.models import ContactInquiry, Organization
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
 
@@ -695,3 +698,114 @@ class SeoRoutesTests(TestCase):
         resp = self.client.get("/favicon.ico", HTTP_HOST="roxy.localhost")
         self.assertEqual(resp.status_code, 301)
         self.assertIn("favicon", resp["Location"])
+
+
+class PlatformContactFormTests(TestCase):
+    """The landing page's "Get in touch" contact form (platform host only).
+    It replaced the mailto:hello@boxo.show CTAs so the live site publishes no
+    raw email address: submissions are stored as ContactInquiry rows (the
+    source of truth, triaged in /admin) and a courtesy email notification is
+    layered on top only when email delivery is configured."""
+
+    def setUp(self):
+        # The IP throttle counts in the (per-process) LocMemCache, which
+        # tests share -- start each test with a clean window.
+        cache.clear()
+
+    VALID = {
+        "name": "Alex Rivera",
+        "email": "alex@roxy.example",
+        "venue": "The Roxy Theater",
+        "message": "We run a 200-seat house and want to sell online.",
+    }
+
+    def _tenant_host(self):
+        make_org("roxy")
+        return "roxy.localhost"
+
+    # --- the landing page itself ------------------------------------------
+
+    def test_landing_shows_form_and_no_mailto(self):
+        resp = self.client.get("/")  # default testserver host -> platform
+        self.assertContains(resp, 'action="/contact/"')
+        self.assertContains(resp, 'id="contact"')
+        self.assertNotContains(resp, "mailto:")
+
+    def test_landing_sent_flag_swaps_form_for_thanks(self):
+        resp = self.client.get("/?sent=1")
+        self.assertContains(resp, "message received")
+        self.assertNotContains(resp, 'action="/contact/"')
+
+    # --- submitting ---------------------------------------------------------
+
+    def test_valid_post_stores_inquiry_and_redirects(self):
+        resp = self.client.post("/contact/", self.VALID)
+        self.assertRedirects(resp, "/?sent=1#contact", fetch_redirect_response=False)
+        inquiry = ContactInquiry.objects.get()
+        self.assertEqual(inquiry.name, "Alex Rivera")
+        self.assertEqual(inquiry.email, "alex@roxy.example")
+        self.assertEqual(inquiry.venue, "The Roxy Theater")
+        self.assertFalse(inquiry.is_handled)
+
+    def test_valid_post_sends_notification_with_reply_to(self):
+        # Tests run on the locmem backend, which email_delivery_configured()
+        # treats as working -- so the courtesy notification goes out.
+        self.client.post("/contact/", self.VALID)
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, [settings.PLATFORM_CONTACT_EMAIL])
+        self.assertEqual(sent.reply_to, ["alex@roxy.example"])
+        self.assertIn("The Roxy Theater", sent.body)
+
+    def test_notification_skipped_while_smtp_unconfigured_but_row_saved(self):
+        # The blank-EMAIL_HOST prod state (see DEPLOY.md "Mail"): the lead is
+        # never lost -- only the courtesy email is skipped.
+        with override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend", EMAIL_HOST=""
+        ):
+            resp = self.client.post("/contact/", self.VALID)
+        self.assertRedirects(resp, "/?sent=1#contact", fetch_redirect_response=False)
+        self.assertEqual(ContactInquiry.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_invalid_post_rerenders_with_errors_and_stores_nothing(self):
+        data = dict(self.VALID, email="not-an-email")
+        resp = self.client.post("/contact/", data)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "contact-form__error")
+        self.assertContains(resp, 'value="Alex Rivera"')  # inputs preserved
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+
+    # --- abuse guards -------------------------------------------------------
+
+    def test_honeypot_pretends_success_but_stores_and_sends_nothing(self):
+        data = dict(self.VALID, website="https://spam.example")
+        resp = self.client.post("/contact/", data)
+        # Indistinguishable from success, so a bot can't tell it was caught...
+        self.assertRedirects(resp, "/?sent=1#contact", fetch_redirect_response=False)
+        # ...but nothing was kept and nobody was notified.
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(LOGIN_RATELIMIT_MAX_ATTEMPTS=2)
+    def test_ip_throttle_caps_stored_inquiries(self):
+        for i in range(2):
+            self.client.post("/contact/", dict(self.VALID, name=f"Sender {i}"))
+        resp = self.client.post("/contact/", dict(self.VALID, name="One Too Many"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Too many messages")
+        self.assertEqual(ContactInquiry.objects.count(), 2)
+
+    # --- host scoping -------------------------------------------------------
+
+    def test_contact_404s_on_tenant_hosts(self):
+        host = self._tenant_host()
+        self.assertEqual(
+            self.client.post("/contact/", self.VALID, HTTP_HOST=host).status_code, 404
+        )
+        self.assertEqual(self.client.get("/contact/", HTTP_HOST=host).status_code, 404)
+        self.assertEqual(ContactInquiry.objects.count(), 0)
+
+    def test_get_redirects_to_form_section(self):
+        resp = self.client.get("/contact/")
+        self.assertRedirects(resp, "/#contact", fetch_redirect_response=False)

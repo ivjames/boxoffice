@@ -44,6 +44,7 @@ def section_spec(**overrides):
         "row_x_offset": 0.0,
         "alt_row_seat_delta": 0,
         "numbering_scheme": "sequential",
+        "seat_number_base": 0,
         "row_label_scheme": "skip_io",
         "row_label_start": 0,
         "removed_seats": [],
@@ -129,17 +130,37 @@ class ParseChartFileTests(TestCase):
                     parse_chart_file(b"fake", "image/png")
 
     def test_usage_is_attached_and_describable(self):
+        # Default parse is two passes (extract + verify) -- usage sums both.
         client = fake_client(fake_response(chart_spec()))
         with mock.patch.object(chart_parsing, "_get_client", return_value=client):
             spec = parse_chart_file(b"fake", "image/png")
-        self.assertEqual(spec["usage"]["input_tokens"], 4182)
-        self.assertEqual(spec["usage"]["output_tokens"], 1905)
-        self.assertIn("4,182 tokens in", chart_parsing.describe_usage(spec["usage"]))
-        self.assertIn("1,905 out", chart_parsing.describe_usage(spec["usage"]))
+        self.assertEqual(client.messages.create.call_count, 2)
+        self.assertEqual(spec["usage"]["input_tokens"], 8364)
+        self.assertEqual(spec["usage"]["output_tokens"], 3810)
+        self.assertIn("8,364 tokens in", chart_parsing.describe_usage(spec["usage"]))
+        self.assertIn("3,810 out", chart_parsing.describe_usage(spec["usage"]))
         # A spec carrying usage still builds (validate ignores unknown keys).
         org = make_org("usage")
         venue = Venue.objects.create(organization=org, name="Stage")
         build_chart_from_spec(venue, spec)
+
+    def test_verify_pass_sends_first_pass_spec_back(self):
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(b"fake", "image/png")
+        second_prompt = client.messages.create.call_args_list[1].kwargs["messages"][0]["content"][1]["text"]
+        self.assertIn("Re-examine the chart", second_prompt)
+        self.assertIn('"chart_name": "Main house"', second_prompt)
+        # The image rides along on the verify pass too.
+        second_file_block = client.messages.create.call_args_list[1].kwargs["messages"][0]["content"][0]
+        self.assertEqual(second_file_block["type"], "image")
+
+    def test_verify_false_is_a_single_pass(self):
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            spec = parse_chart_file(b"fake", "image/png", verify=False)
+        self.assertEqual(client.messages.create.call_count, 1)
+        self.assertEqual(spec["usage"]["input_tokens"], 4182)
 
     def test_describe_usage_is_empty_when_unknown(self):
         # A response with no usage (or a caller without a parse) renders

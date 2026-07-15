@@ -214,16 +214,23 @@ class SectionForm(forms.ModelForm):
 
     class Meta:
         model = Section
-        fields = ["name", "tier", "numbering_scheme", "row_label_scheme", "row_label_start"]
+        fields = [
+            "name", "tier", "numbering_scheme", "seat_number_base",
+            "row_label_scheme", "row_label_start",
+        ]
 
     def __init__(self, *args, organization, chart, **kwargs):
         super().__init__(*args, **kwargs)
         self.organization = organization
         self.chart = chart
         self.fields["row_label_start"].required = False
+        self.fields["seat_number_base"].required = False
 
     def clean_row_label_start(self):
         return self.cleaned_data.get("row_label_start") or 0
+
+    def clean_seat_number_base(self):
+        return self.cleaned_data.get("seat_number_base") or 0
 
     def clean_name(self):
         # `chart` isn't a form field (it's fixed by the URL/view, not user-

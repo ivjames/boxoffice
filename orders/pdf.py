@@ -59,6 +59,29 @@ def render_order_pdf(order):
         )
     )
 
+    # --- Theater logo (first page, top-right) ---
+    # Brand the downloadable/printed ticket with the org's logo when it has one,
+    # opposite the event title. Drawn inside a fixed box with preserveAspectRatio
+    # so any logo shape fits without distortion, and mask="auto" so a transparent
+    # PNG (the normalized/background-removed form) has no white plate. Wrapped
+    # like the QR below: a bad logo must never sink the whole PDF.
+    logo_reader = _logo_reader(order.organization, ImageReader)
+    if logo_reader is not None:
+        logo_w, logo_h = 1.6 * inch, 0.55 * inch
+        try:
+            c.drawImage(
+                logo_reader,
+                page_w - margin - logo_w,
+                page_h - margin - logo_h,
+                width=logo_w,
+                height=logo_h,
+                preserveAspectRatio=True,
+                anchor="ne",
+                mask="auto",
+            )
+        except Exception:
+            pass
+
     # --- Order header (first page) ---
     c.setFillColor(black)
     c.setFont("Helvetica-Bold", 18)
@@ -129,6 +152,25 @@ def render_order_pdf(order):
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+def _logo_reader(organization, image_reader_cls):
+    """A reportlab ImageReader for the org's logo, or None if it has no logo or
+    the file can't be read. Reads the bytes into memory (the storage file may be
+    remote/one-shot) and never raises -- a broken logo just means an unbranded
+    PDF, not a failed download."""
+    logo = getattr(organization, "logo", None)
+    if not logo:
+        return None
+    try:
+        logo.open("rb")
+        try:
+            data = logo.read()
+        finally:
+            logo.close()
+        return image_reader_cls(io.BytesIO(data))
+    except Exception:
+        return None
 
 
 def _seat_label(ticket):

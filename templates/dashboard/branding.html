@@ -91,6 +91,22 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                         {{ branding_form.logo.label_tag }}
                         {{ branding_form.logo }}
                         {{ branding_form.logo.errors }}
+                        <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background.</p>
+                        {% if organization.logo %}
+                            {# Standalone form so removing the background acts on the SAVED
+                               logo immediately, independent of the unsaved color edits in
+                               the main branding form. #}
+                            <div class="brand-logo__current">
+                                <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview">
+                                <form method="post" action="{% url 'dashboard_branding_logo_remove_bg' %}" class="brand-logo__bg-form" data-logo-bg-form>
+                                    {% csrf_token %}
+                                    <button type="submit" class="button button--secondary button--sm" data-logo-bg-btn>
+                                        <span class="logo-bg-btn__label">Remove background</span>
+                                        <span class="spinner" hidden aria-hidden="true"></span>
+                                    </button>
+                                </form>
+                            </div>
+                        {% endif %}
                     </div>
                     <div class="font-grid">
                         <div class="field">
@@ -641,6 +657,22 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                 });
             });
         }
+    }
+
+    // ---- "Remove background": a plain form POST (the server does the work and
+    // redirects back). Segmentation takes a few seconds, so disable the button
+    // and show the spinner on submit to signal it's running -- no fetch/JSON.
+    var bgForm = document.querySelector("[data-logo-bg-form]");
+    if (bgForm) {
+        bgForm.addEventListener("submit", function () {
+            var btn = bgForm.querySelector("[data-logo-bg-btn]");
+            if (!btn) return;
+            btn.disabled = true;
+            var label = btn.querySelector(".logo-bg-btn__label");
+            var spinner = btn.querySelector(".spinner");
+            if (label) label.textContent = "Removing…";
+            if (spinner) spinner.hidden = false;
+        });
     }
 })();
 </script>

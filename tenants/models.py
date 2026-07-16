@@ -1,9 +1,11 @@
+from django.core.files.uploadedfile import UploadedFile
 from django.core.validators import RegexValidator
 from django.db import models
 from django.utils.text import slugify
 
 from .color_schemes import COLOR_ROLES, HEX_COLOR_RE, ROLE_TO_ORG_FIELD
 from .fonts import DEFAULT_BODY_FONT, DEFAULT_HEADING_FONT, font_stack, google_families
+from .logo_images import process_logo_file, validate_logo_upload
 
 # Shared validator for every stored hex color -- keeps the model, the admin,
 # and the dashboard branding form agreeing on what "a color" is.
@@ -44,7 +46,14 @@ class Organization(models.Model):
         help_text="The subdomain this tenant is served on, e.g. 'roxy' for roxy.boxo.show.",
     )
 
-    logo = models.ImageField(upload_to="org_logos/", blank=True, null=True)
+    logo = models.ImageField(
+        upload_to="org_logos/",
+        blank=True,
+        null=True,
+        validators=[validate_logo_upload],
+        help_text="Shown in your storefront header, emails, browser tab, and "
+        "social-share cards. Large images are automatically resized.",
+    )
 
     # Six-role brand palette (see tenants/color_schemes.py for the role model).
     # `primary_color` and `accent_color` predate the six-role scheme and stay
@@ -147,6 +156,17 @@ class Organization(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        # Normalize a freshly-uploaded logo (downscale + optimized PNG) at the
+        # one choke point every writer passes through -- the dashboard branding
+        # form, Django admin, and the background-removal endpoint alike. The
+        # UploadedFile check keeps this to NEW uploads: a logo already stored in
+        # media is a plain FieldFile here and is left untouched, so re-saving an
+        # org for any other reason never re-encodes (and degrades) its logo.
+        if self.logo and isinstance(getattr(self.logo, "file", None), UploadedFile):
+            process_logo_file(self.logo)
+        super().save(*args, **kwargs)
 
     @property
     def palette(self):

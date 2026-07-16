@@ -813,9 +813,9 @@ one that pays for the 170 MB download), adjusting the dir for the site:
 
 ```bash
 cd /var/www/boxoffice-beta && source venv/bin/activate
-pip install -r requirements.txt                        # installs rembg[cpu] (no-op if boxoffice deploy already ran)
+pip install -r requirements.txt                        # installs rembg[cpu] (no-op if the deploy already ran)
 U2NET_HOME=/opt/u2net python -c "import rembg; rembg.new_session()"   # fetches + caches the model
-boxoffice restart
+boxoffice-beta restart                                 # beta's own CLI (see the beta setup above); `boxoffice` would restart PROD
 ```
 
 ## Backups

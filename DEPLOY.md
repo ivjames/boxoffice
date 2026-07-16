@@ -742,22 +742,42 @@ noise (a Wix focus-ring blue, an unused theme accent) is loud — the heuristic
 can't tell them apart without *seeing* the page. Installing a headless browser
 switches derive to a **vision** path: it screenshots the homepage and lets
 Claude pick the palette from what actually renders (so a black-and-white brand
-reads as black-and-white). Setup on the droplet:
+reads as black-and-white).
+
+Use the **Python** Playwright — it's the `playwright` line in `requirements.txt`,
+driven through `python -m playwright`. **Do not `apt install playwright` or
+`node-playwright`**: those are the Node.js binding, pull in `nodejs`, and are
+not what this uses. Setup on the droplet (adjust the dir for the site you're
+enabling — `-beta` for beta):
 
 ```bash
 cd /var/www/boxoffice && source venv/bin/activate
-pip install -r requirements.txt          # brings in the `playwright` package
-playwright install-deps chromium         # OS libs Chromium needs (needs root)
-playwright install chromium              # the browser binary itself
+pip install -r requirements.txt                       # installs the `playwright` package
+python -m playwright --version                        # sanity-check the Python CLI
+sudo venv/bin/python -m playwright install-deps chromium   # apt-installs Chromium's OS libs (libnss3…); needs root
+python -m playwright install chromium                 # downloads the browser binary
 boxoffice restart
 ```
 
+Two things that bite on a server:
+
+- **Install as the user pm2 runs the app as.** `playwright install chromium`
+  drops the browser in *that user's* `~/.cache/ms-playwright`; a mismatch means
+  the worker can't find it. To make it user-independent, set
+  `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` (or any shared dir) in `.env`, and
+  export the same value when you run `playwright install chromium` so the binary
+  lands there — the agent looks under `PLAYWRIGHT_BROWSERS_PATH` first.
+- **`install-deps` needs root** (hence `sudo`); the browser download does not.
+
 It's strictly additive: no browser (or a failed render) falls back to the
 text refinement, which falls back to the pure heuristic — derive never 500s on
-a missing browser. The render is SSRF-guarded like the fetch (public hosts
-only, every sub-resource re-checked) and bounded (above-the-fold viewport,
-~20s timeout). If the droplet sits behind an outbound proxy, set `HTTPS_PROXY`
-in the environment and the browser will honor it.
+a missing browser. Because the feature lives on `staging` first, enable it on
+**beta** (`/var/www/boxoffice-beta`); prod picks up the `playwright` requirement
+only once `staging → main` promotes. The render is SSRF-guarded like the fetch
+(public hosts only, every sub-resource re-checked, WebSocket/WebRTC disabled in
+the page) and bounded (above-the-fold viewport, ~20s timeout). If the droplet
+sits behind an outbound proxy, set `HTTPS_PROXY` in the environment and the
+browser will honor it.
 
 ## Backups
 

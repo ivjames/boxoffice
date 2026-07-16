@@ -3511,7 +3511,8 @@ table.dash-table th {
     font-size: 0.75rem;
 }
 
-/* Compact contiguous strip of chips (preset cards, found-colors ribbon). */
+/* Compact contiguous strip of chips (preset cards, found-colors ribbon,
+   the current-palette display). */
 .swatch-strip {
     display: flex;
     flex-wrap: wrap;
@@ -3524,6 +3525,37 @@ table.dash-table th {
     width: 2rem;
     height: 2rem;
     flex: 0 0 auto;
+}
+
+/* Full-bleed variant: chips share the row equally (used for the current
+   palette, where the six roles should span the whole strip). */
+.swatch-strip--fill .swatch-strip__chip {
+    flex: 1 0 0;
+    height: 2.5rem;
+}
+
+/* Role/hex captions aligned under a --fill strip: one equal-width column per
+   chip, so each label sits beneath its swatch. */
+.current-colors__labels {
+    display: flex;
+    margin-top: 0.35rem;
+}
+
+.current-colors__label {
+    flex: 1 0 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+    text-align: center;
+    font-size: 0.75rem;
+    padding: 0 0.15rem;
+}
+
+.current-colors__label code {
+    color: var(--muted-color, #6b7280);
+    font-size: 0.7rem;
 }
 
 /* Preset / saved-scheme gallery. */
@@ -3630,14 +3662,53 @@ table.dash-table th {
 /* Editor + live preview side by side (stacks under ~40rem, see below). */
 .brand-editor {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
-    gap: 1.25rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 19rem);
+    gap: 1.25rem 1.5rem;
     align-items: start;
     margin-bottom: 0.75rem;
 }
 
 .brand-editor .color-grid {
     margin-bottom: 0;
+}
+
+/* Columnar controls: the logo/fonts/tint/name metadata in one column, the six
+   color pickers + harmonize in the next, so the editor packs into the preview's
+   height instead of a tall single stack. Collapses to one column on narrow. */
+.brand-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem 1.25rem;
+    align-items: start;
+}
+
+.brand-controls__col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    min-width: 0;
+}
+
+/* Inside a control column the grids stay single-column-friendly (narrower
+   track), so they never overflow their half of the row. */
+.brand-controls .color-grid,
+.brand-controls .font-grid {
+    grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
+    margin-bottom: 0;
+    max-width: none;
+}
+
+.brand-controls .brand-tools,
+.brand-controls .page-tint-field,
+.brand-controls .brand-name-field {
+    margin-top: 0;
+    max-width: none;
+}
+
+@media (max-width: 52rem) {
+    .brand-controls {
+        grid-template-columns: 1fr;
+    }
 }
 
 .page-tint-field {

@@ -1,14 +1,14 @@
-import csv
 from decimal import Decimal
 
 from django.contrib import messages
 from django.db.models import Sum
-from django.http import HttpResponse
 from django.shortcuts import redirect, render
 
 from accounts.permissions import manager_required
 from donations.services import get_or_create_general_fund
 from orders.models import Order, OrderItem
+
+from ._common import csv_response
 
 from ..forms import DonationSettingsForm
 
@@ -67,12 +67,10 @@ def donations_report(request):
     total = items.aggregate(total=Sum("unit_amount"))["total"] or Decimal("0.00")
 
     if request.GET.get("format") == "csv":
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="donations.csv"'
-        writer = csv.writer(response)
-        writer.writerow(["Date", "Order token", "Buyer email", "Buyer name", "Campaign", "Amount"])
-        for item in items:
-            writer.writerow(
+        return csv_response(
+            "donations.csv",
+            ["Date", "Order token", "Buyer email", "Buyer name", "Campaign", "Amount"],
+            (
                 [
                     item.order.created_at.strftime("%Y-%m-%d %H:%M"),
                     item.order.token,
@@ -81,8 +79,9 @@ def donations_report(request):
                     item.donation_campaign.name if item.donation_campaign_id else "",
                     item.unit_amount,
                 ]
-            )
-        return response
+                for item in items
+            ),
+        )
 
     return render(
         request,

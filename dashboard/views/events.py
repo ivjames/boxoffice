@@ -10,7 +10,7 @@ from django.views.generic import CreateView, DetailView, ListView, UpdateView
 from accounts.permissions import ManagerRequiredMixin, box_office_required, manager_required
 from events.models import Event, Performance, PriceTier
 from orders.models import Order, PerformanceSeatBlock, Ticket
-from orders.services import get_seating_chart, performance_seats
+from orders.services import get_seating_chart, performance_capacity, performance_seats
 from venues.models import Section
 
 from ..forms import EventForm, PerformanceForm, PriceTierForm
@@ -44,11 +44,7 @@ def performance_detail(request, pk):
     sold = len(live_tickets)
     checked_in = sum(1 for t in live_tickets if t.status == Ticket.Status.USED)
 
-    if performance.seating_mode == Performance.SeatingMode.GA:
-        allocation = getattr(performance, "ga_allocation", None)
-        capacity = allocation.capacity if allocation else None
-    else:
-        capacity = performance_seats(performance).count()
+    capacity = performance_capacity(performance)
 
     revenue = None
     if show_revenue:

@@ -9,7 +9,7 @@ from accounts.models import Membership
 from accounts.permissions import tenant_staff_required
 from events.models import Event, Performance, PriceTier, PricingZone
 from orders.models import Order, Ticket
-from orders.services import performance_seats
+from orders.services import performance_capacity
 from venues.models import SeatingChart, Venue
 
 
@@ -221,11 +221,7 @@ def overview(request):
             .exclude(status=Ticket.Status.VOID)
             .count()
         )
-        if performance.seating_mode == Performance.SeatingMode.GA:
-            allocation = getattr(performance, "ga_allocation", None)
-            capacity = allocation.capacity if allocation else None
-        else:
-            capacity = performance_seats(performance).count()
+        capacity = performance_capacity(performance)
         performance_rows.append(
             {
                 "performance": performance,

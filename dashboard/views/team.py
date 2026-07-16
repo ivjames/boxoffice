@@ -12,21 +12,6 @@ from ..forms import InviteMemberForm
 # --- team / roles (manager+, owner-only for the owner role) ---------------
 
 
-def _assignable_roles(membership):
-    """Role values `membership` is allowed to grant. Only owners can hand out
-    (or move someone into/out of) the owner role."""
-    roles = [Membership.Role.MANAGER, Membership.Role.BOX_OFFICE, Membership.Role.SCANNER]
-    if membership.is_owner():
-        roles = [Membership.Role.OWNER, *roles]
-    return [str(r) for r in roles]
-
-
-def _owner_count(organization):
-    return Membership.objects.filter(
-        organization=organization, role=Membership.Role.OWNER
-    ).count()
-
-
 def _render_team(request, form=None):
     organization = request.organization
     memberships = (
@@ -34,7 +19,7 @@ def _render_team(request, form=None):
         .select_related("user")
         .order_by("role", "user__email")
     )
-    assignable = _assignable_roles(request.membership)
+    assignable = request.membership.assignable_roles()
     if form is None:
         form = InviteMemberForm(allowed_roles=assignable)
     return render(
@@ -61,7 +46,7 @@ def team(request):
 @require_POST
 def team_add(request):
     organization = request.organization
-    assignable = _assignable_roles(request.membership)
+    assignable = request.membership.assignable_roles()
     form = InviteMemberForm(request.POST, allowed_roles=assignable)
     if not form.is_valid():
         return _render_team(request, form=form)
@@ -124,7 +109,7 @@ def team_update_role(request, pk):
         return redirect("dashboard_team")
 
     # Never leave the organization with no owner.
-    if target.is_owner() and new_role != Membership.Role.OWNER and _owner_count(organization) <= 1:
+    if target.is_owner() and new_role != Membership.Role.OWNER and Membership.owner_count(organization) <= 1:
         messages.error(request, "This is the only owner — promote someone else first.")
         return redirect("dashboard_team")
 
@@ -150,7 +135,7 @@ def team_remove(request, pk):
         messages.error(request, "Only an owner can remove an owner.")
         return redirect("dashboard_team")
 
-    if target.is_owner() and _owner_count(organization) <= 1:
+    if target.is_owner() and Membership.owner_count(organization) <= 1:
         messages.error(request, "This is the only owner — you can't remove them.")
         return redirect("dashboard_team")
 

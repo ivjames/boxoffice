@@ -1,8 +1,6 @@
-import csv
 from decimal import Decimal
 
 from django.contrib import messages
-from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.permissions import manager_required
@@ -10,6 +8,8 @@ from campaigns.services import audience_queryset
 from guests.models import GuestAccount
 from orders.models import Order
 from passes.models import PassPurchase
+
+from ._common import csv_response
 
 from ..forms import GuestTagsNotesForm
 
@@ -37,12 +37,10 @@ def audience_list(request):
     guests = audience_queryset(organization, search=search, opt_in=opt_in, tag=tag)
 
     if request.GET.get("format") == "csv":
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="audience.csv"'
-        writer = csv.writer(response)
-        writer.writerow(["Email", "Name", "Opted in", "Orders", "Lifetime value", "Tags"])
-        for guest in guests:
-            writer.writerow(
+        return csv_response(
+            "audience.csv",
+            ["Email", "Name", "Opted in", "Orders", "Lifetime value", "Tags"],
+            (
                 [
                     guest.email,
                     guest.name,
@@ -51,8 +49,9 @@ def audience_list(request):
                     guest.ltv or Decimal("0.00"),
                     guest.tags,
                 ]
-            )
-        return response
+                for guest in guests
+            ),
+        )
 
     return render(
         request,

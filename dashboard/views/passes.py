@@ -1,9 +1,7 @@
-import csv
 from decimal import Decimal
 
 from django.contrib import messages
 from django.db.models import Sum
-from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -15,6 +13,7 @@ from passes.models import PassProduct, PassPurchase
 from passes.services import remaining_admissions
 
 from ..forms import PassProductForm
+from ._common import csv_response
 
 
 # --- passes (manager+) ------------------------------------------------------
@@ -127,12 +126,10 @@ def pass_report(request):
     total = items.aggregate(total=Sum("unit_amount"))["total"] or Decimal("0.00")
 
     if request.GET.get("format") == "csv":
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="passes.csv"'
-        writer = csv.writer(response)
-        writer.writerow(["Date", "Order token", "Buyer email", "Product", "Amount"])
-        for item in items:
-            writer.writerow(
+        return csv_response(
+            "passes.csv",
+            ["Date", "Order token", "Buyer email", "Product", "Amount"],
+            (
                 [
                     item.order.created_at.strftime("%Y-%m-%d %H:%M"),
                     item.order.token,
@@ -140,8 +137,9 @@ def pass_report(request):
                     item.pass_product.name if item.pass_product_id else "",
                     item.unit_amount,
                 ]
-            )
-        return response
+                for item in items
+            ),
+        )
 
     active_purchases = PassPurchase.objects.filter(
         organization=organization, status=PassPurchase.Status.ACTIVE

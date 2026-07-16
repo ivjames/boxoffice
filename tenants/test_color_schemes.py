@@ -10,6 +10,7 @@ from django.test import TestCase
 
 from tenants.color_extraction import (
     ColorDeriveError,
+    _guard_public_url,
     assign_roles,
     derive_scheme_from_url,
     extract_candidate_colors,
@@ -181,3 +182,27 @@ class ExtractionTests(TestCase):
 
         with self.assertRaises(ColorDeriveError):
             derive_scheme_from_url("roxy.example", fetch=dead)
+
+
+class SSRFGuardTests(TestCase):
+    """The derive fetch must reject non-public hosts (SSRF hardening) -- IP
+    literals + localhost resolve without network, so these don't hit DNS."""
+
+    def test_rejects_loopback_private_and_link_local(self):
+        for url in (
+            "http://localhost/",
+            "http://127.0.0.1/",
+            "http://10.0.0.5/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",  # cloud metadata
+        ):
+            with self.assertRaises(ColorDeriveError, msg=url):
+                _guard_public_url(url)
+
+    def test_rejects_non_http_schemes(self):
+        for url in ("ftp://example.com/", "file:///etc/passwd", "gopher://x/"):
+            with self.assertRaises(ColorDeriveError, msg=url):
+                _guard_public_url(url)
+
+    def test_allows_a_public_ip(self):
+        _guard_public_url("https://8.8.8.8/")  # must not raise

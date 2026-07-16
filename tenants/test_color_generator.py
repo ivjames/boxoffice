@@ -40,6 +40,11 @@ class ContrastMathTests(SimpleTestCase):
     def test_identical_colors_have_ratio_one(self):
         self.assertAlmostEqual(contrast_ratio("#4B2E83", "#4B2E83"), 1.0, places=4)
 
+    def test_shorthand_hex_is_expanded(self):
+        # The hex validator accepts #abc; contrast math must not crash on it.
+        self.assertAlmostEqual(relative_luminance("#fff"), relative_luminance("#ffffff"), places=6)
+        self.assertAlmostEqual(contrast_ratio("#000", "#fff"), 21.0, places=2)
+
 
 class AdjustSchemeTests(SimpleTestCase):
     DARK = {  # dark primary

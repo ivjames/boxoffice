@@ -54,6 +54,8 @@ _SCAN_STEPS = 256
 
 def _to_rgb(hex_color):
     h = hex_color.lstrip("#")
+    if len(h) == 3:  # #abc shorthand -- the hex validator accepts it, so expand
+        h = "".join(ch * 2 for ch in h)
     return tuple(int(h[i : i + 2], 16) / 255 for i in (0, 2, 4))
 
 

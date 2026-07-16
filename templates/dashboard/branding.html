@@ -35,18 +35,23 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         <h2>Derive from your website</h2>
         <p class="muted">Enter your homepage and we’ll read its colors and suggest a
         scheme you can tweak, save, or apply below.</p>
-        <form method="post" action="{% url 'dashboard_branding_derive' %}" class="dash-form dash-form--inline">
+        <form id="derive-form" method="post" action="{% url 'dashboard_branding_derive' %}" class="dash-form dash-form--inline">
             {% csrf_token %}
             <div class="field">
                 <label for="derive-url">Homepage URL</label>
                 <input type="text" id="derive-url" name="url" placeholder="example.com"
                        value="{% if derived %}{{ derived.source_url }}{% endif %}">
             </div>
-            <button type="submit" class="button">Derive scheme</button>
+            <button type="submit" class="button" id="derive-btn">
+                <span class="derive-btn__label">Derive scheme</span>
+                <span class="spinner" hidden aria-hidden="true"></span>
+            </button>
         </form>
 
-        {% if derived %}
-            <div class="brand-derived">
+        <p class="derive-error" id="derive-error" role="alert" hidden></p>
+
+        <div class="brand-derived" id="derive-result"{% if not derived %} hidden{% endif %} aria-live="polite">
+            {% if derived %}
                 <p>Read <strong>{{ derived.candidates|length }}</strong> colors from
                 <a href="{{ derived.source_url }}" rel="noopener noreferrer" target="_blank">{{ derived.source_url }}</a>{% if derived.method == "vision" %},
                 off a screenshot of your live page{% elif derived.method == "text" %},
@@ -59,8 +64,8 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                         {% endfor %}
                     </div>
                 {% endif %}
-            </div>
-        {% endif %}
+            {% endif %}
+        </div>
     </div>
 </section>
 
@@ -498,6 +503,112 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                 harmBtn.textContent = label;
             });
         });
+
+        // ---- inline "Derive from your website": fetch + spinner -------------
+        // Read the homepage without leaving the page, then load the six roles
+        // into these pickers (same as harmonize) and show what was read.
+        var deriveForm = document.getElementById("derive-form");
+        if (deriveForm) {
+            var deriveBtn = document.getElementById("derive-btn");
+            var deriveSpin = deriveBtn.querySelector(".spinner");
+            var deriveLabel = deriveBtn.querySelector(".derive-btn__label");
+            var deriveUrl = document.getElementById("derive-url");
+            var deriveError = document.getElementById("derive-error");
+            var deriveResult = document.getElementById("derive-result");
+            var deriveCsrfEl = deriveForm.querySelector("[name=csrfmiddlewaretoken]");
+            var deriveCsrf = deriveCsrfEl ? deriveCsrfEl.value : csrf;
+            var HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+            function setBusy(on) {
+                deriveBtn.disabled = on;
+                deriveSpin.hidden = !on;
+                deriveLabel.textContent = on ? "Reading your site…" : "Derive scheme";
+                deriveForm.setAttribute("aria-busy", on ? "true" : "false");
+            }
+            function showDeriveError(msg) {
+                deriveError.textContent = msg;
+                deriveError.hidden = false;
+            }
+            // Rebuild the "Read N colors from …" line + swatch strip from JSON,
+            // safely: URL via textContent, chips only from validated #rrggbb.
+            function renderResult(data) {
+                var cands = data.candidates || [];
+                deriveResult.textContent = "";
+                var p = document.createElement("p");
+                p.appendChild(document.createTextNode("Read "));
+                var strong = document.createElement("strong");
+                strong.textContent = String(cands.length);
+                p.appendChild(strong);
+                p.appendChild(document.createTextNode(" colors from "));
+                var a = document.createElement("a");
+                a.href = data.source_url;
+                a.textContent = data.source_url;
+                a.target = "_blank";
+                a.rel = "noopener noreferrer";
+                p.appendChild(a);
+                var how = data.method === "vision" ? ", off a screenshot of your live page"
+                        : data.method === "text" ? ", from your page’s colors" : "";
+                p.appendChild(document.createTextNode(
+                    how + ". Loaded a suggested palette into the editor below — adjust anything, then save it."));
+                deriveResult.appendChild(p);
+                var chips = cands.filter(function (c) { return HEX_RE.test(c[0]); });
+                if (chips.length) {
+                    var strip = document.createElement("div");
+                    strip.className = "swatch-strip";
+                    strip.setAttribute("aria-label", "Colors found on the page");
+                    chips.forEach(function (c) {
+                        var chip = document.createElement("span");
+                        chip.className = "swatch-strip__chip";
+                        chip.style.background = c[0];
+                        chip.title = c[0] + " · used " + c[1] + "×";
+                        strip.appendChild(chip);
+                    });
+                    deriveResult.appendChild(strip);
+                }
+                deriveResult.hidden = false;
+            }
+
+            deriveForm.addEventListener("submit", function (e) {
+                e.preventDefault();
+                deriveError.hidden = true;
+                var url = (deriveUrl.value || "").trim();
+                if (!url) { showDeriveError("Enter your homepage URL first."); return; }
+                setBusy(true);
+                fetch(deriveForm.action + window.location.search, {
+                    method: "POST",
+                    headers: {
+                        "X-CSRFToken": deriveCsrf,
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    body: "url=" + encodeURIComponent(url),
+                }).then(function (r) {
+                    return r.json().then(function (data) { return { ok: r.ok, data: data }; },
+                                        function () { return { ok: r.ok, data: null }; });
+                }).then(function (res) {
+                    if (!res.ok || !res.data || !res.data.ok) {
+                        showDeriveError((res.data && res.data.error) ||
+                            "Couldn’t read that site — check the address and try again.");
+                        return;
+                    }
+                    var data = res.data;
+                    Object.keys(data.roles || {}).forEach(function (role) {
+                        var inp = brandingForm.querySelector('input[data-role="' + role + '"]');
+                        if (inp && HEX_RE.test(data.roles[role])) inp.value = data.roles[role];
+                    });
+                    var nameInput = brandingForm.querySelector('input[name="name"]');
+                    if (nameInput && data.name) nameInput.value = data.name;
+                    sync(brandingForm);
+                    record();  // the whole derive is a single undo step
+                    renderResult(data);
+                    if (editorSection) editorSection.scrollIntoView({ behavior: "smooth", block: "start" });
+                }).catch(function () {
+                    showDeriveError("Couldn’t reach the server. Try again.");
+                }).then(function () {
+                    setBusy(false);
+                });
+            });
+        }
     }
 })();
 </script>

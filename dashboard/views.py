@@ -3,6 +3,7 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.contrib import messages
 from django.db import transaction
 from django.db.models import Count, Q, Sum
@@ -14,6 +15,7 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_POST
 from django.views.generic import CreateView, DetailView, ListView, UpdateView
 
+from accounts import throttle
 from accounts.invites import MemberExistsError, add_member
 from accounts.models import Membership
 from accounts.permissions import (
@@ -932,28 +934,75 @@ def branding(request):
     return render(request, "dashboard/branding.html", _branding_context(request))
 
 
+# Cap on the homepage URL a manager can submit -- generous for real URLs, but
+# bounds the input a hostile client can throw at the fetch/guard.
+MAX_DERIVE_URL_LEN = 2000
+
+
+def _derive_error(request, is_ajax, message, status=400):
+    """A derive failure, shaped for the caller: JSON for the inline (fetch)
+    flow, a flashed message + redirect for the no-JS fallback."""
+    if is_ajax:
+        return JsonResponse({"ok": False, "error": message}, status=status)
+    messages.error(request, message)
+    return redirect("dashboard_branding")
+
+
 @manager_required
 @require_POST
 def branding_derive(request):
     """Run the derive-from-homepage agent (tenants.color_extraction) on a URL
-    the manager enters and re-render the branding page with the proposed
-    palette pre-filled into the "save a scheme" form -- so they can tweak,
-    apply, or save it. A fetch/parse failure surfaces as a form message, never
-    a 500."""
+    the manager enters and return the proposed palette.
+
+    Called inline by the branding page's JS (X-Requested-With), it answers with
+    JSON the page loads straight into the color pickers + preview -- the manager
+    never leaves the page. Without JS it falls back to re-rendering branding.html
+    with the palette pre-filled. Either way a fetch/parse failure is a clean
+    message, never a 500.
+
+    The endpoint is expensive (external fetch + optional headless render + a
+    Claude call), so it's rate-limited per org (throttle.over_limit) and the URL
+    length is capped; the agent itself is SSRF-guarded (tenants.color_extraction).
+    """
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     url = (request.POST.get("url") or "").strip()
     if not url:
-        messages.error(request, "Enter your homepage URL first.")
-        return redirect("dashboard_branding")
+        return _derive_error(request, is_ajax, "Enter your homepage URL first.")
+    if len(url) > MAX_DERIVE_URL_LEN:
+        return _derive_error(request, is_ajax, "That web address is too long to read.")
+    if throttle.over_limit(
+        "derive",
+        str(request.organization.pk),
+        settings.DERIVE_RATELIMIT_MAX,
+        settings.DERIVE_RATELIMIT_WINDOW_SECONDS,
+    ):
+        return _derive_error(
+            request,
+            is_ajax,
+            "You’ve derived a lot of palettes in a short time. Give it a few minutes and try again.",
+            status=429,
+        )
+
     try:
         derived = derive_scheme_from_url(url)
     except ColorDeriveError as exc:
-        messages.error(request, str(exc))
-        return redirect("dashboard_branding")
+        return _derive_error(request, is_ajax, str(exc))
 
-    # Pre-fill the one editor with the derived colors: the six pickers (on the
-    # Organization field names) and the optional scheme-name input (scheme_form
-    # supplies its value/errors). Saving then runs the ordinary save_colors /
-    # save_scheme POST paths -- no special apply path.
+    if is_ajax:
+        return JsonResponse(
+            {
+                "ok": True,
+                "name": derived["name"],
+                "roles": derived["roles"],
+                "candidates": derived["candidates"],
+                "method": derived.get("method", "heuristic"),
+                "source_url": derived["source_url"],
+            }
+        )
+
+    # No-JS fallback: pre-fill the one editor with the derived colors -- the six
+    # pickers (on the Organization field names) and the optional scheme-name
+    # input. Saving then runs the ordinary save_colors / save_scheme POST paths.
     organization = request.organization
     scheme_form = ColorSchemeForm(
         initial={"name": derived["name"], **derived["roles"]}, organization=organization

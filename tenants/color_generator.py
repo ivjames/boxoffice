@@ -1,12 +1,22 @@
-"""WCAG-aware color-map generator.
+"""Color-scheme generator: harmonious accents, WCAG neutrals, dark variants.
 
 The 36 built-in schemes (tenants.color_schemes.SOURCE_SCHEMES) carry the
-design's exact brand colors. This module takes that source and produces the
-shipped `BUILTIN_SCHEMES` by shifting ONLY the two neutral/text roles so they
-clear WCAG contrast against the surfaces they sit on -- the four brand colors
-(primary / secondary / feature_accent / dark_accent) are never touched.
+design's brand colors. This module takes that source and produces the shipped
+`BUILTIN_SCHEMES` (`derive_scheme` per entry) in two steps:
 
-Contract ("best-of-two per surface"):
+  1. `harmonize_accent` -- re-derive the `feature_accent` as an ANALOGOUS
+     neighbor of the primary's hue (a small rotation on the wheel), replacing
+     the source's clashing near-complementary accent. Primary / secondary /
+     dark_accent are never touched.
+  2. `adjust_scheme` -- shift ONLY the two neutral/text roles so they clear WCAG
+     contrast against the surfaces they sit on (the "best-of-two" contract
+     below). The brand fills, including the just-harmonized accent, pass through.
+
+`dark_surfaces` additionally derives each scheme's dark-theme page surfaces
+(branded near-black bg, light text) so the storefront ships a dark variant; the
+brand fills and their on-colors are shared across both themes.
+
+WCAG contract ("best-of-two per surface"):
 
 Each surface (the four brand fills, plus the light_neutral page background) is
 labelled light or dark by its relative luminance (WCAG's black/white crossover,
@@ -80,16 +90,29 @@ def contrast_ratio(hex_a, hex_b):
     return (hi + 0.05) / (lo + 0.05)
 
 
-def _lightness(hex_color):
+def _hls(hex_color):
+    """(hue, lightness, saturation) of a hex color, each in 0..1."""
     r, g, b = _to_rgb(hex_color)
-    return colorsys.rgb_to_hls(r, g, b)[1]
+    return colorsys.rgb_to_hls(r, g, b)
+
+
+def _from_hls(h, l, s):
+    """Hex for an HLS triple, hue wrapped and lightness/saturation clamped."""
+    return _to_hex(colorsys.hls_to_rgb(h % 1.0, min(1.0, max(0.0, l)), min(1.0, max(0.0, s))))
+
+
+def _clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
+def _lightness(hex_color):
+    return _hls(hex_color)[1]
 
 
 def _with_lightness(hex_color, lightness):
     """The color with its HSL lightness replaced (hue + saturation held)."""
-    r, g, b = _to_rgb(hex_color)
-    h, _l, s = colorsys.rgb_to_hls(r, g, b)
-    return _to_hex(colorsys.hls_to_rgb(h, min(1.0, max(0.0, lightness)), s))
+    h, _l, s = _hls(hex_color)
+    return _from_hls(h, lightness, s)
 
 
 def _min_contrast(hex_color, backgrounds):
@@ -156,6 +179,131 @@ def readable_on(color, background, target=AA):
     return adjusted
 
 
+# --- harmonious accent derivation -----------------------------------------
+#
+# The source schemes historically paired a warm primary with a cool, near-
+# complementary feature accent (e.g. burgundy + teal). That maximises contrast
+# but reads as a clash. Instead we DERIVE the feature accent as an *analogous*
+# neighbor of the primary's hue -- a small rotation on the color wheel -- so the
+# accent stays in the same warm/cool family as the primary and feels intentional
+# rather than jarring, while still popping as a call-to-action.
+
+# Analogous rotation from the primary hue (degrees). ~+34 keeps the accent a
+# close neighbor (reds -> warm orange/gold, blues -> indigo/violet) rather than
+# the opposite side of the wheel.
+ACCENT_HUE_ROTATION = 34 / 360.0
+
+# Accent hues in this band read as muddy olive/khaki. A +rotation from a gold or
+# yellow primary lands here; when it does we rotate the OTHER way instead (toward
+# warm amber/orange), which is the more flattering analogous neighbor anyway.
+_MUDDY_ACCENT_BAND = (54 / 360.0, 92 / 360.0)
+
+
+def _analogous_hue(base_h):
+    """The primary hue rotated by an analogous step, away from the muddy
+    olive/khaki band when a +rotation would otherwise land in it."""
+    plus = (base_h + ACCENT_HUE_ROTATION) % 1.0
+    lo, hi = _MUDDY_ACCENT_BAND
+    if lo <= plus <= hi:
+        return (base_h - ACCENT_HUE_ROTATION) % 1.0
+    return plus
+
+# A primary this desaturated (grey / cream / near-black) has no hue worth
+# harmonizing with -- rotating it just yields another grey. Below this floor we
+# harmonize off the scheme's most chromatic brand role instead, and if the whole
+# scheme is neutral we keep the source's curated accent pop.
+ACCENT_MIN_SATURATION = 0.20
+
+# Where the derived accent is re-seated. Saturation is pulled into a vivid-but-
+# tasteful band; lightness starts at a mid value that reads as an accent on the
+# light page, then moves as needed to separate from the primary fill.
+ACCENT_SAT_RANGE = (0.46, 0.74)
+ACCENT_TARGET_L = 0.47
+
+# The accent fill must be visibly distinct from the primary fill. HSL-lightness
+# distance isn't enough (a yellow and a blue can share a lightness yet differ
+# wildly in luminance, or vice-versa), so we require a real WCAG contrast ratio
+# between the two fills and move the accent's lightness until it's met.
+ACCENT_MIN_CONTRAST_VS_PRIMARY = 2.0
+
+
+def _accent_lightness(hue, sat, primary):
+    """Lightness for the accent so it clears ACCENT_MIN_CONTRAST_VS_PRIMARY
+    against the primary fill, starting from ACCENT_TARGET_L and taking the
+    smallest move (lighter or darker) that gets there. Falls back to the more
+    contrasting extreme if neither direction reaches the target."""
+    if contrast_ratio(_from_hls(hue, ACCENT_TARGET_L, sat), primary) >= ACCENT_MIN_CONTRAST_VS_PRIMARY:
+        return ACCENT_TARGET_L
+    best_l, best_c = ACCENT_TARGET_L, 0.0
+    for step in range(1, 51):
+        for bound in (1.0, 0.0):  # try lighter and darker at each distance
+            l = ACCENT_TARGET_L + (bound - ACCENT_TARGET_L) * (step / 50)
+            c = contrast_ratio(_from_hls(hue, l, sat), primary)
+            if c >= ACCENT_MIN_CONTRAST_VS_PRIMARY:
+                return l
+            if c > best_c:
+                best_l, best_c = l, c
+    return best_l
+
+
+def harmonize_accent(roles):
+    """Return `roles` with `feature_accent` replaced by an analogous neighbor of
+    the primary (see the module constants). Only the accent changes; every other
+    role -- including the primary itself -- passes through untouched. A scheme
+    whose brand roles are all near-neutral keeps its source accent."""
+    candidates = [roles["primary"], roles["secondary"], roles["dark_accent"]]
+    base = next((c for c in candidates if _hls(c)[2] >= ACCENT_MIN_SATURATION), None)
+    if base is None:
+        return dict(roles)  # intentionally-neutral scheme -- keep the curated pop
+    accent_h = _analogous_hue(_hls(base)[0])
+    accent_s = _clamp(_hls(base)[2], *ACCENT_SAT_RANGE)
+    accent_l = _accent_lightness(accent_h, accent_s, roles["primary"])
+    out = dict(roles)
+    out["feature_accent"] = _from_hls(accent_h, accent_l, accent_s)
+    return out
+
+
+# --- dark-theme derivation -------------------------------------------------
+#
+# Every scheme also ships a dark variant. The brand FILLS (primary / secondary /
+# accent / dark_accent) and their on-colors are unchanged -- a button stays the
+# same brand color in either theme -- but the page SURFACES flip: a branded
+# near-black background, light text, and brand "ink" colors lightened so
+# headings/links stay legible on the dark page.
+
+_DARK_BG_L = 0.09        # page background lightness (branded near-black)
+_DARK_SUBTLE_L = 0.12    # barely-raised surface (subtle striping / insets)
+_DARK_SURFACE_L = 0.16   # cards / raised surfaces, a clear step up from the page
+_DARK_MUTED_SURF_L = 0.22  # inset chips / muted fills
+_DARK_BORDER_L = 0.28    # hairline borders
+_DARK_MUTED_L = 0.68     # secondary/muted text
+_DARK_TINT_S = 0.22      # cap on how much the primary hue tints the dark neutrals
+
+
+def dark_surfaces(roles):
+    """The dark-theme page surfaces for a scheme, tinted with the primary's hue
+    so the dark storefront still feels branded rather than a flat grey. Returns
+    bg / surface / surface_subtle / surface_muted / text / muted / border. Pure;
+    depends only on `roles`."""
+    hue, _l, sat = _hls(roles["primary"])
+    tint = min(sat, _DARK_TINT_S)
+    return {
+        "bg": _from_hls(hue, _DARK_BG_L, tint),
+        "surface": _from_hls(hue, _DARK_SURFACE_L, tint),
+        "surface_subtle": _from_hls(hue, _DARK_SUBTLE_L, tint),
+        "surface_muted": _from_hls(hue, _DARK_MUTED_SURF_L, tint),
+        "text": roles["light_neutral"],  # already lightened for contrast on dark
+        "muted": _from_hls(hue, _DARK_MUTED_L, min(sat, 0.12)),
+        "border": _from_hls(hue, _DARK_BORDER_L, tint),
+    }
+
+
+def dark_ink(color, dark_bg):
+    """A brand color lightened until it's legible AS TEXT on the dark page
+    background -- the dark-mode counterpart of `readable_on` for a light page."""
+    return readable_on(color, dark_bg)
+
+
 def adjust_scheme(roles):
     """Return (adjusted_roles, warnings) for one scheme's role dict under the
     best-of-two contract. Only `light_neutral` and `neutral` may change; brand
@@ -191,22 +339,30 @@ def adjust_scheme(roles):
     return out, warnings
 
 
+def derive_scheme(roles):
+    """The full generator pipeline for one scheme: harmonize the feature accent
+    (analogous to the primary), then WCAG-nudge the two neutrals against the
+    resulting fills. Returns (roles, warnings). Pure + idempotent."""
+    return adjust_scheme(harmonize_accent(roles))
+
+
 def build_wcag_schemes(source_schemes):
-    """Apply adjust_scheme across a source catalog. Returns the shipped list of
-    (slug, name, roles) with WCAG-nudged neutrals. Pure + idempotent."""
-    return [(slug, name, adjust_scheme(roles)[0]) for slug, name, roles in source_schemes]
+    """Apply the generator pipeline across a source catalog. Returns the shipped
+    list of (slug, name, roles) with a harmonized accent and WCAG-nudged
+    neutrals. Pure + idempotent."""
+    return [(slug, name, derive_scheme(roles)[0]) for slug, name, roles in source_schemes]
 
 
 def scheme_report(source_schemes):
     """Per-scheme diff + AA status, for `manage.py generate_color_schemes`.
     Returns a list of dicts: {slug, name, changes: [(role, before, after)],
-    warnings: [...]}"""
+    warnings: [...]}. Reports the harmonized accent alongside the neutral nudges."""
     report = []
     for slug, name, roles in source_schemes:
-        adjusted, warnings = adjust_scheme(roles)
+        adjusted, warnings = derive_scheme(roles)
         changes = [
             (role, roles[role], adjusted[role])
-            for role in ("light_neutral", "neutral")
+            for role in ("feature_accent", "light_neutral", "neutral")
             if roles[role].upper() != adjusted[role].upper()
         ]
         report.append({"slug": slug, "name": name, "changes": changes, "warnings": warnings})

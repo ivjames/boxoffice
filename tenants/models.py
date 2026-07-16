@@ -173,6 +173,25 @@ class Organization(models.Model):
         }
 
     @property
+    def dark_colors(self):
+        """The storefront's dark-theme values, emitted as CSS variables in
+        base.html under prefers-color-scheme / [data-theme]. The brand FILLS and
+        their on-colors are shared with the light theme (a button stays the same
+        brand color); what changes is the page: a branded near-black background,
+        light text, and brand 'ink' colors lightened so headings/links stay
+        legible on the dark page. See tenants.color_generator.dark_surfaces."""
+        from .color_generator import dark_surfaces, dark_ink
+
+        surfaces = dark_surfaces(self.palette)
+        bg = surfaces["bg"]
+        return {
+            **surfaces,
+            "primary_ink": dark_ink(self.primary_color, bg),
+            "accent_ink": dark_ink(self.accent_color, bg),
+            "secondary_ink": dark_ink(self.secondary_color, bg),
+        }
+
+    @property
     def heading_font_stack(self):
         """The CSS font-family stack for the org's heading font (base.html)."""
         return font_stack(self.heading_font)

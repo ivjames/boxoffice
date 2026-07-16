@@ -132,13 +132,68 @@ class ShippedCatalogTests(SimpleTestCase):
                     contrast_ratio(text, fill), AA, f"{name}: text on {fill_role} {fill}"
                 )
 
-    def test_brand_roles_match_source(self):
+    def test_untouched_brand_roles_match_source(self):
+        # primary / secondary / dark_accent pass through the generator unchanged;
+        # only the feature accent (harmonized) and the two neutrals may move.
         source = {slug: roles for slug, _n, roles in SOURCE_SCHEMES}
         for slug, _name, roles in BUILTIN_SCHEMES:
-            for role in ("primary", "secondary", "feature_accent", "dark_accent"):
+            for role in ("primary", "secondary", "dark_accent"):
                 self.assertEqual(roles[role], source[slug][role], f"{slug}.{role}")
+
+    def test_feature_accent_is_harmonized(self):
+        # The shipped accent is the harmonized (analogous) accent, and it stays
+        # visibly distinct from the primary fill.
+        from tenants.color_generator import (
+            harmonize_accent,
+            ACCENT_MIN_CONTRAST_VS_PRIMARY,
+        )
+
+        source = {slug: roles for slug, _n, roles in SOURCE_SCHEMES}
+        for slug, _name, roles in BUILTIN_SCHEMES:
+            expected = harmonize_accent(source[slug])["feature_accent"]
+            self.assertEqual(roles["feature_accent"], expected, f"{slug}.feature_accent")
+            self.assertGreaterEqual(
+                contrast_ratio(roles["feature_accent"], roles["primary"]),
+                ACCENT_MIN_CONTRAST_VS_PRIMARY - 0.05,  # rounding slack
+                f"{slug}: accent vs primary too close",
+            )
 
     def test_report_has_no_shortfalls(self):
         report = scheme_report(SOURCE_SCHEMES)
         self.assertEqual(len(report), len(SOURCE_SCHEMES))
         self.assertEqual([r for r in report if r["warnings"]], [])
+
+    def test_harmonized_accents_avoid_the_muddy_band(self):
+        # No shipped accent lands in the olive/khaki dead-zone the rule steers
+        # around (the source's gold/yellow primaries used to produce olive).
+        from tenants.color_generator import _hls, _MUDDY_ACCENT_BAND, harmonize_accent
+
+        lo, hi = _MUDDY_ACCENT_BAND
+        source = {slug: roles for slug, _n, roles in SOURCE_SCHEMES}
+        for slug, _name, roles in BUILTIN_SCHEMES:
+            if harmonize_accent(source[slug])["feature_accent"] == source[slug]["feature_accent"]:
+                continue  # neutral scheme kept its curated accent -- not derived
+            hue = _hls(roles["feature_accent"])[0]
+            self.assertFalse(lo <= hue <= hi, f"{slug}: accent hue {hue:.3f} is in the muddy band")
+
+
+class DarkThemeTests(SimpleTestCase):
+    def test_dark_variant_is_dark_and_legible(self):
+        # Every scheme's derived dark theme has a genuinely dark page, and its
+        # text + brand ink all clear WCAG AA on that page.
+        from tenants.color_generator import dark_surfaces, dark_ink, TEXT_LUMINANCE_THRESHOLD
+
+        for slug, name, roles in BUILTIN_SCHEMES:
+            d = dark_surfaces(roles)
+            self.assertLess(
+                relative_luminance(d["bg"]), TEXT_LUMINANCE_THRESHOLD,
+                f"{name}: dark bg {d['bg']} is not dark",
+            )
+            self.assertGreaterEqual(
+                contrast_ratio(d["text"], d["bg"]), AA, f"{name}: body text on dark bg",
+            )
+            for role in ("primary", "feature_accent", "secondary"):
+                ink = dark_ink(roles[role], d["bg"])
+                self.assertGreaterEqual(
+                    contrast_ratio(ink, d["bg"]), AA, f"{name}: {role} ink on dark bg",
+                )

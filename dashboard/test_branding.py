@@ -58,7 +58,9 @@ class BrandingAccessTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.client.force_login(self.manager)
         resp = self.client.get(BRANDING_URL, HTTP_HOST=host_for("roxy"))
         self.assertContains(resp, "scheme-preview-btn")
-        self.assertContains(resp, 'data-feature_accent="#517D78"')  # Art Deco Royal's feature accent
+        # The card carries the shipped (harmonized) feature accent, not a literal.
+        adr = ColorScheme.objects.get(slug="art-deco-royal")
+        self.assertContains(resp, f'data-feature_accent="{adr.feature_accent}"')
 
 
 class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
@@ -77,7 +79,7 @@ class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
         self.org.refresh_from_db()
         self.assertEqual(self.org.primary_color, "#4B2E83")
-        self.assertEqual(self.org.accent_color, "#517D78")  # feature_accent role -> accent_color
+        self.assertEqual(self.org.accent_color, preset.feature_accent)  # feature_accent role -> accent_color
 
     def test_cannot_apply_another_tenants_custom_scheme(self):
         foreign = ColorScheme.objects.create(

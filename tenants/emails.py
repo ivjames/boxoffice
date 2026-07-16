@@ -14,9 +14,21 @@ import logging
 from django.conf import settings
 from django.core.mail import EmailMessage
 
-from guests.services import email_delivery_configured
-
 logger = logging.getLogger(__name__)
+
+
+def email_delivery_configured():
+    """Whether an email will actually reach an inbox, i.e. the prod SMTP
+    backend is selected AND its host is set. Any other backend
+    (console/locmem/dummy in dev & tests) is treated as "email works". A pure
+    settings check with no tenant/guest specifics, it lives in the base
+    `tenants` app so the guest portal, the campaign worker, and the
+    contact-inquiry notifier can all gate on one definition without the base
+    app having to import a downstream one (see DEPLOY.md "Mail")."""
+    backend = getattr(settings, "EMAIL_BACKEND", "") or ""
+    if backend.endswith("smtp.EmailBackend"):
+        return bool(getattr(settings, "EMAIL_HOST", ""))
+    return True
 
 
 def notify_contact_inquiry(inquiry):

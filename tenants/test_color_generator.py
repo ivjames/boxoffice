@@ -227,3 +227,39 @@ class PageTintTests(SimpleTestCase):
         sats = [_hls(page_background(roles, lvl))[2] for lvl in ("subtle", "medium", "bold")]
         self.assertLess(sats[0], sats[1])
         self.assertLess(sats[1], sats[2])
+
+
+class SchemeFromPrimaryTests(SimpleTestCase):
+    ROLE_KEYS = ("primary", "secondary", "feature_accent", "dark_accent", "light_neutral", "neutral")
+    SEEDS = ["#6A1E32", "#1D4ED8", "#16A34A", "#B8860B", "#4B2E83", "#0D6B73", "#111111"]
+
+    def test_returns_a_complete_scheme(self):
+        from tenants.color_generator import scheme_from_primary
+
+        for seed in self.SEEDS:
+            roles = scheme_from_primary(seed)
+            self.assertEqual(set(roles), set(self.ROLE_KEYS), seed)
+            # The primary is preserved (normalized to #RRGGBB upper-case).
+            self.assertEqual(roles["primary"], seed.upper())
+
+    def test_generated_scheme_is_aa_legible(self):
+        # Text (best-of-two) clears AA over every surface of a from-primary scheme.
+        from tenants.color_generator import scheme_from_primary
+
+        surfaces = ("primary", "secondary", "feature_accent", "dark_accent", "light_neutral")
+        for seed in self.SEEDS:
+            roles = scheme_from_primary(seed)
+            for fill_role in surfaces:
+                fill = roles[fill_role]
+                text = _text_for(fill, roles)
+                self.assertGreaterEqual(
+                    contrast_ratio(text, fill), AA, f"{seed}: text on {fill_role}",
+                )
+
+    def test_accent_matches_the_harmonize_rule(self):
+        # A chromatic primary yields the same analogous accent the catalog uses.
+        from tenants.color_generator import scheme_from_primary, harmonize_accent
+
+        roles = scheme_from_primary("#6A1E32")
+        expected = harmonize_accent({**roles, "feature_accent": "#6A1E32"})["feature_accent"]
+        self.assertEqual(roles["feature_accent"], expected)

@@ -3646,6 +3646,33 @@ table.dash-table th {
     font-size: 0.8rem;
 }
 
+.brand-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    margin-top: 1.25rem;
+}
+
+.brand-tools__hint {
+    flex: 1 1 14rem;
+    font-size: 0.8rem;
+}
+
+.brand-save-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.brand-history {
+    display: inline-flex;
+    gap: 0.4rem;
+}
+
 .brand-preview-wrap__label {
     font-weight: 600;
     margin: 0 0 0.4rem;

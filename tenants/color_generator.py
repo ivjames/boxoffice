@@ -401,6 +401,44 @@ def build_wcag_schemes(source_schemes):
     return [(slug, name, derive_scheme(roles)[0]) for slug, name, roles in source_schemes]
 
 
+# --- a full scheme from one seed color -------------------------------------
+#
+# The branding "harmonize" button: given just a primary brand color, build a
+# complete six-role scheme around it with the same rules the catalog uses -- an
+# analogous feature accent, a lighter secondary, a deep dark accent, and
+# neutrals subtly tinted with the primary hue -- then WCAG-nudge the neutrals.
+
+_SECONDARY_LIGHTEN = 0.24      # secondary = primary lifted this much in lightness
+_SECONDARY_SAT_FACTOR = 0.72   # ...and gently desaturated
+_SECONDARY_MAX_L = 0.74
+_DARK_ACCENT_L = 0.13          # deep shade of the primary hue (footers/dark bg)
+_DARK_ACCENT_MAX_S = 0.60
+_LIGHT_NEUTRAL_L = 0.955       # near-white page, faintly primary-tinted
+_LIGHT_NEUTRAL_MAX_S = 0.16
+_NEUTRAL_L = 0.10              # near-black body text, faintly primary-tinted
+_NEUTRAL_MAX_S = 0.30
+
+
+def scheme_from_primary(primary):
+    """Build a complete six-role scheme from a single primary color, using the
+    same rules as the built-in catalog: an analogous feature accent, a lighter
+    secondary, a deep dark accent, and neutrals subtly tinted with the primary
+    hue -- then WCAG-nudged so text clears AA on every surface. Returns a role
+    dict keyed by the six role keys. Pure."""
+    hue, light, sat = _hls(primary)
+    roles = {
+        "primary": _to_hex(_to_rgb(primary)),  # normalize (#abc -> #AABBCC)
+        "secondary": _from_hls(hue, min(_SECONDARY_MAX_L, light + _SECONDARY_LIGHTEN), sat * _SECONDARY_SAT_FACTOR),
+        "feature_accent": primary,  # replaced by harmonize_accent below
+        "dark_accent": _from_hls(hue, min(light, _DARK_ACCENT_L), min(sat, _DARK_ACCENT_MAX_S)),
+        "light_neutral": _from_hls(hue, _LIGHT_NEUTRAL_L, min(sat, _LIGHT_NEUTRAL_MAX_S)),
+        "neutral": _from_hls(hue, _NEUTRAL_L, min(sat, _NEUTRAL_MAX_S)),
+    }
+    roles = harmonize_accent(roles)          # analogous accent from the primary
+    roles, _warnings = adjust_scheme(roles)  # WCAG-nudge the two neutrals
+    return roles
+
+
 def scheme_report(source_schemes):
     """Per-scheme diff + AA status, for `manage.py generate_color_schemes`.
     Returns a list of dicts: {slug, name, changes: [(role, before, after)],

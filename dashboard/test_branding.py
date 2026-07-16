@@ -63,6 +63,47 @@ class BrandingAccessTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertContains(resp, f'data-feature_accent="{adr.feature_accent}"')
 
 
+HARMONIZE_URL = "/dashboard/branding/harmonize/"
+
+
+class HarmonizeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    def setUp(self):
+        self.org, _ = self.build_org("roxy")
+        self.manager = self.make_staff(self.org, Membership.Role.MANAGER)[0]
+        self.box_office = self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0]
+
+    def _post(self, **data):
+        return self.client.post(HARMONIZE_URL, data, HTTP_HOST=host_for("roxy"))
+
+    def test_returns_a_full_scheme_from_primary(self):
+        self.client.force_login(self.manager)
+        resp = self._post(primary="#6A1E32")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(
+            set(data["roles"]),
+            {"primary", "secondary", "feature_accent", "dark_accent", "light_neutral", "neutral"},
+        )
+        self.assertEqual(data["roles"]["primary"], "#6A1E32")
+
+    def test_invalid_color_is_rejected(self):
+        self.client.force_login(self.manager)
+        resp = self._post(primary="not-a-color")
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()["ok"])
+
+    def test_requires_manager(self):
+        self.client.force_login(self.box_office)
+        resp = self._post(primary="#6A1E32")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_get_not_allowed(self):
+        self.client.force_login(self.manager)
+        resp = self.client.get(HARMONIZE_URL, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 405)
+
+
 class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def setUp(self):
         self.org, self.venue = self.build_org("roxy")

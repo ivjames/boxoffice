@@ -192,6 +192,13 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                         {% endif %}
                     {% endfor %}
                 </div>
+                <div class="brand-tools">
+                    <button type="button" class="button button--secondary button--sm" id="harmonize-btn"
+                            data-url="{% url 'dashboard_branding_harmonize' %}">
+                        Harmonize from Primary
+                    </button>
+                    <span class="muted brand-tools__hint">Fills Secondary, Feature Accent, Dark Accent &amp; the neutrals from your Primary color, using the same color-theory rules as the presets. Undo if you don&rsquo;t like it.</span>
+                </div>
                 <div class="field page-tint-field">
                     {{ branding_form.page_tint.label_tag }}
                     {{ branding_form.page_tint }}
@@ -204,7 +211,15 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                 {% include "dashboard/_brand_preview.html" with palette=current_palette page_bg=organization.page_background_color %}
             </div>
         </div>
-        <button type="submit" class="button">Save branding</button>
+        <div class="brand-save-row">
+            <button type="submit" class="button">Save branding</button>
+            <div class="brand-history" role="group" aria-label="Undo and redo edits">
+                <button type="button" class="button button--secondary button--sm" id="brand-undo" disabled
+                        title="Undo (Ctrl/Cmd+Z)">Undo</button>
+                <button type="button" class="button button--secondary button--sm" id="brand-redo" disabled
+                        title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
+            </div>
+        </div>
     </form>
 </section>
 
@@ -386,6 +401,104 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                 });
                 sync(editorForm);
                 editorSection.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
+        });
+    }
+
+    // -- Harmonize-from-Primary + Undo/Redo on the branding (fine-tuning) form -
+    var harmBtn = document.getElementById("harmonize-btn");
+    var brandingForm = harmBtn && harmBtn.closest("form");
+    if (brandingForm) {
+        var TRACKED = 'input[data-role], select[data-font], select[data-page-tint]';
+        var csrfEl = brandingForm.querySelector("[name=csrfmiddlewaretoken]");
+        var csrf = csrfEl ? csrfEl.value : "";
+
+        // ---- client-side undo/redo over the tracked fields (draft only) -----
+        var undoStack = [], redoStack = [], applying = false;
+        var undoBtn = document.getElementById("brand-undo");
+        var redoBtn = document.getElementById("brand-redo");
+        function snapshot() {
+            var s = {};
+            brandingForm.querySelectorAll(TRACKED).forEach(function (el) { s[el.name] = el.value; });
+            return s;
+        }
+        function applySnap(s) {
+            applying = true;
+            brandingForm.querySelectorAll(TRACKED).forEach(function (el) {
+                if (el.name in s) el.value = s[el.name];
+            });
+            sync(brandingForm);
+            applying = false;
+        }
+        function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+        function updateButtons() {
+            if (undoBtn) undoBtn.disabled = undoStack.length <= 1;
+            if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+        }
+        function record() {
+            if (applying) return;
+            var s = snapshot();
+            if (undoStack.length && same(undoStack[undoStack.length - 1], s)) return;
+            undoStack.push(s);
+            redoStack = [];
+            updateButtons();
+        }
+        function undo() {
+            if (undoStack.length <= 1) return;
+            redoStack.push(undoStack.pop());
+            applySnap(undoStack[undoStack.length - 1]);
+            updateButtons();
+        }
+        function redo() {
+            if (!redoStack.length) return;
+            var s = redoStack.pop();
+            undoStack.push(s);
+            applySnap(s);
+            updateButtons();
+        }
+        undoStack.push(snapshot());  // initial (saved) state
+        updateButtons();
+        // Record a step when a field COMMITS (change), not on every drag frame.
+        brandingForm.addEventListener("change", function (e) {
+            if (e.target.matches(TRACKED)) record();
+        });
+        if (undoBtn) undoBtn.addEventListener("click", undo);
+        if (redoBtn) redoBtn.addEventListener("click", redo);
+        document.addEventListener("keydown", function (e) {
+            if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+            var t = e.target;
+            // Leave native text undo alone inside text fields / textareas.
+            if (t && (t.tagName === "TEXTAREA" ||
+                (t.tagName === "INPUT" && /^(text|search|url|email|number|password|tel)$/.test(t.type)))) return;
+            e.preventDefault();
+            if (e.shiftKey) redo(); else undo();
+        });
+
+        // ---- harmonize the whole palette from the Primary color -------------
+        harmBtn.addEventListener("click", function () {
+            var primaryInput = brandingForm.querySelector('input[data-role="primary"]');
+            if (!primaryInput) return;
+            var label = harmBtn.textContent;
+            harmBtn.disabled = true;
+            harmBtn.textContent = "Harmonizing…";
+            // location.search carries ?_tenant in local dev; empty (harmless) in
+            // production, where the tenant resolves from the subdomain.
+            fetch(harmBtn.dataset.url + window.location.search, {
+                method: "POST",
+                headers: { "X-CSRFToken": csrf, "Content-Type": "application/x-www-form-urlencoded" },
+                body: "primary=" + encodeURIComponent(primaryInput.value),
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                if (data && data.ok) {
+                    Object.keys(data.roles).forEach(function (role) {
+                        var inp = brandingForm.querySelector('input[data-role="' + role + '"]');
+                        if (inp) inp.value = data.roles[role];
+                    });
+                    sync(brandingForm);
+                    record();  // the whole harmonize is a single undo step
+                }
+            }).catch(function () {}).then(function () {
+                harmBtn.disabled = false;
+                harmBtn.textContent = label;
             });
         });
     }

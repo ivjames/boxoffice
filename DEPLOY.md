@@ -714,6 +714,51 @@ boxoffice logs         # pm2 logs boxoffice (pass extra pm2 log flags through)
 boxoffice migrate       # manage.py migrate only, no deploy
 ```
 
+## AI features (optional, key-gated)
+
+Two features call the Anthropic API and stay **completely off** until a key is
+set — the app runs, and both degrade to a non-AI path, when it's absent:
+
+- **Seating-chart parsing** (`venues/chart_parsing.py`) — image/PDF → editable
+  chart.
+- **Branding "derive from your website"** (`tenants/color_extraction.py`) —
+  reads a tenant's homepage and suggests a color scheme.
+
+Enable them by adding the key to `.env` (single-quoted, per the provisioning
+rule), then `boxoffice restart`:
+
+```bash
+cat >> .env <<'EOF'
+ANTHROPIC_API_KEY='sk-ant-...'
+EOF
+boxoffice restart
+```
+
+### Derive-from-website: the vision path (best, optional-on-top)
+
+With just the key, derive refines its color guess from the page's **text/CSS**.
+That misreads sites whose real brand color is faint in the CSS while framework
+noise (a Wix focus-ring blue, an unused theme accent) is loud — the heuristic
+can't tell them apart without *seeing* the page. Installing a headless browser
+switches derive to a **vision** path: it screenshots the homepage and lets
+Claude pick the palette from what actually renders (so a black-and-white brand
+reads as black-and-white). Setup on the droplet:
+
+```bash
+cd /var/www/boxoffice && source venv/bin/activate
+pip install -r requirements.txt          # brings in the `playwright` package
+playwright install-deps chromium         # OS libs Chromium needs (needs root)
+playwright install chromium              # the browser binary itself
+boxoffice restart
+```
+
+It's strictly additive: no browser (or a failed render) falls back to the
+text refinement, which falls back to the pure heuristic — derive never 500s on
+a missing browser. The render is SSRF-guarded like the fetch (public hosts
+only, every sub-resource re-checked) and bounded (above-the-fold viewport,
+~20s timeout). If the droplet sits behind an outbound proxy, set `HTTPS_PROXY`
+in the environment and the browser will honor it.
+
 ## Backups
 
 ```bash

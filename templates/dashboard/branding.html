@@ -48,7 +48,9 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         {% if derived %}
             <div class="brand-derived">
                 <p>Read <strong>{{ derived.candidates|length }}</strong> colors from
-                <a href="{{ derived.source_url }}" rel="noopener noreferrer" target="_blank">{{ derived.source_url }}</a>.
+                <a href="{{ derived.source_url }}" rel="noopener noreferrer" target="_blank">{{ derived.source_url }}</a>{% if derived.method == "vision" %},
+                off a screenshot of your live page{% elif derived.method == "text" %},
+                from your page’s colors{% endif %}.
                 Loaded a suggested palette into the editor below — adjust anything, then save it.</p>
                 {% if derived.candidates %}
                     <div class="swatch-strip" aria-label="Colors found on the page">

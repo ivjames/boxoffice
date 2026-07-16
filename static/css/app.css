@@ -3654,6 +3654,13 @@ table.dash-table th {
     font-size: 0.8rem;
 }
 
+/* Optional "save these colors as a named scheme" field, tucked under the
+   editor's controls (part of the one branding form). */
+.brand-name-field {
+    margin-top: 0.85rem;
+    max-width: 28rem;
+}
+
 .brand-tools {
     display: flex;
     flex-wrap: wrap;

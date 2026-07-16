@@ -27,7 +27,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
 <section class="brand-section">
     <h2>Derive from your website</h2>
     <p class="muted">Enter your homepage and we’ll read its colors and suggest a
-    scheme you can tweak, apply, or save.</p>
+    scheme you can tweak, save, or apply below.</p>
     <form method="post" action="{% url 'dashboard_branding_derive' %}" class="dash-form dash-form--inline">
         {% csrf_token %}
         <div class="field">
@@ -42,7 +42,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         <div class="brand-derived">
             <p>Read <strong>{{ derived.candidates|length }}</strong> colors from
             <a href="{{ derived.source_url }}" rel="noopener noreferrer" target="_blank">{{ derived.source_url }}</a>.
-            Here’s a suggested palette — adjust anything below, then apply or save it.</p>
+            Loaded a suggested palette into the editor below — adjust anything, then save it.</p>
             {% if derived.candidates %}
                 <div class="swatch-strip" aria-label="Colors found on the page">
                     {% for hex, weight in derived.candidates %}
@@ -54,37 +54,86 @@ ready-made scheme, save your own, or let us read one off your website.</p>
     {% endif %}
 </section>
 
-{# -- save-a-scheme form (doubles as the derived-palette editor) --------- #}
+{% comment %}
+THE branding editor: logo + fonts + colors + preview, one form. Merged (was
+two separate forms -- "save a custom scheme" and "logo, fonts & fine-tuning").
+"Save branding" writes the live storefront colors (save_colors / BrandingForm);
+"Save as scheme" files the same palette in the gallery (save_scheme). Previewing
+a ready-made scheme below and the derive-from-website flow both load their
+colors straight into these pickers (id="save-scheme" is the JS target).
+{% endcomment %}
 <section class="brand-section" id="save-scheme">
-    <h2>{% if derived %}Suggested scheme{% else %}Save a custom scheme{% endif %}</h2>
-    <form method="post" action="{% url 'dashboard_branding' %}" class="dash-form">
+    <h2>{% if derived %}Suggested scheme{% else %}Logo, colors &amp; fonts{% endif %}</h2>
+    <p class="muted">Upload a logo, choose fonts, and set the exact colors your
+    storefront uses right now. Preview a ready-made scheme below to load it here.</p>
+    <form method="post" action="{% url 'dashboard_branding' %}" enctype="multipart/form-data" class="dash-form">
         {% csrf_token %}
-        <input type="hidden" name="action" value="save_scheme">
         <div class="field">
-            {{ scheme_form.name.label_tag }}
-            {{ scheme_form.name }}
-            {{ scheme_form.name.errors }}
+            {{ branding_form.logo.label_tag }}
+            {{ branding_form.logo }}
+            {{ branding_form.logo.errors }}
         </div>
         <div class="brand-editor">
-            <div class="color-grid">
-                {% for field in scheme_form %}
-                    {% if field.name != 'name' %}
-                        <div class="field color-grid__field">
-                            {{ field.label_tag }}
-                            {{ field }}
-                            {{ field.errors }}
-                        </div>
-                    {% endif %}
-                {% endfor %}
+            <div>
+                <div class="font-grid">
+                    <div class="field">
+                        {{ branding_form.heading_font.label_tag }}
+                        {{ branding_form.heading_font }}
+                        {{ branding_form.heading_font.errors }}
+                    </div>
+                    <div class="field">
+                        {{ branding_form.body_font.label_tag }}
+                        {{ branding_form.body_font }}
+                        {{ branding_form.body_font.errors }}
+                    </div>
+                </div>
+                <div class="color-grid">
+                    {% for field in branding_form %}
+                        {% if field.name != 'logo' and field.name != 'heading_font' and field.name != 'body_font' and field.name != 'page_tint' %}
+                            <div class="field color-grid__field">
+                                {{ field.label_tag }}
+                                {{ field }}
+                                {{ field.errors }}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+                <div class="brand-tools">
+                    <button type="button" class="button button--secondary button--sm" id="harmonize-btn"
+                            data-url="{% url 'dashboard_branding_harmonize' %}">
+                        Harmonize from Primary
+                    </button>
+                    <span class="muted brand-tools__hint">Fills Secondary, Feature Accent, Dark Accent &amp; the neutrals from your Primary color, using the same color-theory rules as the presets. Undo if you don&rsquo;t like it.</span>
+                </div>
+                <div class="field page-tint-field">
+                    {{ branding_form.page_tint.label_tag }}
+                    {{ branding_form.page_tint }}
+                    <p class="muted page-tint-field__hint">How much brand color the storefront page carries behind your content. Every level stays high-contrast for readability.</p>
+                    {{ branding_form.page_tint.errors }}
+                </div>
+                <div class="field brand-name-field">
+                    <label for="scheme-name">Scheme name <span class="muted">— optional, to save this palette to your gallery</span></label>
+                    <input type="text" id="scheme-name" name="name" maxlength="140"
+                           value="{{ scheme_form.name.value|default:'' }}" placeholder="e.g. House Red">
+                    {{ scheme_form.name.errors }}
+                </div>
             </div>
             <div class="brand-preview-wrap">
                 <p class="brand-preview-wrap__label">Live preview</p>
                 {% include "dashboard/_brand_preview.html" with palette=derived.roles|default:current_palette page_bg=organization.page_background_color %}
             </div>
         </div>
-        <div class="brand-actions">
-            <button type="submit" class="button">Save scheme</button>
-            <button type="submit" name="apply_after_save" value="1" class="button button--secondary">Save &amp; apply</button>
+        <div class="brand-save-row">
+            <div class="brand-actions">
+                <button type="submit" name="action" value="save_colors" class="button">Save branding</button>
+                <button type="submit" name="action" value="save_scheme" class="button button--secondary">Save as scheme</button>
+            </div>
+            <div class="brand-history" role="group" aria-label="Undo and redo edits">
+                <button type="button" class="button button--secondary button--sm" id="brand-undo" disabled
+                        title="Undo (Ctrl/Cmd+Z)">Undo</button>
+                <button type="button" class="button button--secondary button--sm" id="brand-redo" disabled
+                        title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
+            </div>
         </div>
     </form>
 </section>
@@ -154,74 +203,6 @@ ready-made scheme, save your own, or let us read one off your website.</p>
     </div>
 </section>
 {% endif %}
-
-{# -- logo + fine-tune the live colors ---------------------------------- #}
-<section class="brand-section">
-    <h2>Logo, fonts &amp; fine-tuning</h2>
-    <p class="muted">Upload a logo, choose fonts, and tweak the exact colors your storefront uses right now.</p>
-    <form method="post" action="{% url 'dashboard_branding' %}" enctype="multipart/form-data" class="dash-form">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="save_colors">
-        <div class="field">
-            {{ branding_form.logo.label_tag }}
-            {{ branding_form.logo }}
-            {{ branding_form.logo.errors }}
-        </div>
-        <div class="brand-editor">
-            <div>
-                <div class="font-grid">
-                    <div class="field">
-                        {{ branding_form.heading_font.label_tag }}
-                        {{ branding_form.heading_font }}
-                        {{ branding_form.heading_font.errors }}
-                    </div>
-                    <div class="field">
-                        {{ branding_form.body_font.label_tag }}
-                        {{ branding_form.body_font }}
-                        {{ branding_form.body_font.errors }}
-                    </div>
-                </div>
-                <div class="color-grid">
-                    {% for field in branding_form %}
-                        {% if field.name != 'logo' and field.name != 'heading_font' and field.name != 'body_font' and field.name != 'page_tint' %}
-                            <div class="field color-grid__field">
-                                {{ field.label_tag }}
-                                {{ field }}
-                                {{ field.errors }}
-                            </div>
-                        {% endif %}
-                    {% endfor %}
-                </div>
-                <div class="brand-tools">
-                    <button type="button" class="button button--secondary button--sm" id="harmonize-btn"
-                            data-url="{% url 'dashboard_branding_harmonize' %}">
-                        Harmonize from Primary
-                    </button>
-                    <span class="muted brand-tools__hint">Fills Secondary, Feature Accent, Dark Accent &amp; the neutrals from your Primary color, using the same color-theory rules as the presets. Undo if you don&rsquo;t like it.</span>
-                </div>
-                <div class="field page-tint-field">
-                    {{ branding_form.page_tint.label_tag }}
-                    {{ branding_form.page_tint }}
-                    <p class="muted page-tint-field__hint">How much brand color the storefront page carries behind your content. Every level stays high-contrast for readability.</p>
-                    {{ branding_form.page_tint.errors }}
-                </div>
-            </div>
-            <div class="brand-preview-wrap">
-                <p class="brand-preview-wrap__label">Live preview</p>
-                {% include "dashboard/_brand_preview.html" with palette=current_palette page_bg=organization.page_background_color %}
-            </div>
-        </div>
-        <div class="brand-save-row">
-            <button type="submit" class="button">Save branding</button>
-            <div class="brand-history" role="group" aria-label="Undo and redo edits">
-                <button type="button" class="button button--secondary button--sm" id="brand-undo" disabled
-                        title="Undo (Ctrl/Cmd+Z)">Undo</button>
-                <button type="button" class="button button--secondary button--sm" id="brand-redo" disabled
-                        title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
-            </div>
-        </div>
-    </form>
-</section>
 
 {{ font_stacks|json_script:"font-stacks" }}
 {% endblock %}
@@ -384,9 +365,9 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         });
     });
 
-    // "Preview" on a scheme card: load that scheme's colors into the
-    // "Save a custom scheme" editor + its live preview (client-side only --
-    // nothing is applied to the storefront until Apply/Save), then scroll to it
+    // "Preview" on a scheme card: load that scheme's colors into the one
+    // branding editor + its live preview (client-side only -- nothing is
+    // applied to the storefront until Save branding/Apply), then scroll to it
     // so staff can tweak from there.
     var editorSection = document.getElementById("save-scheme");
     var editorForm = editorSection && editorSection.querySelector("form");

@@ -3776,8 +3776,8 @@ table.dash-table th {
 .brand-logo__current {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 0.5rem 0.75rem;
+    align-items: center;
+    gap: 0.5rem 0.9rem;
     margin-top: 0.6rem;
 }
 
@@ -3799,9 +3799,8 @@ table.dash-table th {
 
 .brand-logo__arrow {
     align-self: center;
-    font-size: 1.1rem;
+    font-size: 1.4rem;
     color: var(--muted-color, #6b7280);
-    padding-bottom: 1rem;
 }
 
 .brand-logo__bg-actions {
@@ -3814,17 +3813,17 @@ table.dash-table th {
 /* Checkerboard so a transparent logo (e.g. after background removal) reads as
    transparent rather than blending into the card. */
 .brand-logo__preview {
-    height: 44px;
+    height: 104px;
     width: auto;
-    max-width: 160px;
-    border-radius: 6px;
-    padding: 4px;
+    max-width: 200px;
+    border-radius: 8px;
+    padding: 6px;
     background-color: #fff;
     background-image:
         linear-gradient(45deg, #e5e7eb 25%, transparent 25%, transparent 75%, #e5e7eb 75%),
         linear-gradient(45deg, #e5e7eb 25%, transparent 25%, transparent 75%, #e5e7eb 75%);
-    background-size: 14px 14px;
-    background-position: 0 0, 7px 7px;
+    background-size: 18px 18px;
+    background-position: 0 0, 9px 9px;
 }
 
 .brand-save-row {

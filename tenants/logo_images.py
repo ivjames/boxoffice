@@ -65,16 +65,44 @@ def read_logo_bytes(organization):
 
 
 def validate_logo_upload(file):
-    """Field validator: refuse a logo whose raw bytes exceed
-    MAX_LOGO_UPLOAD_BYTES. Runs during form/model full_clean (dashboard branding
-    form + admin), so an oversized file is a friendly field error rather than a
-    processing failure. Image-ness itself is already enforced by ImageField."""
+    """Field validator: refuse a logo that's too big by BYTES or by PIXELS. Runs
+    during form/model full_clean (dashboard branding form + admin), so an
+    oversized file is a friendly field error rather than a 500 later.
+
+    The pixel check mirrors the guard in normalize_logo_bytes: that guard runs
+    in Organization.save() (the processing path), where a raised ValidationError
+    would escape as an uncaught 500 -- a small-BYTES but huge-DIMENSION image (a
+    solid-color PNG can be tens of MP in a few KB) passes the byte cap and
+    Django's ImageField image check, then blew up in save(). Validating pixels
+    HERE turns that into an ordinary form error. Image-ness itself is enforced
+    by ImageField, so a non-decodable file is left for its validator to report."""
     size = getattr(file, "size", None)
     if size is not None and size > MAX_LOGO_UPLOAD_BYTES:
         limit_mb = MAX_LOGO_UPLOAD_BYTES / (1024 * 1024)
         raise ValidationError(
             f"That logo is too large ({size / (1024 * 1024):.1f} MB). "
             f"Please upload an image under {limit_mb:.0f} MB."
+        )
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        file.seek(0)
+        with Image.open(file) as img:  # header only -- no full decode
+            width, height = img.size
+    except (UnidentifiedImageError, OSError, ValueError):
+        return  # not a readable image; ImageField's own validator will flag it
+    finally:
+        try:
+            file.seek(0)  # rewind for the storage save that follows
+        except (OSError, ValueError):
+            pass
+
+    if width * height > MAX_LOGO_PIXELS:
+        megapixels = MAX_LOGO_PIXELS / 1_000_000
+        raise ValidationError(
+            f"That image is too large ({width}×{height}px). "
+            f"Please upload a logo under {megapixels:.0f} megapixels."
         )
 
 

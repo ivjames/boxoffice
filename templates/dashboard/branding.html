@@ -81,6 +81,15 @@ colors straight into these pickers (id="save-scheme" is the JS target).
     <h2>{% if derived %}Suggested scheme{% else %}Logo, colors &amp; fonts{% endif %}</h2>
     <p class="muted">Upload a logo, choose fonts, and set the exact colors your
     storefront uses right now. Preview a ready-made scheme below to load it here.</p>
+    {% if organization.logo %}
+    {# Background removal is its OWN form, kept outside the editor form below --
+       nested <form>s are invalid HTML (the browser drops the inner one, so the
+       button would post to the editor instead). Its button sits by the logo
+       preview inside that form via the HTML5 form= attribute. #}
+    <form method="post" action="{% url 'dashboard_branding_logo_remove_bg' %}" id="logo-bg-form" data-logo-bg-form hidden>
+        {% csrf_token %}
+    </form>
+    {% endif %}
     <form method="post" action="{% url 'dashboard_branding' %}" enctype="multipart/form-data" class="dash-form">
         {% csrf_token %}
         <div class="brand-editor">
@@ -93,18 +102,15 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                         {{ branding_form.logo.errors }}
                         <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background.</p>
                         {% if organization.logo %}
-                            {# Standalone form so removing the background acts on the SAVED
-                               logo immediately, independent of the unsaved color edits in
-                               the main branding form. #}
+                            {# The button posts the standalone #logo-bg-form declared
+                               above (via form=), so removing the background acts on the
+                               SAVED logo independent of the unsaved color edits here. #}
                             <div class="brand-logo__current">
                                 <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview">
-                                <form method="post" action="{% url 'dashboard_branding_logo_remove_bg' %}" class="brand-logo__bg-form" data-logo-bg-form>
-                                    {% csrf_token %}
-                                    <button type="submit" class="button button--secondary button--sm" data-logo-bg-btn>
-                                        <span class="logo-bg-btn__label">Remove background</span>
-                                        <span class="spinner" hidden aria-hidden="true"></span>
-                                    </button>
-                                </form>
+                                <button type="submit" form="logo-bg-form" class="button button--secondary button--sm" data-logo-bg-btn>
+                                    <span class="logo-bg-btn__label">Remove background</span>
+                                    <span class="spinner" hidden aria-hidden="true"></span>
+                                </button>
                             </div>
                         {% endif %}
                     </div>
@@ -665,7 +671,9 @@ colors straight into these pickers (id="save-scheme" is the JS target).
     var bgForm = document.querySelector("[data-logo-bg-form]");
     if (bgForm) {
         bgForm.addEventListener("submit", function () {
-            var btn = bgForm.querySelector("[data-logo-bg-btn]");
+            // The button is associated via form= and lives outside this form's
+            // DOM subtree, so look it up in the document, not under bgForm.
+            var btn = document.querySelector("[data-logo-bg-btn]");
             if (!btn) return;
             btn.disabled = true;
             var label = btn.querySelector(".logo-bg-btn__label");

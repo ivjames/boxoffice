@@ -36,6 +36,15 @@ MAX_LOGO_UPLOAD_BYTES = getattr(settings, "MAX_LOGO_UPLOAD_BYTES", 5 * 1024 * 10
 # camera-sized original into a few-KB asset. Aspect ratio is preserved.
 MAX_LOGO_DIMENSION = getattr(settings, "MAX_LOGO_DIMENSION", 512)
 
+# Cap on DECODED pixels. The byte limit above bounds the compressed upload, not
+# the image it expands to: a tiny PNG/WebP can declare hundreds of millions of
+# pixels (a "decompression bomb"), and Pillow only errors above ~178M pixels
+# (2x its warn threshold) -- so a crafted file in between would allocate its
+# full RGBA buffer in memory before thumbnail() could shrink it. We read the
+# header-declared size first (cheap) and reject before decoding. 25 MP is far
+# beyond any real logo yet caps a decode at ~100 MB.
+MAX_LOGO_PIXELS = getattr(settings, "MAX_LOGO_PIXELS", 25_000_000)
+
 
 def read_logo_bytes(organization):
     """Return the raw bytes of an org's logo, or None if it has none / the file
@@ -77,10 +86,25 @@ def normalize_logo_bytes(raw):
     background-removal endpoint and easy to test."""
     from PIL import Image, ImageOps, UnidentifiedImageError
 
+    # open() reads only the header, so image.size is known WITHOUT decoding the
+    # pixels. Reject an over-large image here, before load() allocates its full
+    # buffer -- this is the decompression-bomb guard (see MAX_LOGO_PIXELS).
     try:
         image = Image.open(io.BytesIO(raw))
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValidationError("That file couldn't be read as an image.") from exc
+
+    width, height = image.size
+    if width * height > MAX_LOGO_PIXELS:
+        megapixels = MAX_LOGO_PIXELS / 1_000_000
+        raise ValidationError(
+            f"That image is too large ({width}×{height}px). "
+            f"Please upload a logo under {megapixels:.0f} megapixels."
+        )
+
+    try:
         image.load()
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+    except (OSError, Image.DecompressionBombError) as exc:
         raise ValidationError("That file couldn't be read as an image.") from exc
 
     # Respect the camera/orientation tag, then drop it (and all other metadata)

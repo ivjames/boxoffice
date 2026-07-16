@@ -10,6 +10,7 @@ throwaway temp dir (TempMediaMixin) -- no stray files under the real media dir.
 import io
 import shutil
 import tempfile
+from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -58,6 +59,18 @@ class NormalizeLogoBytesTests(TestCase):
     def test_non_image_bytes_raise_validationerror(self):
         with self.assertRaises(ValidationError):
             normalize_logo_bytes(b"this is not an image")
+
+    def test_oversized_dimensions_are_rejected_before_decoding(self):
+        # The pixel guard rejects a bomb (huge declared dimensions) up front. We
+        # prove the guard fires -- and fires from image.size, before load() --
+        # by capping MAX_LOGO_PIXELS below a modest real image and asserting
+        # load() is never reached.
+        raw = image_bytes(size=(500, 500))  # 250k px
+        with patch("tenants.logo_images.MAX_LOGO_PIXELS", 100_000):
+            with patch("PIL.Image.Image.load", side_effect=AssertionError("decoded!")) as load:
+                with self.assertRaises(ValidationError):
+                    normalize_logo_bytes(raw)
+            load.assert_not_called()
 
 
 class ValidateLogoUploadTests(TestCase):

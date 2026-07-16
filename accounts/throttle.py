@@ -12,6 +12,8 @@ per-process, which is fine there.
 Set LOGIN_RATELIMIT_MAX_ATTEMPTS = 0 to disable.
 """
 
+import time
+
 from django.conf import settings
 from django.core.cache import cache
 
@@ -84,3 +86,22 @@ def over_limit(bucket, identity, max_hits, window_seconds):
         cache.set(key, 1, timeout=window_seconds)
         count = 1
     return count > max_hits
+
+
+def start_cooldown(bucket, identity, seconds):
+    """Arm a minimum-interval cooldown for (bucket, identity): the next
+    cooldown_remaining() call reports the time left until `seconds` have
+    elapsed. Stores the ready-at wall-clock so the client can show a countdown.
+    A non-positive `seconds` disables the cooldown (no key written)."""
+    if seconds <= 0:
+        return
+    cache.set(f"cooldown:{bucket}:{identity}", time.time() + seconds, timeout=seconds)
+
+
+def cooldown_remaining(bucket, identity):
+    """Whole seconds until (bucket, identity) may act again after a
+    start_cooldown(), or 0 if the cooldown has elapsed / was never set."""
+    ready_at = cache.get(f"cooldown:{bucket}:{identity}")
+    if not ready_at:
+        return 0
+    return max(0, int(round(ready_at - time.time())))

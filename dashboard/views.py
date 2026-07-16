@@ -939,11 +939,15 @@ def branding(request):
 MAX_DERIVE_URL_LEN = 2000
 
 
-def _derive_error(request, is_ajax, message, status=400):
+def _derive_error(request, is_ajax, message, status=400, retry_after=None):
     """A derive failure, shaped for the caller: JSON for the inline (fetch)
-    flow, a flashed message + redirect for the no-JS fallback."""
+    flow, a flashed message + redirect for the no-JS fallback. `retry_after`
+    (seconds) rides along on rate-limit refusals so the page can count down."""
     if is_ajax:
-        return JsonResponse({"ok": False, "error": message}, status=status)
+        payload = {"ok": False, "error": message}
+        if retry_after is not None:
+            payload["retry_after"] = retry_after
+        return JsonResponse(payload, status=status)
     messages.error(request, message)
     return redirect("dashboard_branding")
 
@@ -965,20 +969,28 @@ def branding_derive(request):
     length is capped; the agent itself is SSRF-guarded (tenants.color_extraction).
     """
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+    org_id = str(request.organization.pk)
     url = (request.POST.get("url") or "").strip()
     if not url:
         return _derive_error(request, is_ajax, "Enter your homepage URL first.")
     if len(url) > MAX_DERIVE_URL_LEN:
         return _derive_error(request, is_ajax, "That web address is too long to read.")
+
+    # Cooldown first (a still-warm org shouldn't spend a window slot just to be
+    # refused), then the fixed-window cap.
+    cooling = throttle.cooldown_remaining("derive", org_id)
+    if cooling > 0:
+        return _derive_error(
+            request, is_ajax,
+            f"Just a moment — you can derive again in {cooling}s.",
+            status=429, retry_after=cooling,
+        )
     if throttle.over_limit(
-        "derive",
-        str(request.organization.pk),
-        settings.DERIVE_RATELIMIT_MAX,
-        settings.DERIVE_RATELIMIT_WINDOW_SECONDS,
+        "derive", org_id,
+        settings.DERIVE_RATELIMIT_MAX, settings.DERIVE_RATELIMIT_WINDOW_SECONDS,
     ):
         return _derive_error(
-            request,
-            is_ajax,
+            request, is_ajax,
             "You’ve derived a lot of palettes in a short time. Give it a few minutes and try again.",
             status=429,
         )
@@ -986,7 +998,12 @@ def branding_derive(request):
     try:
         derived = derive_scheme_from_url(url)
     except ColorDeriveError as exc:
+        # A failed fetch is cheap and often a fixable typo -- don't start the
+        # cooldown, so the manager can correct the URL and retry immediately.
         return _derive_error(request, is_ajax, str(exc))
+
+    # A real derive ran: start the cooldown so the next one can't fire on its heels.
+    throttle.start_cooldown("derive", org_id, settings.DERIVE_COOLDOWN_SECONDS)
 
     if is_ajax:
         return JsonResponse(
@@ -997,6 +1014,7 @@ def branding_derive(request):
                 "candidates": derived["candidates"],
                 "method": derived.get("method", "heuristic"),
                 "source_url": derived["source_url"],
+                "cooldown": settings.DERIVE_COOLDOWN_SECONDS,
             }
         )
 

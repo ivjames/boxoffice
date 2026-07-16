@@ -568,8 +568,34 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                 deriveResult.hidden = false;
             }
 
+            // After a derive (or a 429), the button counts down and stays
+            // disabled -- mirrors the server's cooldown so a palette can't be
+            // re-fired on its heels.
+            var cooldownTimer = null;
+            function startCooldown(seconds) {
+                seconds = parseInt(seconds, 10) || 0;
+                if (seconds <= 0) return;
+                if (cooldownTimer) clearInterval(cooldownTimer);
+                deriveBtn.disabled = true;
+                deriveSpin.hidden = true;
+                var remaining = seconds;
+                deriveLabel.textContent = "Try again in " + remaining + "s";
+                cooldownTimer = setInterval(function () {
+                    remaining -= 1;
+                    if (remaining <= 0) {
+                        clearInterval(cooldownTimer);
+                        cooldownTimer = null;
+                        deriveBtn.disabled = false;
+                        deriveLabel.textContent = "Derive scheme";
+                    } else {
+                        deriveLabel.textContent = "Try again in " + remaining + "s";
+                    }
+                }, 1000);
+            }
+
             deriveForm.addEventListener("submit", function (e) {
                 e.preventDefault();
+                if (deriveBtn.disabled) return;  // in-flight or cooling down
                 deriveError.hidden = true;
                 var url = (deriveUrl.value || "").trim();
                 if (!url) { showDeriveError("Enter your homepage URL first."); return; }
@@ -583,9 +609,15 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                     },
                     body: "url=" + encodeURIComponent(url),
                 }).then(function (r) {
-                    return r.json().then(function (data) { return { ok: r.ok, data: data }; },
-                                        function () { return { ok: r.ok, data: null }; });
+                    return r.json().then(function (data) { return { status: r.status, ok: r.ok, data: data }; },
+                                        function () { return { status: r.status, ok: r.ok, data: null }; });
                 }).then(function (res) {
+                    setBusy(false);
+                    if (res.status === 429) {
+                        showDeriveError((res.data && res.data.error) || "Please wait a moment before deriving again.");
+                        startCooldown(res.data && res.data.retry_after);
+                        return;
+                    }
                     if (!res.ok || !res.data || !res.data.ok) {
                         showDeriveError((res.data && res.data.error) ||
                             "Couldn’t read that site — check the address and try again.");
@@ -602,10 +634,10 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                     record();  // the whole derive is a single undo step
                     renderResult(data);
                     if (editorSection) editorSection.scrollIntoView({ behavior: "smooth", block: "start" });
+                    startCooldown(data.cooldown);  // enforce the gap client-side too
                 }).catch(function () {
-                    showDeriveError("Couldn’t reach the server. Try again.");
-                }).then(function () {
                     setBusy(false);
+                    showDeriveError("Couldn’t reach the server. Try again.");
                 });
             });
         }

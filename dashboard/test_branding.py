@@ -257,6 +257,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertEqual(data["roles"]["primary"], "#4b2e83")
         self.assertEqual(data["method"], "vision")
         self.assertEqual(data["candidates"][0], ["#4b2e83", 4])
+        self.assertIn("cooldown", data)  # the UI counts down from this
 
     def test_derive_ajax_error_is_json_not_redirect(self):
         from tenants.color_extraction import ColorDeriveError
@@ -269,8 +270,11 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json(), {"ok": False, "error": "nope"})
 
-    @override_settings(DERIVE_RATELIMIT_MAX=2, DERIVE_RATELIMIT_WINDOW_SECONDS=300)
+    @override_settings(
+        DERIVE_RATELIMIT_MAX=2, DERIVE_RATELIMIT_WINDOW_SECONDS=300, DERIVE_COOLDOWN_SECONDS=0
+    )
     def test_derive_is_rate_limited_per_org(self):
+        # Cooldown off here so this exercises only the window cap.
         with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
             for _ in range(2):  # cap is 2
                 ok = self.client.post(
@@ -284,6 +288,41 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
             )
         self.assertEqual(blocked.status_code, 429)
         self.assertFalse(blocked.json()["ok"])
+
+    @override_settings(DERIVE_COOLDOWN_SECONDS=20, DERIVE_RATELIMIT_MAX=8)
+    def test_derive_cooldown_blocks_an_immediate_repeat(self):
+        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+            first = self.client.post(
+                DERIVE_URL, {"url": "roxy.example"},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+            self.assertEqual(first.status_code, 200)
+            second = self.client.post(  # immediately again -> cooling down
+                DERIVE_URL, {"url": "roxy.example"},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(second.status_code, 429)
+        body = second.json()
+        self.assertFalse(body["ok"])
+        self.assertGreater(body["retry_after"], 0)  # drives the button countdown
+
+    @override_settings(DERIVE_COOLDOWN_SECONDS=20)
+    def test_failed_derive_does_not_start_the_cooldown(self):
+        from tenants.color_extraction import ColorDeriveError
+
+        with patch("dashboard.views.derive_scheme_from_url", side_effect=ColorDeriveError("typo")):
+            first = self.client.post(
+                DERIVE_URL, {"url": "bad"},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(first.status_code, 400)  # a fixable failure, not a 429
+        # A corrected URL can be tried right away -- no cooldown was armed.
+        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+            retry = self.client.post(
+                DERIVE_URL, {"url": "roxy.example"},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(retry.status_code, 200)
 
     def test_derive_rejects_an_overlong_url(self):
         with patch("dashboard.views.derive_scheme_from_url") as m:

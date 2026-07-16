@@ -240,12 +240,17 @@ LOGIN_RATELIMIT_WINDOW_SECONDS = env.int("LOGIN_RATELIMIT_WINDOW_SECONDS", defau
 # --- Derive-from-website rate limit --------------------------------------
 # The branding "Derive from your website" endpoint is expensive per call (an
 # external homepage fetch + optional headless-browser render + a Claude
-# request), so it's capped per organization via accounts.throttle.over_limit.
-# After DERIVE_RATELIMIT_MAX calls inside DERIVE_RATELIMIT_WINDOW_SECONDS the
-# endpoint refuses (HTTP 429) until the window rolls off. Set MAX to 0 to
-# disable. Same shared-cache caveat as the login throttle.
-DERIVE_RATELIMIT_MAX = env.int("DERIVE_RATELIMIT_MAX", default=8)
+# request), so it's guarded two ways per organization (accounts.throttle):
+#   * a fixed-window cap -- DERIVE_RATELIMIT_MAX successful-or-attempted calls
+#     per DERIVE_RATELIMIT_WINDOW_SECONDS, then HTTP 429 until the window rolls;
+#   * a cooldown -- after a successful derive the org must wait
+#     DERIVE_COOLDOWN_SECONDS before the next (the UI shows a countdown), so a
+#     palette can't be re-fired back-to-back.
+# Set MAX to 0 to disable the window cap, COOLDOWN to 0 to disable the wait.
+# Same shared-cache caveat as the login throttle.
+DERIVE_RATELIMIT_MAX = env.int("DERIVE_RATELIMIT_MAX", default=4)
 DERIVE_RATELIMIT_WINDOW_SECONDS = env.int("DERIVE_RATELIMIT_WINDOW_SECONDS", default=300)
+DERIVE_COOLDOWN_SECONDS = env.int("DERIVE_COOLDOWN_SECONDS", default=20)
 
 # Where the landing page's contact-form notification email goes (the form
 # stores every inquiry in the DB regardless -- this is the heads-up copy,

@@ -779,6 +779,45 @@ the page) and bounded (above-the-fold viewport, ~20s timeout). If the droplet
 sits behind an outbound proxy, set `HTTPS_PROXY` in the environment and the
 browser will honor it.
 
+## Logo background removal (optional)
+
+The branding page's **"Remove background"** button (`tenants/logo_bg.py`) strips
+a tenant logo's background to a transparent PNG, using `rembg` (a U²-Net model
+via `onnxruntime`). Unlike the AI features above it needs **no API key** — it's
+dependency-gated: the import is guarded like Sentry, so if `rembg` isn't
+installed the endpoint just reports itself unavailable and nothing else breaks.
+
+`rembg[cpu]` is already in `requirements.txt`, so a normal **`boxoffice deploy`
+installs it automatically** (that command runs `pip install -r requirements.txt`
+every time). No separate step is needed on a droplet you deploy the usual way;
+only a hand-rolled `git pull` + restart that skips `boxoffice deploy` would need
+`venv/bin/pip install -r requirements.txt` run by hand.
+
+The one thing pip does *not* cover is the model: on the **first** background
+removal, rembg downloads its ~170 MB U²-Net model, so that first call needs
+**outbound egress** and is slow; it's cached for every call after.
+
+- The model lands in the **pm2 app user's** `~/.u2net` by default. To make it
+  user-independent (mirrors the Playwright `PLAYWRIGHT_BROWSERS_PATH` advice
+  above), set `U2NET_HOME=/opt/u2net` in `.env` and pre-warm it once as that
+  user so the worker finds the model on the first real request.
+- Behind an outbound proxy, set `HTTPS_PROXY` so the model download succeeds.
+- Like the other optional paths it's **additive and staging-first**: enable on
+  **beta** (`/var/www/boxoffice-beta`); prod picks up the `rembg` requirement
+  only once `staging → main` promotes. Until the dependency + model are present,
+  the button returns a clean "background removal isn't available" message — it
+  never 500s.
+
+Optional one-time pre-warm on the droplet (so the first *user* click isn't the
+one that pays for the 170 MB download), adjusting the dir for the site:
+
+```bash
+cd /var/www/boxoffice-beta && source venv/bin/activate
+pip install -r requirements.txt                        # installs rembg[cpu] (no-op if boxoffice deploy already ran)
+U2NET_HOME=/opt/u2net python -c "import rembg; rembg.new_session()"   # fetches + caches the model
+boxoffice restart
+```
+
 ## Backups
 
 ```bash

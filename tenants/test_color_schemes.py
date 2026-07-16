@@ -261,6 +261,47 @@ class ContextAwareRankingTests(TestCase):
         self.assertEqual(roles["primary"], self.BRAND)
 
 
+class FrameworkNoiseTests(TestCase):
+    """Framework sites (Wix/Squarespace) bury a platform-default accent in focus
+    rings, hidden `opacity:0` elements, and opaque `--color_NN` system-palette
+    variables, while the real brand color lives in heading text. The derive
+    agent must strip that chrome so it doesn't win `primary` -- the actual Wix
+    failure this feature was reported for."""
+
+    BRAND = "#a0241b"      # heading-text brand red
+    PLATFORM = "#116dff"   # Wix default action/focus blue
+
+    def test_focus_ring_and_hidden_chrome_never_win_primary(self):
+        # Mirrors the real page: the blue only appears in a focus-ring variable,
+        # a box-shadow, and an opacity:0 element; the red is heading text.
+        html = f"""
+        <html><head><style>
+          :root {{ --focus-ring-box-shadow:0 0 0 3px {self.PLATFORM}; --color_18:#0f2ccf; }}
+          .skip-link {{ color:{self.PLATFORM}; opacity:0; }}
+          *:focus-visible {{ box-shadow:0 0 0 3px {self.PLATFORM}; }}
+          h1 span {{ color:{self.BRAND}; }}
+          h2 span {{ color:{self.BRAND}; }}
+        </style></head><body></body></html>
+        """
+        cands = extract_candidate_colors(html)
+        roles = assign_roles(cands)
+        self.assertEqual(roles["primary"], self.BRAND)
+        self.assertNotEqual(roles["primary"], self.PLATFORM)
+
+    def test_opaque_system_variable_does_not_outrank_brand_text(self):
+        # A one-off `--color_NN` palette slot must not beat a color the page
+        # actually paints into its headings.
+        html = f"""
+        <html><head><style>
+          :root {{ --color_22:{self.PLATFORM}; }}
+          .title {{ color:{self.BRAND}; }}
+          .subtitle {{ color:{self.BRAND}; }}
+        </style></head><body></body></html>
+        """
+        roles = assign_roles(extract_candidate_colors(html))
+        self.assertEqual(roles["primary"], self.BRAND)
+
+
 class SSRFGuardTests(TestCase):
     """The derive fetch must reject non-public hosts (SSRF hardening) -- IP
     literals + localhost resolve without network, so these don't hit DNS."""

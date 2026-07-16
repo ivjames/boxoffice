@@ -147,6 +147,17 @@ _NAMED_VALUE_RE = re.compile(
 # flat scan also picks the inner rules out of `@media { ... }` wrappers.
 _RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.DOTALL)
 
+# A rule that renders nothing visible -- `opacity:0` (not 0.x), `visibility:
+# hidden`, `display:none`. Its colors aren't part of the visible brand, so we
+# skip the whole rule. This is what strips the `opacity:0` focus/skip-link
+# elements framework sites hide a default accent color inside.
+_HIDDEN_RE = re.compile(
+    r"opacity\s*:\s*0(?![.\d])|visibility\s*:\s*hidden|display\s*:\s*none",
+    re.IGNORECASE,
+)
+# Screen-reader-only utility selectors -- visually hidden a11y text.
+_HIDDEN_SEL_TOKENS = {"sr", "visually", "screenreader", "offscreen"}
+
 # Any element with an inline `style=""` (tag captured so we know when it's a
 # link, whose text color we still want to suppress).
 _INLINE_STYLE_RE = re.compile(
@@ -172,35 +183,58 @@ _SURFACE_SEL_TOKENS = {
     "body", "header", "footer", "nav", "navbar", "main", "section", "aside",
     "hero", "banner", "masthead", "jumbotron", "topbar", "cover", "splash",
 }
-# CSS custom properties a theme names for its brand vs. its links.
+# Heading elements/classes -- brand color lives in titles more than body copy.
+_HEADING_SEL_TOKENS = {"h1", "h2", "h3", "title", "heading", "headline"}
+# CSS custom properties a theme names for its brand, its links, or -- crucially
+# on framework sites (Wix/Squarespace) -- its interaction *chrome* (focus rings,
+# shadows). Those chrome vars are where a hidden platform-default blue hides.
 _BRAND_VAR_TOKENS = {"brand", "primary", "accent", "theme", "logo", "main"}
 _LINK_VAR_TOKENS = {"link", "links", "anchor"}
+_STATE_VAR_TOKENS = {
+    "focus", "ring", "shadow", "outline", "hover", "active", "caret",
+    "selection", "scrollbar", "disabled",
+}
 
 _BG_PROPS = {"background", "background-color", "background-image"}
-_EDGE_PROPS = {
+# True edges (borders) can be brand-hued, so they count a little.
+_BORDER_PROPS = {
     "border", "border-color", "border-top-color", "border-right-color",
-    "border-bottom-color", "border-left-color", "outline", "outline-color",
-    "box-shadow", "text-shadow", "text-decoration-color",
+    "border-bottom-color", "border-left-color", "border-block-color",
+    "border-inline-color", "column-rule-color",
+}
+# Chrome: focus rings, shadows, carets, underline/selection tints. These carry a
+# platform's *default* accent (the Wix focus-ring blue), never the brand, so
+# they score zero -- extracting them is what let a hidden blue win `primary`.
+_CHROME_PROPS = {
+    "box-shadow", "text-shadow", "outline", "outline-color",
+    "-webkit-tap-highlight-color", "caret-color", "-webkit-text-stroke-color",
+    "text-decoration-color", "column-rule",
 }
 
 
 def _context_score(selector, prop):
     """How strong a brand signal a color is, given the CSS (selector, property)
     it was declared in. Returns `(weight, label)`; weight 0 means "seen, but
-    never let this steer a role" (the link-text suppression that fixes a default
-    link color winning `primary`). `label` is a human context hint passed on to
-    Claude's refinement."""
+    never let this steer a role" -- link text, interaction chrome, and opaque
+    framework state. `label` is a human context hint passed on to Claude's
+    refinement."""
     sel = (selector or "").strip().lower()
     prop = (prop or "").strip().lower()
 
     # Custom properties: the theme has *named* the color's job -- trust the name.
     if prop.startswith("--"):
         tokens = set(_TOKEN_SPLIT_RE.split(prop[2:]))
-        if tokens & _LINK_VAR_TOKENS:
-            return 0, "link variable"
+        if tokens & (_LINK_VAR_TOKENS | _STATE_VAR_TOKENS):
+            return 0, "chrome variable"
         if tokens & _BRAND_VAR_TOKENS:
             return 12, "brand variable"
-        return 3, "variable"
+        # An opaquely-named var (`--color_18`, `--wst-...`) is just a palette
+        # slot -- weak signal, must not outrank a color the page actually paints.
+        return 1, "variable"
+
+    # Focus rings / shadows / carets: platform-default accents, never brand.
+    if prop in _CHROME_PROPS:
+        return 0, "chrome"
 
     tokens = set(_TOKEN_SPLIT_RE.split(sel))
     interactive = bool(_PSEUDO_LINK_RE.search(sel)) or bool(tokens & _LINK_SEL_TOKENS)
@@ -209,6 +243,8 @@ def _context_score(selector, prop):
         # Link/anchor text: the framework-default culprit. Never rank it.
         if interactive:
             return 0, "link"
+        if tokens & _HEADING_SEL_TOKENS:
+            return 2, "heading text"
         return 1, "text"
 
     if prop in _BG_PROPS:
@@ -220,7 +256,7 @@ def _context_score(selector, prop):
             return 2, "interactive surface"
         return 4, "background"
 
-    if prop in _EDGE_PROPS:
+    if prop in _BORDER_PROPS:
         return 1, "accent"
 
     if prop in ("fill", "stroke"):  # SVG -- often the logo itself
@@ -272,6 +308,8 @@ def _tally_css(css_text, score, count, context, *, selector_hint=None):
             context[hex_color] = (weight, label)
 
     if selector_hint is not None:
+        if _HIDDEN_RE.search(css_text):  # inline style hides the element
+            return
         for decl in css_text.split(";"):
             prop, sep, value = decl.partition(":")
             if not sep:
@@ -283,6 +321,10 @@ def _tally_css(css_text, score, count, context, *, selector_hint=None):
 
     for selector, body in _RULE_RE.findall(css_text):
         if selector.lstrip().startswith("@"):  # @font-face/@keyframes: no brand color
+            continue
+        if _HIDDEN_RE.search(body):  # invisible rule -- not part of the brand
+            continue
+        if set(_TOKEN_SPLIT_RE.split(selector.lower())) & _HIDDEN_SEL_TOKENS:
             continue
         for decl in body.split(";"):
             prop, sep, value = decl.partition(":")

@@ -123,6 +123,17 @@ class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def _post(self, **data):
         return self.client.post(BRANDING_URL, data, HTTP_HOST=host_for("roxy"))
 
+    def test_oversized_logo_upload_is_a_form_error_not_a_500(self):
+        # Regression: a hi-res logo (huge dimensions, small bytes) used to 500 --
+        # the pixel guard ran in save(), past form validation. It's now a clean
+        # field error, so the page re-renders (200) instead of erroring.
+        big = SimpleUploadedFile("big.png", image_bytes(size=(6000, 6000)), content_type="image/png")
+        resp = self.client.post(
+            BRANDING_URL, {"action": "save_colors", "logo": big}, HTTP_HOST=host_for("roxy")
+        )
+        self.assertEqual(resp.status_code, 200)  # not a 500
+        self.assertContains(resp, "megapixels")
+
     def test_apply_preset_copies_colors_onto_org(self):
         preset = ColorScheme.objects.get(slug="art-deco-royal")
         resp = self._post(action="apply_scheme", scheme_id=preset.pk)

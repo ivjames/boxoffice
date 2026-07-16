@@ -83,6 +83,23 @@ class ValidateLogoUploadTests(TestCase):
         ok = SimpleUploadedFile("logo.png", image_bytes(size=(300, 300)))
         validate_logo_upload(ok)  # does not raise
 
+    def test_oversized_dimensions_are_rejected(self):
+        # Regression: a huge-DIMENSION but small-BYTES image (a solid-color PNG
+        # is tens of MP in a few KB) passed the byte cap + Django's image check,
+        # then raised in Organization.save() as an uncaught 500. The validator
+        # now catches it at form-validation time.
+        big = SimpleUploadedFile("big.png", image_bytes(size=(6000, 6000)))
+        self.assertLess(big.size, MAX_LOGO_UPLOAD_BYTES)  # would pass the byte cap
+        with self.assertRaises(ValidationError):
+            validate_logo_upload(big)
+
+    def test_validator_rewinds_the_file(self):
+        # The dimension check reads the file; it must seek back so the storage
+        # save that follows still sees the whole image.
+        f = SimpleUploadedFile("logo.png", image_bytes(size=(300, 300)))
+        validate_logo_upload(f)
+        self.assertEqual(f.tell(), 0)
+
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class OrganizationLogoSaveTests(TestCase):

@@ -6,18 +6,23 @@ deploy/runbook is in `DEPLOY.md`; architecture in `docs/ARCHITECTURE.md`.
 ## Branching & PRs (beta-first — read this before opening a PR)
 
 This repo ships **beta-first** (see `DEPLOY.md` → "Beta / staging site" and its
-Promotion flow). Work lands on `staging` FIRST — `staging` auto-deploys to
-`beta.boxo.show` — and is later merged `staging → main`, which deploys to prod.
+Promotion flow). Work lands on `staging` FIRST — `staging` is the
+`beta.boxo.show` line — and is later promoted `staging → main` (prod).
+Deploying is a **separate, manual step** (the `bin/boxoffice deploy` runbook in
+`DEPLOY.md`), NOT automatic on merge: merging updates the branch but ships
+nothing until a deploy is run.
 
 - Cut feature branches from `staging`, and open PRs **against `staging`** —
   never straight to `main`. `main` only advances via a `staging → main`
   promotion once the beta looks good; opening a feature PR against `main` is
   the wrong base.
 - **This is an autonomous setup: there is no human reviewer to wait on.** Open
-  the PR and merge it yourself — don't block on a review, an approval, or a
-  green check that isn't coming. There is currently no CI configured, so
-  nothing runs on the PR; verify your change locally (tests + drive the real
-  app) before merging, since the PR gate won't catch it for you.
+  the PR and merge it yourself once CI is green — don't block on a review or
+  approval that isn't coming, but DO wait on the checks. CI runs the test suite
+  on every PR against `staging`/`main` (`.github/workflows/ci.yml`: a parallel
+  `fast` job with pytest-xdist + a serial `concurrency` job, both required), so
+  the PR gate catches test regressions. Still verify behavior locally (drive the
+  real app) for anything the tests don't cover.
 
 ## Frontend / styling
 

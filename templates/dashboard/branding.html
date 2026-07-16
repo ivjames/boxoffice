@@ -92,7 +92,8 @@ ready-made scheme, save your own, or let us read one off your website.</p>
 {# -- built-in presets -------------------------------------------------- #}
 <section class="brand-section">
     <h2>Ready-made schemes</h2>
-    <div class="scheme-gallery">
+    <p class="muted">{{ presets|length }} preset palettes — scroll to browse them all.</p>
+    <div class="scheme-gallery scheme-gallery--scroll">
         {% for scheme in presets %}
             <div class="scheme-card">
                 <div class="swatch-strip">

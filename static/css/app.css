@@ -3354,6 +3354,18 @@ table.dash-table th {
     gap: 1rem;
 }
 
+/* The preset gallery holds the full catalog (36+), so it scrolls inside a
+   fixed-height viewport instead of stretching the page. Padding + top border
+   keep the scrollbar and the last row off the cards' edges. */
+.scheme-gallery--scroll {
+    max-height: 32rem;
+    overflow-y: auto;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: color-mix(in srgb, var(--border-color) 12%, transparent);
+}
+
 .scheme-card {
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;

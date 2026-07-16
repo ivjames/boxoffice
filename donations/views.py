@@ -34,6 +34,7 @@ from django.http import Http404
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
+from fulfillment import services as fulfillment_services
 from guests import services as guest_services
 from guests.models import normalize_email
 from payments import services as payment_services
@@ -159,7 +160,7 @@ def donate(request):
         if not organization.stripe_charges_enabled and settings.ENABLE_TEST_CHECKOUT:
             # Same env-gated, org-can't-charge-yet shortcut as checkout_test:
             # skip even the simulated stub and fulfill immediately.
-            order = payment_services.fulfill_donation(
+            order = fulfillment_services.fulfill_donation(
                 organization,
                 amount=amount,
                 campaign=campaign,
@@ -223,7 +224,7 @@ def donate_stub(request):
                 {"campaign": campaign, "amount": raw_amount, "error": error},
             )
 
-        order = payment_services.fulfill_donation(
+        order = fulfillment_services.fulfill_donation(
             organization,
             amount=amount,
             campaign=campaign,

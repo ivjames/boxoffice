@@ -32,7 +32,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from events import pricing
-from events.models import GAAllocation
+from events.models import GAAllocation, Performance
 from promotions import services as promo_services
 from promotions.services import PromoError
 from venues.models import Section, Seat
@@ -156,6 +156,17 @@ def performance_seats(performance):
         .select_related("section")
         .order_by("section__ordering", "row_label", "number")
     )
+
+
+def performance_capacity(performance):
+    """Total seats a performance can sell: `GAAllocation.capacity` for a GA
+    performance (None if it has no allocation yet), or the bookable seat count
+    for a reserved one. The single definition of "house capacity" that the
+    staff overview and performance-detail views share."""
+    if performance.seating_mode == Performance.SeatingMode.GA:
+        allocation = getattr(performance, "ga_allocation", None)
+        return allocation.capacity if allocation else None
+    return performance_seats(performance).count()
 
 
 def price_tiers_by_section(performance):

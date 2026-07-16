@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "campaigns",
     "orders",
     "payments",
+    "fulfillment",
     "dashboard",
     "scanning",
     "helpcenter",

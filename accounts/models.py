@@ -138,3 +138,19 @@ class Membership(models.Model):
         # (enforced in dashboard.views' team handlers) -- a manager can't
         # promote anyone (including themselves) to owner.
         return self.is_manager_or_above()
+
+    def assignable_roles(self):
+        """Role values this membership is allowed to grant. Only owners can
+        hand out (or move someone into/out of) the owner role."""
+        roles = [self.Role.MANAGER, self.Role.BOX_OFFICE, self.Role.SCANNER]
+        if self.is_owner():
+            roles = [self.Role.OWNER, *roles]
+        return [str(r) for r in roles]
+
+    @classmethod
+    def owner_count(cls, organization):
+        """How many owners `organization` has -- used to protect the
+        last-owner invariant (an org must never be left with zero owners)."""
+        return cls.objects.filter(
+            organization=organization, role=cls.Role.OWNER
+        ).count()

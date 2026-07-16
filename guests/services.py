@@ -86,20 +86,12 @@ def build_login_link(guest, request):
     return request.build_absolute_uri(f"{reverse('guest_verify')}?token={token}")
 
 
-def email_delivery_configured():
-    """Whether a sign-in email will actually reach the guest's inbox.
-
-    The portal falls back to showing the magic link on screen when this is
-    False -- the "SMTP is not set up yet" case, i.e. the prod SMTP backend is
-    selected but EMAIL_HOST is still blank -- so a returning buyer isn't locked
-    out of their tickets while mail delivery is being wired up. Any other
-    backend (console/locmem/dummy in dev & tests, or a fully configured SMTP
-    host in prod) is treated as "email works", and the flip happens
-    automatically the moment EMAIL_HOST is set."""
-    backend = getattr(settings, "EMAIL_BACKEND", "") or ""
-    if backend.endswith("smtp.EmailBackend"):
-        return bool(getattr(settings, "EMAIL_HOST", ""))
-    return True
+# Defined in the base `tenants` app (a pure email-settings check, nothing
+# guest-specific) and re-exported here so the guest portal's on-screen magic-
+# link fallback -- and existing `guests.services.email_delivery_configured`
+# callers -- keep one import path. Living in tenants keeps the base app from
+# importing this downstream one (tenants.emails used to import it from here).
+from tenants.emails import email_delivery_configured  # noqa: F401
 
 
 def send_login_link(guest, request):

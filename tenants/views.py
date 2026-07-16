@@ -47,24 +47,34 @@ def robots_txt(request):
     return HttpResponse("\n".join(lines) + "\n", content_type="text/plain")
 
 
-def _published_upcoming_events(organization):
-    """Published events for `organization` that have at least one published,
-    still-upcoming performance -- the same visibility rule the storefront home
-    uses, reused for the sitemap so it never lists a draft or past-only show."""
+def _events_with_upcoming(organization):
+    """Published events for `organization` paired with their published,
+    still-upcoming performances (soonest first), skipping events with none.
+    The single definition of the storefront's "what's on" visibility rule --
+    shared by home() and the sitemap so the two can't drift, and so a draft or
+    past-only show is never surfaced by either. Returned as
+    `[(event, [performance, ...]), ...]` ordered by each event's soonest
+    upcoming performance."""
     now = timezone.now()
     events = (
         Event.objects.for_organization(organization)
         .filter(status=Event.Status.PUBLISHED)
         .prefetch_related("performances")
     )
-    result = []
+    rows = []
     for event in events:
-        if any(
-            p.status == p.Status.PUBLISHED and p.starts_at >= now
-            for p in event.performances.all()
-        ):
-            result.append(event)
-    return result
+        upcoming = sorted(
+            (
+                p
+                for p in event.performances.all()
+                if p.status == p.Status.PUBLISHED and p.starts_at >= now
+            ),
+            key=lambda p: p.starts_at,
+        )
+        if upcoming:
+            rows.append((event, upcoming))
+    rows.sort(key=lambda row: row[1][0].starts_at)
+    return rows
 
 
 def sitemap_xml(request):
@@ -76,7 +86,7 @@ def sitemap_xml(request):
     urls = [request.build_absolute_uri("/")]
     if request.organization is not None:
         urls.append(request.build_absolute_uri(reverse("faq")))
-        for event in _published_upcoming_events(request.organization):
+        for event, _performances in _events_with_upcoming(request.organization):
             urls.append(request.build_absolute_uri(reverse("event_detail", args=[event.slug])))
 
     body = ['<?xml version="1.0" encoding="UTF-8"?>']
@@ -185,33 +195,17 @@ def home(request):
             },
         )
 
-    now = timezone.now()
-    events = Event.objects.for_organization(request.organization).filter(
-        status=Event.Status.PUBLISHED
-    ).prefetch_related("performances")
-
     events_with_upcoming = []
-    for event in events:
-        upcoming = sorted(
-            (
-                p
-                for p in event.performances.all()
-                if p.status == p.Status.PUBLISHED and p.starts_at >= now
-            ),
-            key=lambda p: p.starts_at,
+    for event, upcoming in _events_with_upcoming(request.organization):
+        min_price, available = _card_pricing_and_availability(upcoming[0])
+        events_with_upcoming.append(
+            {
+                "event": event,
+                "performances": upcoming,
+                "min_price": min_price,
+                "available": available,
+            }
         )
-        if upcoming:
-            min_price, available = _card_pricing_and_availability(upcoming[0])
-            events_with_upcoming.append(
-                {
-                    "event": event,
-                    "performances": upcoming,
-                    "min_price": min_price,
-                    "available": available,
-                }
-            )
-
-    events_with_upcoming.sort(key=lambda row: row["performances"][0].starts_at)
 
     return render(
         request,

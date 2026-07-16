@@ -13,8 +13,15 @@ gunicorn>=22.0,<24.0
 # Serves static files from the app so the nginx vhost stays a plain proxy.
 whitenoise>=6.6,<7.0
 segno>=1.6,<1.7
-# Required by Organization.logo (ImageField).
+# Required by Organization.logo (ImageField) + logo upload normalization
+# (tenants/logo_images.py: resize/optimize on upload).
 Pillow>=10.0,<11.0
+# Optional one-click logo background removal (tenants/logo_bg.py -> the branding
+# "Remove background" endpoint). Heavy (a U^2-Net ONNX model via onnxruntime),
+# so the import is guarded like Sentry: if this isn't installed the feature just
+# reports itself unavailable and nothing else breaks. `rembg[cpu]` pulls the
+# CPU onnxruntime; the model file downloads to ~/.u2net on first use.
+rembg[cpu]>=2.0,<3.0
 # Stripe Checkout Sessions + webhook signature verification (per-tenant
 # secret/publishable/webhook keys live on Organization -- see payments/).
 # Confirmed against the Stripe MCP docs: current stable major is 15.x

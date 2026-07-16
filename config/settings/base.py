@@ -253,6 +253,15 @@ DERIVE_RATELIMIT_MAX = env.int("DERIVE_RATELIMIT_MAX", default=4)
 DERIVE_RATELIMIT_WINDOW_SECONDS = env.int("DERIVE_RATELIMIT_WINDOW_SECONDS", default=300)
 DERIVE_COOLDOWN_SECONDS = env.int("DERIVE_COOLDOWN_SECONDS", default=20)
 
+# --- Logo background-removal rate limit ----------------------------------
+# The branding "Remove background" endpoint (tenants.logo_bg) runs a CPU-heavy
+# segmentation model, so it's guarded per organization exactly like the derive
+# endpoint above: a fixed-window cap plus a short cooldown between runs. Set MAX
+# to 0 to disable the cap, COOLDOWN to 0 to disable the wait.
+LOGO_BG_RATELIMIT_MAX = env.int("LOGO_BG_RATELIMIT_MAX", default=6)
+LOGO_BG_RATELIMIT_WINDOW_SECONDS = env.int("LOGO_BG_RATELIMIT_WINDOW_SECONDS", default=300)
+LOGO_BG_COOLDOWN_SECONDS = env.int("LOGO_BG_COOLDOWN_SECONDS", default=10)
+
 # Where the landing page's contact-form notification email goes (the form
 # stores every inquiry in the DB regardless -- this is the heads-up copy,
 # sent only once email delivery is configured; see tenants/emails.py and

@@ -1,7 +1,9 @@
+import os
 import re
 
 from django.conf import settings
 from django.contrib import messages
+from django.core.files.base import ContentFile
 from django.db.models import Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -13,6 +15,11 @@ from tenants.color_extraction import ColorDeriveError, derive_scheme_from_url
 from tenants.color_generator import scheme_from_primary
 from tenants.color_schemes import COLOR_ROLES, HEX_COLOR_RE
 from tenants.fonts import FONTS
+from tenants.logo_bg import (
+    BackgroundRemovalUnavailable,
+    LogoBackgroundError,
+    remove_logo_background,
+)
 from tenants.models import ColorScheme
 
 from ..forms import BrandingForm, ColorSchemeForm
@@ -248,3 +255,60 @@ def branding_harmonize(request):
             {"ok": False, "error": "Pick a valid primary color first."}, status=400
         )
     return JsonResponse({"ok": True, "roles": scheme_from_primary(primary)})
+
+
+@manager_required
+@require_POST
+def branding_logo_remove_bg(request):
+    """Strip the background from the org's current logo (tenants.logo_bg) and
+    save the transparent result back over it, so a logo exported on a white box
+    drops cleanly onto the themed storefront, the dark theme, and email headers.
+
+    Operates on the STORED logo (no upload here) and flashes a message, then
+    redirects to the branding page where the new logo is shown -- there's no
+    inline preview to update, and a plain redirect keeps it working without JS.
+    Like the derive endpoint it runs a heavy model, so it's rate-limited per org
+    (a fixed-window cap + a short cooldown); a missing rembg dependency is a
+    clean "unavailable" message, never a 500."""
+    organization = request.organization
+    if not organization.logo:
+        messages.error(request, "Upload a logo first, then you can remove its background.")
+        return redirect("dashboard_branding")
+
+    org_id = str(organization.pk)
+    cooling = throttle.cooldown_remaining("logo_bg", org_id)
+    if cooling > 0:
+        messages.error(request, f"Just a moment — you can try again in {cooling}s.")
+        return redirect("dashboard_branding")
+    if throttle.over_limit(
+        "logo_bg", org_id,
+        settings.LOGO_BG_RATELIMIT_MAX, settings.LOGO_BG_RATELIMIT_WINDOW_SECONDS,
+    ):
+        messages.error(
+            request,
+            "You’ve run background removal several times just now. "
+            "Give it a few minutes and try again.",
+        )
+        return redirect("dashboard_branding")
+
+    try:
+        organization.logo.open("rb")
+        try:
+            raw = organization.logo.read()
+        finally:
+            organization.logo.close()
+        cleaned = remove_logo_background(raw)
+    except BackgroundRemovalUnavailable as exc:
+        messages.error(request, str(exc))
+        return redirect("dashboard_branding")
+    except LogoBackgroundError as exc:
+        # A processing failure is cheap and often image-specific -- don't burn
+        # the cooldown, so a manager can immediately try a different file.
+        messages.error(request, str(exc))
+        return redirect("dashboard_branding")
+
+    stem = os.path.splitext(os.path.basename(organization.logo.name))[0].removesuffix("-nobg")
+    organization.logo.save(f"{stem}-nobg.png", ContentFile(cleaned), save=True)
+    throttle.start_cooldown("logo_bg", org_id, settings.LOGO_BG_COOLDOWN_SECONDS)
+    messages.success(request, "Removed the background from your logo.")
+    return redirect("dashboard_branding")

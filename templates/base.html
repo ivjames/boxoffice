@@ -14,6 +14,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}</title>
     <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
+    {% comment %}Per-tenant favicon + apple-touch icon from the org's logo, so the
+    browser tab and an iOS "Add to Home Screen" shortcut carry the theater's mark
+    rather than the platform default. Declared AFTER the svg above so a supporting
+    browser prefers it; the svg stays the fallback for the platform host and any
+    org without a logo. Logos are normalized to an optimized PNG on upload
+    (tenants/logo_images.py), so this is a small asset.{% endcomment %}
+    {% if organization and organization.logo %}
+    <link rel="icon" href="{{ organization.logo.url }}" sizes="any">
+    <link rel="apple-touch-icon" href="{{ organization.logo.url }}">
+    {% endif %}
+    {% comment %}Social-share (Open Graph / Twitter) card: when a link to this
+    storefront is pasted into a chat or posted, show the theater's name and logo.
+    og:image must be ABSOLUTE -- logo.url is host-relative, so build it off the
+    tenant origin (organization.base_url). og:title defers to each page's <title>
+    via the block below.{% endcomment %}
+    {% if organization %}
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="{{ organization.name }}">
+    {% if organization.logo %}
+    <meta property="og:image" content="{{ organization.base_url }}{{ organization.logo.url }}">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:image" content="{{ organization.base_url }}{{ organization.logo.url }}">
+    {% endif %}
+    {% endif %}
     {% comment %}Load only the Google Fonts the tenant actually selected (system-stack picks add nothing). Each family carries a fallback in its CSS stack, so the storefront stays readable if this request is blocked or slow.{% endcomment %}
     {% if organization %}{% with families=organization.google_font_families %}{% if families %}
     <link rel="preconnect" href="https://fonts.googleapis.com">

@@ -31,6 +31,7 @@ from .branding import (
     branding,
     branding_derive,
     branding_harmonize,
+    branding_logo_remove_bg,
     derive_scheme_from_url,
 )
 

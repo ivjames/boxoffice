@@ -16,21 +16,10 @@ URL, so there's no host/scheme to resolve.
 
 import io
 
-import segno
-
 from events.timezones import in_venue_tz
+from tenants.logo_images import read_logo_bytes
 
-from .tokens import scan_code
-
-
-def _qr_png_bytes(ticket, scale=6, border=2):
-    """PNG bytes of the ticket's signed scan QR (same code/signing/error level
-    as the on-page and email QR, just emitted as raw PNG bytes for reportlab's
-    ImageReader instead of a data URI)."""
-    buf = io.BytesIO()
-    segno.make(scan_code(ticket), error="h").save(buf, kind="png", scale=scale, border=border)
-    buf.seek(0)
-    return buf
+from .qr import ticket_qr_png_bytes
 
 
 def render_order_pdf(order):
@@ -58,6 +47,32 @@ def render_order_pdf(order):
             "seat__section__ordering", "seat__row_label", "seat__number", "id"
         )
     )
+
+    # Read the org logo once: it brands the header (below) AND is centered on
+    # each ticket's QR (see the card loop). None => an unbranded PDF + plain QRs.
+    logo_bytes = read_logo_bytes(order.organization)
+
+    # --- Theater logo (first page, top-right) ---
+    # Brand the downloadable/printed ticket with the org's logo when it has one,
+    # opposite the event title. Drawn inside a fixed box with preserveAspectRatio
+    # so any logo shape fits without distortion, and mask="auto" so a transparent
+    # PNG (the normalized/background-removed form) has no white plate. Wrapped
+    # like the QR below: a bad logo must never sink the whole PDF.
+    if logo_bytes:
+        logo_w, logo_h = 1.6 * inch, 0.55 * inch
+        try:
+            c.drawImage(
+                ImageReader(io.BytesIO(logo_bytes)),
+                page_w - margin - logo_w,
+                page_h - margin - logo_h,
+                width=logo_w,
+                height=logo_h,
+                preserveAspectRatio=True,
+                anchor="ne",
+                mask="auto",
+            )
+        except Exception:
+            pass
 
     # --- Order header (first page) ---
     c.setFillColor(black)
@@ -93,7 +108,7 @@ def render_order_pdf(order):
         qr_x = margin
         try:
             c.drawImage(
-                ImageReader(_qr_png_bytes(ticket)),
+                ImageReader(io.BytesIO(ticket_qr_png_bytes(ticket, logo_bytes=logo_bytes))),
                 qr_x,
                 qr_top - qr_size,
                 width=qr_size,

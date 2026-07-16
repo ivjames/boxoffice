@@ -8,15 +8,22 @@ The non-view layer (model apply, extraction agent, preset seeding) is covered
 in tenants/test_color_schemes.py.
 """
 
+import shutil
+import tempfile
 from unittest.mock import patch
 
+from django.conf import settings
+from django.contrib.messages import get_messages
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 
 from accounts.models import Membership
 from accounts.tests import StaffFixtureMixin, host_for
 from dashboard.tests import DashFixtureMixin
+from tenants.logo_bg import BackgroundRemovalUnavailable
 from tenants.models import ColorScheme
+from tenants.test_logo import image_bytes
 
 BRANDING_URL = "/dashboard/branding/"
 DERIVE_URL = "/dashboard/branding/derive/"
@@ -350,3 +357,81 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.client.force_login(box_office)
         resp = self.client.post(DERIVE_URL, {"url": "roxy.example"}, HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 403)
+
+
+LOGO_BG_URL = "/dashboard/branding/logo/remove-bg/"
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """The branding "Remove background" endpoint (dashboard.views
+    .branding_logo_remove_bg). The rembg model itself is always mocked -- these
+    cover the view's contract: role gating, the no-logo guard, saving the
+    cleaned bytes back, and turning a missing dependency into a clean message."""
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(settings.MEDIA_ROOT, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        cache.clear()  # rate-limit buckets are cache-backed
+        self.org, _ = self.build_org("roxy")
+        self.manager = self.make_staff(self.org, Membership.Role.MANAGER)[0]
+        self.box_office = self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0]
+        self.client.force_login(self.manager)
+
+    def _give_logo(self):
+        self.org.logo = SimpleUploadedFile(
+            "logo.png", image_bytes(size=(300, 300)), content_type="image/png"
+        )
+        self.org.save()
+        self.org.refresh_from_db()
+
+    def _post(self):
+        return self.client.post(LOGO_BG_URL, HTTP_HOST=host_for("roxy"))
+
+    def _messages(self, resp):
+        return [str(m) for m in get_messages(resp.wsgi_request)]
+
+    def test_success_saves_cleaned_logo(self):
+        self._give_logo()
+        original = self.org.logo.name
+        fake_png = image_bytes(size=(200, 200), mode="RGBA")
+        with patch("dashboard.views.branding.remove_logo_background", return_value=fake_png) as m:
+            resp = self._post()
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        m.assert_called_once()
+        self.org.refresh_from_db()
+        self.assertNotEqual(self.org.logo.name, original)
+        self.assertTrue(self.org.logo.name.endswith("-nobg.png"))
+
+    def test_no_logo_is_a_clean_error(self):
+        with patch("dashboard.views.branding.remove_logo_background") as m:
+            resp = self._post()
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        m.assert_not_called()
+        self.assertTrue(any("Upload a logo first" in msg for msg in self._messages(resp)))
+
+    def test_unavailable_dependency_reports_cleanly(self):
+        self._give_logo()
+        original = self.org.logo.name
+        with patch(
+            "dashboard.views.branding.remove_logo_background",
+            side_effect=BackgroundRemovalUnavailable("Background removal isn’t available."),
+        ):
+            resp = self._post()
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.logo.name, original)  # logo untouched
+        self.assertTrue(any("isn’t available" in msg for msg in self._messages(resp)))
+
+    def test_manager_gated(self):
+        self.client.logout()
+        self.client.force_login(self.box_office)
+        resp = self._post()
+        self.assertEqual(resp.status_code, 403)
+
+    def test_get_not_allowed(self):
+        resp = self.client.get(LOGO_BG_URL, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 405)

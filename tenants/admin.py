@@ -7,7 +7,9 @@ from django.urls import path
 
 from unfold.admin import ModelAdmin as UnfoldModelAdmin
 
-from .models import ContactInquiry, Organization
+from .color_schemes import COLOR_ROLES
+from .fonts import FONT_CHOICES
+from .models import ColorScheme, ContactInquiry, Organization
 
 # Sorted list of IANA zones for the timezone dropdown — replaces the free-text
 # field that let a typo like "Amerca/New_York" silently fall back to UTC
@@ -48,13 +50,16 @@ class OrganizationAdminForm(forms.ModelForm):
     # script, `save()` from the shell. Renders as a <select> either way.
     timezone = forms.ChoiceField(choices=_TZ_CHOICES)
     currency = forms.ChoiceField(choices=_CURRENCY_CHOICES)
+    # Validate stored font keys against the catalog (tenants/fonts.py).
+    heading_font = forms.ChoiceField(choices=FONT_CHOICES)
+    body_font = forms.ChoiceField(choices=FONT_CHOICES)
 
     class Meta:
         model = Organization
         fields = "__all__"
         widgets = {
-            "primary_color": forms.TextInput(attrs={"type": "color"}),
-            "accent_color": forms.TextInput(attrs={"type": "color"}),
+            field: forms.TextInput(attrs={"type": "color"})
+            for _role, _label, field in COLOR_ROLES
         }
 
 
@@ -80,7 +85,28 @@ class OrganizationAdmin(UnfoldModelAdmin):
 
     fieldsets = (
         (None, {"fields": ("name", "slug", "subdomain", "contact_email", "is_active")}),
-        ("Branding", {"fields": ("logo", "primary_color", "accent_color")}),
+        (
+            "Branding",
+            {
+                "fields": (
+                    "logo",
+                    "heading_font",
+                    "body_font",
+                    "primary_color",
+                    "secondary_color",
+                    "accent_color",
+                    "dark_accent_color",
+                    "light_neutral_color",
+                    "neutral_color",
+                ),
+                "description": (
+                    "The six-role brand palette (accent_color is the 'Feature "
+                    "Accent' highlight) plus storefront fonts. Managers can also "
+                    "set these — and apply saved schemes — from the dashboard "
+                    "Branding page."
+                ),
+            },
+        ),
         ("Localization", {"fields": ("timezone", "currency")}),
         (
             "Stripe Connect",
@@ -164,6 +190,29 @@ class OrganizationAdmin(UnfoldModelAdmin):
                 f"Skipped {already_queued} already queued.",
                 messages.WARNING,
             )
+
+
+class ColorSchemeAdminForm(forms.ModelForm):
+    class Meta:
+        model = ColorScheme
+        fields = "__all__"
+        widgets = {
+            role: forms.TextInput(attrs={"type": "color"})
+            for role, _label, _field in COLOR_ROLES
+        }
+
+
+@admin.register(ColorScheme)
+class ColorSchemeAdmin(UnfoldModelAdmin):
+    """Both the built-in preset catalog (organization NULL) and tenants' own
+    saved schemes. Presets are normally managed via BUILTIN_SCHEMES + the
+    `seed_color_schemes` command; this is here for one-off inspection/tweaks."""
+
+    form = ColorSchemeAdminForm
+    list_display = ("name", "organization", "is_preset", "ordering")
+    list_filter = ("is_preset",)
+    search_fields = ("name", "slug", "organization__name")
+    prepopulated_fields = {"slug": ("name",)}
 
 
 @admin.register(ContactInquiry)

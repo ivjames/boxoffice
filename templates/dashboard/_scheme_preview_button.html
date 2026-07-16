@@ -1,0 +1,16 @@
+{% comment %}
+"Preview" button for a scheme card. Client-side only: the branding page JS
+reads these data-<role> colors and loads them into the "Save a custom scheme"
+editor + its live preview (without touching the storefront), so staff can try a
+preset on, tweak it, then Save or Apply. `scheme` is a ColorScheme; the
+data-attribute names are the six role keys (data-dark_accent /
+data-feature_accent etc.) the JS looks up.
+{% endcomment %}
+<button type="button" class="button button--sm button--secondary scheme-preview-btn"
+        data-name="{{ scheme.name }}"
+        data-primary="{{ scheme.primary }}"
+        data-secondary="{{ scheme.secondary }}"
+        data-feature_accent="{{ scheme.feature_accent }}"
+        data-dark_accent="{{ scheme.dark_accent }}"
+        data-light_neutral="{{ scheme.light_neutral }}"
+        data-neutral="{{ scheme.neutral }}">Preview</button>

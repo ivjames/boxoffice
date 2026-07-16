@@ -37,10 +37,16 @@ from passes.models import PassProduct, PassPurchase
 from passes.services import remaining_admissions, restore_redemptions_for_order
 from payments.services import RefundError, refund_order
 from promotions.models import PromoCode
+from tenants.color_extraction import ColorDeriveError, derive_scheme_from_url
+from tenants.color_schemes import COLOR_ROLES
+from tenants.fonts import FONTS
+from tenants.models import ColorScheme
 from venues import chart_parsing, generation
 from venues.models import ChartParseJob, Seat, SeatingChart, Section, Venue
 
 from .forms import (
+    BrandingForm,
+    ColorSchemeForm,
     DonationSettingsForm,
     EmailCampaignForm,
     EventForm,
@@ -173,9 +179,13 @@ def overview(request):
             {
                 "key": "branding",
                 "label": "Add your logo & colors",
-                "done": bool(organization.logo),
-                # No dedicated branding/settings page in the dashboard yet.
-                "url": None,
+                # Done once a logo is up OR the palette has moved off the
+                # ship-time defaults (a preset/custom scheme applied, or colors
+                # hand-tweaked) -- either is real branding progress.
+                "done": bool(organization.logo)
+                or organization.primary_color.lower() != "#111111"
+                or organization.accent_color.lower() != "#e11d48",
+                "url": reverse("dashboard_branding"),
                 "help": "",
             },
             {
@@ -808,6 +818,125 @@ def donation_settings(request):
     else:
         form = DonationSettingsForm(instance=campaign)
     return render(request, "dashboard/donation_settings.html", {"form": form, "campaign": campaign})
+
+
+# --- branding / color schemes (manager+) -----------------------------------
+
+
+def _branding_context(request, **extra):
+    """Shared context for the branding page: the logo+colors form, the built-in
+    presets, and this tenant's own saved schemes. `extra` lets a POST handler
+    layer on a derived-palette preview or a bound form with errors."""
+    organization = request.organization
+    context = {
+        "organization": organization,
+        "branding_form": BrandingForm(instance=organization),
+        # Default "save these colors as a scheme" form, pre-filled with the
+        # org's current palette (palette role keys == ColorSchemeForm fields).
+        # A POST handler can override with a bound (errored) or derived form.
+        "scheme_form": ColorSchemeForm(initial=organization.palette, organization=organization),
+        "presets": ColorScheme.objects.filter(is_preset=True),
+        "custom_schemes": ColorScheme.objects.filter(organization=organization),
+        "roles": COLOR_ROLES,
+        "current_palette": organization.palette,
+        # key -> CSS stack, so the live-preview JS can resolve a font <select>'s
+        # value to an actual font-family without another request.
+        "font_stacks": {key: spec["stack"] for key, spec in FONTS.items()},
+    }
+    context.update(extra)
+    return context
+
+
+def _apply_scheme_to_org(request, scheme):
+    organization = request.organization
+    organization.apply_color_scheme(scheme)
+    messages.success(request, f"Applied “{scheme.name}” to your storefront.")
+
+
+@manager_required
+def branding(request):
+    """Logo + six-role brand palette for the storefront. GET shows the current
+    colors, the built-in preset gallery, and the tenant's saved custom schemes.
+    POST dispatches on an `action` field:
+
+    - save_colors:  save the logo + hand-picked colors (BrandingForm).
+    - apply_scheme: copy a preset OR one of this tenant's own schemes onto the
+      org (scheme lookup is scoped to presets + this org, so a tampered pk
+      can't apply another tenant's scheme).
+    - save_scheme:  save the six posted colors as a new custom scheme.
+    - delete_scheme: delete one of this tenant's own custom schemes.
+
+    Colors are stored on the Organization (the storefront's source of truth);
+    schemes are reusable templates, never the live render source.
+    """
+    organization = request.organization
+    action = request.POST.get("action") if request.method == "POST" else None
+
+    if action == "save_colors":
+        form = BrandingForm(request.POST, request.FILES, instance=organization)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Branding saved.")
+            return redirect("dashboard_branding")
+        return render(request, "dashboard/branding.html", _branding_context(request, branding_form=form))
+
+    if action == "apply_scheme":
+        scheme = get_object_or_404(
+            ColorScheme.objects.filter(Q(is_preset=True) | Q(organization=organization)),
+            pk=request.POST.get("scheme_id"),
+        )
+        _apply_scheme_to_org(request, scheme)
+        return redirect("dashboard_branding")
+
+    if action == "save_scheme":
+        form = ColorSchemeForm(request.POST, organization=organization)
+        if form.is_valid():
+            scheme = form.save()
+            messages.success(request, f"Saved “{scheme.name}” to your schemes.")
+            if request.POST.get("apply_after_save"):
+                _apply_scheme_to_org(request, scheme)
+            return redirect("dashboard_branding")
+        return render(request, "dashboard/branding.html", _branding_context(request, scheme_form=form))
+
+    if action == "delete_scheme":
+        scheme = get_object_or_404(
+            ColorScheme, pk=request.POST.get("scheme_id"), organization=organization
+        )
+        name = scheme.name
+        scheme.delete()
+        messages.success(request, f"Deleted “{name}”.")
+        return redirect("dashboard_branding")
+
+    return render(request, "dashboard/branding.html", _branding_context(request))
+
+
+@manager_required
+@require_POST
+def branding_derive(request):
+    """Run the derive-from-homepage agent (tenants.color_extraction) on a URL
+    the manager enters and re-render the branding page with the proposed
+    palette pre-filled into the "save a scheme" form -- so they can tweak,
+    apply, or save it. A fetch/parse failure surfaces as a form message, never
+    a 500."""
+    url = (request.POST.get("url") or "").strip()
+    if not url:
+        messages.error(request, "Enter your homepage URL first.")
+        return redirect("dashboard_branding")
+    try:
+        derived = derive_scheme_from_url(url)
+    except ColorDeriveError as exc:
+        messages.error(request, str(exc))
+        return redirect("dashboard_branding")
+
+    # Pre-fill the save-a-scheme form with the derived colors so the same POST
+    # paths (save_scheme / apply_after_save) handle it -- no special apply path.
+    initial = {"name": derived["name"], **derived["roles"]}
+    scheme_form = ColorSchemeForm(initial=initial, organization=request.organization)
+    return render(
+        request,
+        "dashboard/branding.html",
+        _branding_context(request, scheme_form=scheme_form, derived=derived),
+    )
 
 
 @manager_required

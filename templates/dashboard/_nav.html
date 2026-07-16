@@ -34,6 +34,10 @@
         <a href="{% url 'dashboard_audience_list' %}"
            class="{% if url_name == 'dashboard_audience_list' or url_name == 'dashboard_audience_detail' or url_name == 'dashboard_campaign_list' or url_name == 'dashboard_campaign_create' or url_name == 'dashboard_campaign_update' or url_name == 'dashboard_campaign_detail' %}is-active{% endif %}">Audience</a>
     {% endif %}
+    {% if request.membership.can_manage_events %}
+        <a href="{% url 'dashboard_branding' %}"
+           class="{% if url_name == 'dashboard_branding' or url_name == 'dashboard_branding_derive' %}is-active{% endif %}">Branding</a>
+    {% endif %}
     {% if request.membership.can_sell_tickets %}
         <a href="{% url 'dashboard_order_list' %}"
            class="{% if url_name == 'dashboard_order_list' or url_name == 'dashboard_order_detail' %}is-active{% endif %}">Orders</a>

@@ -30,6 +30,10 @@ reportlab>=4.0,<5.0
 # AI seating-chart parsing (image/PDF -> SeatingChart, venues/chart_parsing.py):
 # official Anthropic SDK for the Claude vision + structured-output call.
 anthropic>=0.60,<1.0
+# Derive-a-color-scheme agent (tenants/color_extraction.py) fetches a tenant's
+# homepage + stylesheets over HTTP. Declared explicitly since we import it
+# directly (it was previously only a transitive dep via stripe).
+requests>=2.28,<3.0
 # Optional error monitoring. Only initialized when SENTRY_DSN is set
 # (config/observability.py); the import is guarded, so removing this line just
 # makes Sentry a permanent no-op rather than breaking startup.

@@ -1,0 +1,40 @@
+{% comment %}
+Live brand preview: a small sink of real storefront features rendered with the
+six brand colors, so a manager sees the final usage as they pick. The six CSS
+variables are seeded inline from the org's current palette; the branding page's
+JS (block extra_scripts in branding.html) overwrites them live from whichever
+color picker is being edited. Uses the SAME variable names + text conventions
+as templates/base.html + static/css/app.css (primary header, --accent-color
+call-to-action, links in accent), so it reflects the actual result, not an
+idealized mock. `palette` is a role→hex dict (Organization.palette).
+{% endcomment %}
+<div class="brand-preview" aria-label="Live storefront preview"
+     style="--primary-color: {{ palette.primary }};
+            --secondary-color: {{ palette.secondary }};
+            --dark-accent-color: {{ palette.dark_accent }};
+            --accent-color: {{ palette.feature_accent }};
+            --light-neutral-color: {{ palette.light_neutral }};
+            --neutral-color: {{ palette.neutral }};
+            --heading-font: {{ organization.heading_font_stack|safe }};
+            --body-font: {{ organization.body_font_stack|safe }};">
+    <div class="brand-preview__bar">
+        <span class="brand-preview__brand">{{ organization.name }}</span>
+        <span class="brand-preview__nav">Events · My tickets · Cart</span>
+    </div>
+    <div class="brand-preview__body">
+        <h4 class="brand-preview__title">A Midsummer Night’s Dream</h4>
+        <p class="brand-preview__text">
+            Opening this Friday at 7:30pm.
+            <a href="#" class="brand-preview__link" onclick="return false;">See all events</a>
+        </p>
+        <div class="brand-preview__card">
+            <span class="brand-preview__badge">On sale</span>
+            <span class="brand-preview__price">from $28</span>
+            <div class="brand-preview__actions">
+                <span class="brand-preview__btn">Buy tickets</span>
+                <span class="brand-preview__btn brand-preview__btn--secondary">Learn more</span>
+            </div>
+        </div>
+    </div>
+    <div class="brand-preview__foot">© {{ organization.name }}</div>
+</div>

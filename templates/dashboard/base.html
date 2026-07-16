@@ -14,3 +14,5 @@ directly and keep the storefront menu. The scanner screen (scan_home.html)
 overrides site_header with its own app bar and stays on base.html.
 {% endcomment %}
 {% block site_header %}{% endblock %}
+{% comment %}Marks the internal staff UI so app.css resets storefront brand fonts back to the fixed staff font (a tenant's display face shouldn't degrade the tools).{% endcomment %}
+{% block body_class %}app-internal{% endblock %}

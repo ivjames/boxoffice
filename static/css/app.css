@@ -11,6 +11,28 @@
     --text-color: #1a1a1a;
     --muted-color: #6b7280;
     --border-color: #e5e7eb;
+    /* Text color over each themed fill -- overridden per-tenant in base.html
+       (Organization.on_colors) with the WCAG best-of-two neutral. White is the
+       platform-host/default fallback for the legacy dark brand colors. */
+    --on-primary: #fff;
+    --on-secondary: #fff;
+    --on-accent: #fff;
+    --on-dark-accent: #fff;
+    /* 'Ink' = a brand color made legible as text on the page background
+       (base.html, Organization.ink_colors). Default to the raw brand color for
+       the platform host, whose defaults are already dark enough. */
+    --primary-ink: var(--primary-color);
+    --accent-ink: var(--accent-color);
+    --secondary-ink: var(--secondary-color);
+    /* Storefront typography, overridden per-tenant inline in base.html. The
+       system stack here is the fallback for the platform host and any page
+       without an organization. See tenants/fonts.py. */
+    --heading-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --body-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* Fixed staff-UI font -- the internal dashboard/scan/help pages reset to
+       this so a tenant's brand (esp. a display face) never degrades the tools
+       staff use all day. */
+    --internal-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 * {
@@ -19,7 +41,7 @@
 
 body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--body-font);
     color: var(--text-color);
     background: var(--bg-color);
     line-height: 1.5;
@@ -31,8 +53,28 @@ body {
     -webkit-text-size-adjust: 100%;
 }
 
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--heading-font);
+}
+
+/* Internal staff UI (dashboard, scan, help center -- body.app-internal, set on
+   dashboard/base.html + scan_home). base.html still emits the tenant's brand
+   --heading-font/--body-font here because `organization` is set, so reset both
+   to the fixed staff font: the tools stay legible regardless of brand pick. */
+.app-internal,
+.app-internal h1, .app-internal h2, .app-internal h3,
+.app-internal h4, .app-internal h5, .app-internal h6 {
+    font-family: var(--internal-font);
+}
+
+/* The internal staff UI keeps a plain white page (the tenant's light_neutral
+   tints the public storefront, not the tools). Brand text/ink still theme it. */
+body.app-internal {
+    --bg-color: #ffffff;
+}
+
 a {
-    color: var(--accent-color);
+    color: var(--accent-ink);
     text-decoration: none;
 }
 
@@ -185,7 +227,7 @@ textarea:focus-visible,
 
 .site-header {
     background: var(--primary-color);
-    color: #fff;
+    color: var(--on-primary);
 }
 
 .site-header__inner {
@@ -202,7 +244,7 @@ textarea:focus-visible,
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    color: #fff;
+    color: var(--on-primary);
     font-weight: 700;
     font-size: 1.25rem;
     margin-right: auto;
@@ -236,7 +278,7 @@ textarea:focus-visible,
     display: block;
     width: 1.25rem;
     height: 2px;
-    background: #fff;
+    background: var(--on-primary);
     margin: 0 auto;
 }
 
@@ -248,7 +290,7 @@ textarea:focus-visible,
 }
 
 .site-nav__link {
-    color: #fff;
+    color: var(--on-primary);
     font-weight: 600;
     opacity: 0.85;
     background: none;
@@ -285,7 +327,7 @@ textarea:focus-visible,
     padding: 0 0.35rem;
     border-radius: 999px;
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
     font-size: 0.7rem;
     font-weight: 700;
 }
@@ -380,7 +422,7 @@ textarea:focus-visible,
 
 .hero h1 {
     margin-top: 0;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .hero p {
@@ -392,6 +434,26 @@ textarea:focus-visible,
     border-top: 1px solid var(--border-color);
     color: var(--muted-color);
     font-size: 0.875rem;
+}
+
+/* Public storefront: the footer is the home for the dark_accent role -- a dark
+   band with light_neutral text (guaranteed AA by the generator). Scoped away
+   from the internal staff UI, which keeps the quiet bordered footer. */
+body:not(.app-internal) .site-footer {
+    margin-top: 3rem;
+    border-top: none;
+    background: var(--dark-accent-color);
+    color: var(--on-dark-accent);
+}
+
+body:not(.app-internal) .site-footer a,
+body:not(.app-internal) .site-footer__nav a {
+    color: var(--on-dark-accent);
+}
+
+body:not(.app-internal) .site-footer__version {
+    color: var(--on-dark-accent);
+    opacity: 0.7;
 }
 
 .site-footer__inner {
@@ -428,7 +490,7 @@ textarea:focus-visible,
 .button {
     display: inline-block;
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
     padding: 0.6rem 1.25rem;
     border-radius: 0.375rem;
     font-weight: 600;
@@ -448,8 +510,8 @@ textarea:focus-visible,
 
 .button--secondary {
     background: transparent;
-    color: var(--text-color);
-    border: 1px solid var(--border-color);
+    color: var(--secondary-ink);
+    border: 1px solid var(--secondary-ink);
 }
 
 /* -- messages -------------------------------------------------------- */
@@ -528,13 +590,13 @@ textarea:focus-visible,
     letter-spacing: 0.14em;
     font-size: 0.75rem;
     font-weight: 700;
-    color: var(--accent-color);
+    color: var(--accent-ink);
     margin: 0 0 0.75rem;
 }
 
 .hero__headline {
     margin: 0 0 1rem;
-    color: var(--primary-color);
+    color: var(--primary-ink);
     font-size: clamp(2rem, 5vw + 1rem, 3.25rem);
     line-height: 1.1;
     letter-spacing: -0.02em;
@@ -576,13 +638,13 @@ textarea:focus-visible,
     letter-spacing: 0.12em;
     font-size: 0.75rem;
     font-weight: 700;
-    color: var(--accent-color);
+    color: var(--accent-ink);
     margin: 0 0 0.4rem;
 }
 
 .landing-section__title,
 .landing-section h2 {
-    color: var(--primary-color);
+    color: var(--primary-ink);
     font-size: clamp(1.5rem, 2.5vw + 0.75rem, 2rem);
     letter-spacing: -0.01em;
     margin: 0;
@@ -616,7 +678,7 @@ textarea:focus-visible,
     height: 2.5rem;
     border-radius: 0.6rem;
     background: color-mix(in srgb, var(--accent-color) 12%, transparent);
-    color: var(--accent-color);
+    color: var(--accent-ink);
     margin-bottom: 1rem;
 }
 
@@ -627,7 +689,7 @@ textarea:focus-visible,
 
 .landing-card h3 {
     margin: 0 0 0.5rem;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .landing-card p {
@@ -667,7 +729,7 @@ textarea:focus-visible,
 
 .landing-step h3 {
     margin: 0.2rem 0 0.35rem;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .landing-step p {
@@ -763,14 +825,14 @@ textarea:focus-visible,
     letter-spacing: 0.1em;
     font-size: 0.7rem;
     font-weight: 700;
-    color: var(--accent-color);
+    color: var(--accent-ink);
     margin: 0 0 0.4rem;
 }
 
 .brand-preview__title {
     font-size: 1.3rem;
     font-weight: 700;
-    color: var(--primary-color);
+    color: var(--primary-ink);
     margin: 0 0 0.4rem;
     line-height: 1.2;
 }
@@ -815,7 +877,7 @@ textarea:focus-visible,
 
 .landing-cta .button {
     background: #fff;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 @media (max-width: 720px) {
@@ -852,7 +914,7 @@ textarea:focus-visible,
 }
 
 .breadcrumbs a:hover {
-    color: var(--accent-color);
+    color: var(--accent-ink);
 }
 
 .breadcrumbs li:last-child {
@@ -867,7 +929,7 @@ textarea:focus-visible,
 }
 
 .back-link:hover {
-    color: var(--accent-color);
+    color: var(--accent-ink);
 }
 
 .empty-state {
@@ -895,13 +957,13 @@ textarea:focus-visible,
 .error-page__code {
     font-size: 3.5rem;
     font-weight: 800;
-    color: var(--accent-color);
+    color: var(--accent-ink);
     margin: 0;
     line-height: 1;
 }
 
 .error-page h1 {
-    color: var(--primary-color);
+    color: var(--primary-ink);
     margin: 0.5rem 0 1rem;
 }
 
@@ -970,7 +1032,7 @@ textarea:focus-visible,
 
 .event-card__price {
     font-weight: 700;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .performance-list {
@@ -1124,7 +1186,7 @@ textarea:focus-visible,
 
 .seat-btn--selected {
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .seat-btn--unavailable {
@@ -1169,7 +1231,7 @@ textarea:focus-visible,
 .seat-btn--ro-sold {
     background: var(--accent-color);
     border-color: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .seat-btn--ro-used {
@@ -1502,7 +1564,7 @@ textarea:focus-visible,
 
 .dash-header h1 {
     margin: 0;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .dash-nav {
@@ -1533,7 +1595,7 @@ textarea:focus-visible,
 }
 
 .dash-nav__brand:hover {
-    color: var(--accent-color);
+    color: var(--accent-ink);
 }
 
 .dash-nav__logo {
@@ -1542,7 +1604,7 @@ textarea:focus-visible,
 }
 
 .dash-nav a.is-active {
-    color: var(--accent-color);
+    color: var(--accent-ink);
 }
 
 .dash-nav__storefront {
@@ -1732,7 +1794,7 @@ table.dash-table th {
 
 .auth-card h1 {
     margin-top: 0;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .dash-form .field {
@@ -2514,7 +2576,7 @@ table.dash-table th {
 
 .chart-editor__toggle button.is-active {
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .chart-editor__toggle button:disabled,
@@ -2751,7 +2813,7 @@ table.dash-table th {
     flex: 1;
     margin: 0;
     font-size: 1.25rem;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .scan-bar__burger {
@@ -3165,7 +3227,7 @@ table.dash-table th {
 
 .help-article__summary::before {
     content: "\203A"; /* › — rotates to ⌄ when open */
-    color: var(--accent-color);
+    color: var(--accent-ink);
     font-weight: 700;
     transition: transform 0.15s ease;
     display: inline-block;
@@ -3232,7 +3294,7 @@ table.dash-table th {
     flex-wrap: wrap;
     gap: 0.75rem;
     background: var(--primary-color);
-    color: #fff;
+    color: var(--on-primary);
     padding: 0.6rem 1rem;
     border-radius: 0.375rem;
     margin-bottom: 1rem;
@@ -3288,7 +3350,7 @@ table.dash-table th {
 .onboarding-card__header h2 {
     margin: 0;
     font-size: 1.1rem;
-    color: var(--primary-color);
+    color: var(--primary-ink);
 }
 
 .onboarding-card__progress {
@@ -3315,7 +3377,7 @@ table.dash-table th {
     display: inline-block;
     width: 1.25rem;
     text-align: center;
-    color: var(--accent-color);
+    color: var(--accent-ink);
 }
 
 .onboarding-list__item.is-done .onboarding-list__check {
@@ -3333,5 +3395,309 @@ table.dash-table th {
 }
 
 .onboarding-list a.onboarding-list__label:hover {
-    color: var(--accent-color);
+    color: var(--accent-ink);
+}
+
+/* -- branding / color schemes page (dashboard/branding.html) ------------
+   Layout + chrome only. Every actual palette color is applied INLINE on the
+   swatch element (the values are per-scheme, per-tenant data), so nothing
+   here hardcodes a brand color -- keeping app.css tenant-agnostic per
+   CLAUDE.md "Frontend / styling". */
+
+.brand-section {
+    margin: 2rem 0;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.brand-section h2 {
+    margin-bottom: 0.5rem;
+}
+
+/* Labelled swatches (the "current colors" preview). */
+.swatch-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.swatch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8125rem;
+}
+
+.swatch__chip {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border-color);
+}
+
+.swatch__hex {
+    color: var(--muted-color, #6b7280);
+    font-size: 0.75rem;
+}
+
+/* Compact contiguous strip of chips (preset cards, found-colors ribbon). */
+.swatch-strip {
+    display: flex;
+    flex-wrap: wrap;
+    border-radius: 0.375rem;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+}
+
+.swatch-strip__chip {
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+}
+
+/* Preset / saved-scheme gallery. */
+.scheme-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: 1rem;
+}
+
+/* The preset gallery holds the full catalog (36+), so it scrolls inside a
+   fixed-height viewport instead of stretching the page. Padding + top border
+   keep the scrollbar and the last row off the cards' edges. */
+.scheme-gallery--scroll {
+    max-height: 32rem;
+    overflow-y: auto;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: color-mix(in srgb, var(--border-color) 12%, transparent);
+}
+
+.scheme-card {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.scheme-card .swatch-strip {
+    border: 0;
+    border-radius: 0;
+}
+
+.scheme-card .swatch-strip__chip {
+    flex: 1 0 0;
+    height: 2.75rem;
+}
+
+.scheme-card__foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.5rem;
+    padding: 0.5rem 0.75rem;
+}
+
+.scheme-card__name {
+    font-weight: 600;
+    font-size: 0.9375rem;
+}
+
+.scheme-card__actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-left: auto;
+}
+
+/* Heading + body font selects, side by side (stack on narrow). */
+.font-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 0.75rem 1rem;
+    max-width: 40rem;
+    margin-bottom: 1rem;
+}
+
+.font-grid .field {
+    margin-bottom: 0;
+}
+
+/* The six color pickers, laid out in a responsive grid. */
+.color-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: 0.75rem 1rem;
+    max-width: 40rem;
+    margin-bottom: 1rem;
+}
+
+.color-grid__field {
+    margin-bottom: 0;
+}
+
+/* Native color inputs shouldn't stretch to the .dash-form full width. */
+.dash-form .color-grid__field input[type="color"] {
+    width: 100%;
+    max-width: 8rem;
+    height: 2.5rem;
+    padding: 0.15rem;
+    cursor: pointer;
+}
+
+.brand-actions {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.brand-derived {
+    margin-top: 1rem;
+}
+
+/* Editor + live preview side by side (stacks under ~40rem, see below). */
+.brand-editor {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
+    gap: 1.5rem;
+    align-items: start;
+    margin-bottom: 1rem;
+}
+
+.brand-editor .color-grid {
+    margin-bottom: 0;
+}
+
+.brand-preview-wrap__label {
+    font-weight: 600;
+    margin: 0 0 0.4rem;
+}
+
+/* The preview sink. Everything below reads the SIX brand vars set inline on
+   .brand-preview (seeded server-side, updated live by the page JS) -- so this
+   block hardcodes no brand color, only the neutral/#fff chrome and the
+   readable white text the real storefront also uses on colored fills. */
+.brand-preview {
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background: var(--light-neutral-color);
+    color: var(--neutral-color);
+    font-size: 0.875rem;
+    /* Use the preview's OWN inline --body-font (seeded server-side, updated
+       live by the page JS), not the page font. */
+    font-family: var(--body-font);
+}
+
+/* Two-class specificity so the preview's heading font wins over the
+   `.app-internal h4/h6` reset on this (internal) branding page. */
+.brand-preview .brand-preview__brand,
+.brand-preview .brand-preview__title {
+    font-family: var(--heading-font);
+}
+
+.brand-preview__bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.6rem 0.85rem;
+    background: var(--primary-color);
+    color: var(--on-primary);
+}
+
+.brand-preview__brand {
+    font-weight: 700;
+}
+
+.brand-preview__nav {
+    font-size: 0.75rem;
+    opacity: 0.85;
+}
+
+.brand-preview__body {
+    padding: 0.85rem;
+}
+
+.brand-preview__title {
+    margin: 0 0 0.3rem;
+    color: var(--primary-ink);
+}
+
+.brand-preview__text {
+    margin: 0 0 0.75rem;
+}
+
+.brand-preview__link {
+    color: var(--accent-ink);
+    font-weight: 600;
+}
+
+.brand-preview__card {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.7rem;
+    background: #fff;
+    border: 1px solid var(--secondary-color);
+    border-radius: 0.375rem;
+}
+
+.brand-preview__badge {
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: var(--accent-color);
+    color: var(--on-accent);
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.brand-preview__price {
+    color: var(--secondary-ink);
+    font-weight: 600;
+}
+
+.brand-preview__actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-left: auto;
+}
+
+.brand-preview__btn {
+    padding: 0.35rem 0.7rem;
+    border-radius: 0.375rem;
+    background: var(--accent-color);
+    color: var(--on-accent);
+    font-weight: 600;
+    font-size: 0.8125rem;
+}
+
+.brand-preview__btn--secondary {
+    background: transparent;
+    color: var(--primary-ink);
+    border: 1px solid var(--secondary-color);
+}
+
+.brand-preview__foot {
+    padding: 0.5rem 0.85rem;
+    background: var(--dark-accent-color);
+    color: var(--on-dark-accent);
+    font-size: 0.75rem;
+}
+
+@media (max-width: 40rem) {
+    .brand-editor {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Generic destructive action (delete a saved scheme). A semantic UI red, not
+   a tenant brand color -- safe to hardcode. */
+.button--danger {
+    background: #b91c1c;
+    color: #fff;
 }

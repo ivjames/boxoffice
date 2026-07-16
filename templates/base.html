@@ -10,14 +10,52 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{% block title %}{% if organization %}{{ organization.name }}{% else %}Boxo.show{% endif %}{% endblock %}</title>
     <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
+    {% comment %}Load only the Google Fonts the tenant actually selected (system-stack picks add nothing). Each family carries a fallback in its CSS stack, so the storefront stays readable if this request is blocked or slow.{% endcomment %}
+    {% if organization %}{% with families=organization.google_font_families %}{% if families %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?{% for family in families %}family={{ family }}&amp;{% endfor %}display=swap">
+    {% endif %}{% endwith %}{% endif %}
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
     <style>
         :root {
-            /* Per-tenant branding. Falls back to the platform defaults when
-               request.organization is None (the platform host: reserved
-               subdomain / bare host). */
+            /* Per-tenant branding: the six-role brand palette (see
+               tenants/color_schemes.py). Falls back to the platform defaults
+               when request.organization is None (the platform host: reserved
+               subdomain / bare host). --primary-color and --accent-color are
+               the legacy pair app.css has always keyed on; the other four are
+               additional roles a tenant's scheme can drive. */
             --primary-color: {% if organization %}{{ organization.primary_color }}{% else %}#111111{% endif %};
             --accent-color: {% if organization %}{{ organization.accent_color }}{% else %}#e11d48{% endif %};
+            --secondary-color: {% if organization %}{{ organization.secondary_color }}{% else %}#374151{% endif %};
+            --dark-accent-color: {% if organization %}{{ organization.dark_accent_color }}{% else %}#0e0e12{% endif %};
+            --light-neutral-color: {% if organization %}{{ organization.light_neutral_color }}{% else %}#f5f5f4{% endif %};
+            --neutral-color: {% if organization %}{{ organization.neutral_color }}{% else %}#111111{% endif %};
+
+            /* Text colors driven by the neutrals. --text-color (body text) is
+               the dark `neutral`; each --on-* is the WCAG best-of-two text color
+               for that themed fill (dark neutral on light fills, light neutral
+               on dark fills -- see Organization.on_colors). Platform host keeps
+               the legacy fixed values. */
+            {% if organization %}
+            --bg-color: {{ organization.light_neutral_color }};
+            --text-color: {{ organization.neutral_color }};
+            --on-primary: {{ organization.on_colors.primary }};
+            --on-secondary: {{ organization.on_colors.secondary }};
+            --on-accent: {{ organization.on_colors.accent }};
+            --on-dark-accent: {{ organization.on_colors.dark_accent }};
+            /* Legible 'ink' brand colors for text on the page (headings/links). */
+            --primary-ink: {{ organization.ink_colors.primary }};
+            --accent-ink: {{ organization.ink_colors.accent }};
+            --secondary-ink: {{ organization.ink_colors.secondary }};
+            {% endif %}
+
+            /* Storefront typography (tenants/fonts.py). Defaults are the system
+               stacks; --brand-* is applied only on public/storefront pages, not
+               the internal staff UI (see app.css .app-internal reset). */
+            {% comment %}Font stacks come from the tenants/fonts.py catalog (keyed by a validated font key -- font_stack() never returns raw input), so |safe keeps their quotes as real CSS instead of &#x27; escapes.{% endcomment %}
+            --heading-font: {% if organization %}{{ organization.heading_font_stack|safe }}{% else %}system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif{% endif %};
+            --body-font: {% if organization %}{{ organization.body_font_stack|safe }}{% else %}system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif{% endif %};
         }
     </style>
     {% block extra_head %}{% endblock %}

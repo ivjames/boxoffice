@@ -1,0 +1,326 @@
+{% extends "dashboard/base.html" %}
+{% load branding_tags %}
+
+{% block title %}Branding — {{ organization.name }}{% endblock %}
+
+{% block content %}
+{% include "dashboard/_nav.html" %}
+<h1>Branding</h1>
+<p class="muted">Your logo, colors, and fonts theme your whole storefront. Pick a
+ready-made scheme, save your own, or let us read one off your website.</p>
+
+{# -- current palette preview ------------------------------------------- #}
+<section class="brand-section">
+    <h2>Current colors</h2>
+    <div class="swatch-row" aria-label="Current palette">
+        {% for role, label, field in roles %}
+            <div class="swatch">
+                <span class="swatch__chip" style="background: {{ current_palette|dictkey:role }}"></span>
+                <span class="swatch__label">{{ label }}</span>
+                <code class="swatch__hex">{{ current_palette|dictkey:role }}</code>
+            </div>
+        {% endfor %}
+    </div>
+</section>
+
+{# -- derive from homepage (the agent) ---------------------------------- #}
+<section class="brand-section">
+    <h2>Derive from your website</h2>
+    <p class="muted">Enter your homepage and we’ll read its colors and suggest a
+    scheme you can tweak, apply, or save.</p>
+    <form method="post" action="{% url 'dashboard_branding_derive' %}" class="dash-form dash-form--inline">
+        {% csrf_token %}
+        <div class="field">
+            <label for="derive-url">Homepage URL</label>
+            <input type="text" id="derive-url" name="url" placeholder="example.com"
+                   value="{% if derived %}{{ derived.source_url }}{% endif %}">
+        </div>
+        <button type="submit" class="button">Derive scheme</button>
+    </form>
+
+    {% if derived %}
+        <div class="brand-derived">
+            <p>Read <strong>{{ derived.candidates|length }}</strong> colors from
+            <a href="{{ derived.source_url }}" rel="noopener noreferrer" target="_blank">{{ derived.source_url }}</a>.
+            Here’s a suggested palette — adjust anything below, then apply or save it.</p>
+            {% if derived.candidates %}
+                <div class="swatch-strip" aria-label="Colors found on the page">
+                    {% for hex, weight in derived.candidates %}
+                        <span class="swatch-strip__chip" style="background: {{ hex }}" title="{{ hex }} · used {{ weight }}×"></span>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+</section>
+
+{# -- save-a-scheme form (doubles as the derived-palette editor) --------- #}
+<section class="brand-section" id="save-scheme">
+    <h2>{% if derived %}Suggested scheme{% else %}Save a custom scheme{% endif %}</h2>
+    <form method="post" action="{% url 'dashboard_branding' %}" class="dash-form">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save_scheme">
+        <div class="field">
+            {{ scheme_form.name.label_tag }}
+            {{ scheme_form.name }}
+            {{ scheme_form.name.errors }}
+        </div>
+        <div class="brand-editor">
+            <div class="color-grid">
+                {% for field in scheme_form %}
+                    {% if field.name != 'name' %}
+                        <div class="field color-grid__field">
+                            {{ field.label_tag }}
+                            {{ field }}
+                            {{ field.errors }}
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <div class="brand-preview-wrap">
+                <p class="brand-preview-wrap__label">Live preview</p>
+                {% include "dashboard/_brand_preview.html" with palette=derived.roles|default:current_palette %}
+            </div>
+        </div>
+        <div class="brand-actions">
+            <button type="submit" class="button">Save scheme</button>
+            <button type="submit" name="apply_after_save" value="1" class="button button--secondary">Save &amp; apply</button>
+        </div>
+    </form>
+</section>
+
+{# -- built-in presets -------------------------------------------------- #}
+<section class="brand-section">
+    <h2>Ready-made schemes</h2>
+    <p class="muted">{{ presets|length }} preset palettes — scroll to browse them all.</p>
+    <div class="scheme-gallery scheme-gallery--scroll">
+        {% for scheme in presets %}
+            <div class="scheme-card">
+                <div class="swatch-strip">
+                    {% for role, label, field in roles %}
+                        <span class="swatch-strip__chip" style="background: {{ scheme|attr:role }}" title="{{ label }}: {{ scheme|attr:role }}"></span>
+                    {% endfor %}
+                </div>
+                <div class="scheme-card__foot">
+                    <span class="scheme-card__name">{{ scheme.name }}</span>
+                    <span class="scheme-card__actions">
+                        {% include "dashboard/_scheme_preview_button.html" %}
+                        <form method="post" action="{% url 'dashboard_branding' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="apply_scheme">
+                            <input type="hidden" name="scheme_id" value="{{ scheme.pk }}">
+                            <button type="submit" class="button button--sm">Apply</button>
+                        </form>
+                    </span>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+</section>
+
+{# -- this tenant's saved schemes --------------------------------------- #}
+{% if custom_schemes %}
+<section class="brand-section">
+    <h2>Your saved schemes</h2>
+    <div class="scheme-gallery">
+        {% for scheme in custom_schemes %}
+            <div class="scheme-card">
+                <div class="swatch-strip">
+                    {% for role, label, field in roles %}
+                        <span class="swatch-strip__chip" style="background: {{ scheme|attr:role }}" title="{{ label }}: {{ scheme|attr:role }}"></span>
+                    {% endfor %}
+                </div>
+                <div class="scheme-card__foot">
+                    <span class="scheme-card__name">{{ scheme.name }}</span>
+                    <span class="scheme-card__actions">
+                        {% include "dashboard/_scheme_preview_button.html" %}
+                        <form method="post" action="{% url 'dashboard_branding' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="apply_scheme">
+                            <input type="hidden" name="scheme_id" value="{{ scheme.pk }}">
+                            <button type="submit" class="button button--sm">Apply</button>
+                        </form>
+                        <form method="post" action="{% url 'dashboard_branding' %}"
+                              onsubmit="return confirm('Delete “{{ scheme.name|escapejs }}”?');">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="delete_scheme">
+                            <input type="hidden" name="scheme_id" value="{{ scheme.pk }}">
+                            <button type="submit" class="button button--sm button--danger">Delete</button>
+                        </form>
+                    </span>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{# -- logo + fine-tune the live colors ---------------------------------- #}
+<section class="brand-section">
+    <h2>Logo, fonts &amp; fine-tuning</h2>
+    <p class="muted">Upload a logo, choose fonts, and tweak the exact colors your storefront uses right now.</p>
+    <form method="post" action="{% url 'dashboard_branding' %}" enctype="multipart/form-data" class="dash-form">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save_colors">
+        <div class="field">
+            {{ branding_form.logo.label_tag }}
+            {{ branding_form.logo }}
+            {{ branding_form.logo.errors }}
+        </div>
+        <div class="brand-editor">
+            <div>
+                <div class="font-grid">
+                    <div class="field">
+                        {{ branding_form.heading_font.label_tag }}
+                        {{ branding_form.heading_font }}
+                        {{ branding_form.heading_font.errors }}
+                    </div>
+                    <div class="field">
+                        {{ branding_form.body_font.label_tag }}
+                        {{ branding_form.body_font }}
+                        {{ branding_form.body_font.errors }}
+                    </div>
+                </div>
+                <div class="color-grid">
+                    {% for field in branding_form %}
+                        {% if field.name != 'logo' and field.name != 'heading_font' and field.name != 'body_font' %}
+                            <div class="field color-grid__field">
+                                {{ field.label_tag }}
+                                {{ field }}
+                                {{ field.errors }}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="brand-preview-wrap">
+                <p class="brand-preview-wrap__label">Live preview</p>
+                {% include "dashboard/_brand_preview.html" with palette=current_palette %}
+            </div>
+        </div>
+        <button type="submit" class="button">Save branding</button>
+    </form>
+</section>
+
+{{ font_stacks|json_script:"font-stacks" }}
+{% endblock %}
+
+{% block extra_scripts %}
+{{ block.super }}
+<script>
+// Live brand preview: mirror each form's color pickers onto its embedded
+// .brand-preview by setting the six CSS variables. data-role (stamped on every
+// picker by BrandingForm/ColorSchemeForm) maps a picker to its CSS var --
+// note "feature_accent" drives --accent-color, matching the storefront (app.css).
+(function () {
+    var ROLE_VARS = {
+        primary: "--primary-color",
+        secondary: "--secondary-color",
+        feature_accent: "--accent-color",
+        dark_accent: "--dark-accent-color",
+        light_neutral: "--light-neutral-color",
+        neutral: "--neutral-color",
+    };
+    var FONT_VARS = { heading: "--heading-font", body: "--body-font" };
+    var stacksEl = document.getElementById("font-stacks");
+    var FONT_STACKS = stacksEl ? JSON.parse(stacksEl.textContent) : {};
+
+    // WCAG best-of-two, mirrored from tenants.color_generator so the preview's
+    // text-on-fill matches the real storefront (--on-* vars): dark neutral over
+    // a light fill, light neutral over a dark fill.
+    function luminance(hex) {
+        hex = hex.replace("#", "");
+        if (hex.length === 3) hex = hex.split("").map(function (c) { return c + c; }).join("");
+        var lin = [0, 2, 4].map(function (i) {
+            var c = parseInt(hex.substr(i, 2), 16) / 255;
+            return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        });
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+    }
+    function textOver(fill, lightNeutral, neutral) {
+        return luminance(fill) > 0.1791 ? neutral : lightNeutral;  // TEXT_LUMINANCE_THRESHOLD
+    }
+    function contrast(a, b) {
+        var la = luminance(a), lb = luminance(b);
+        return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    }
+    // 'Ink': darken a brand color (uniform RGB scale holds hue) until it's
+    // legible as text on the light background. Mirrors color_generator.readable_on.
+    function readableOn(color, bg) {
+        if (contrast(color, bg) >= 4.5) return color;
+        var hex = color.replace("#", "");
+        if (hex.length === 3) hex = hex.split("").map(function (c) { return c + c; }).join("");
+        var rgb = [0, 2, 4].map(function (i) { return parseInt(hex.substr(i, 2), 16); });
+        for (var t = 0.95; t >= 0; t -= 0.04) {
+            var c = "#" + rgb.map(function (v) {
+                return ("0" + Math.round(v * t).toString(16)).slice(-2);
+            }).join("");
+            if (contrast(c, bg) >= 4.5) return c;
+        }
+        return "#000000";
+    }
+
+    function sync(form) {
+        var preview = form.querySelector(".brand-preview");
+        if (!preview) return;
+        var vals = {};
+        form.querySelectorAll("input[data-role]").forEach(function (input) {
+            vals[input.dataset.role] = input.value;
+            var cssVar = ROLE_VARS[input.dataset.role];
+            if (cssVar) preview.style.setProperty(cssVar, input.value);
+        });
+        // Derive the --on-* text colors and the 'ink' brand-text colors for
+        // this previewed scheme (same rules as the storefront).
+        if (vals.primary && vals.light_neutral && vals.neutral) {
+            var ln = vals.light_neutral, n = vals.neutral;
+            preview.style.setProperty("--on-primary", textOver(vals.primary, ln, n));
+            preview.style.setProperty("--on-accent", textOver(vals.feature_accent, ln, n));
+            preview.style.setProperty("--on-dark-accent", textOver(vals.dark_accent, ln, n));
+            preview.style.setProperty("--primary-ink", readableOn(vals.primary, ln));
+            preview.style.setProperty("--accent-ink", readableOn(vals.feature_accent, ln));
+            preview.style.setProperty("--secondary-ink", readableOn(vals.secondary, ln));
+        }
+        // Font <select>s (only the fine-tuning form has them): resolve the
+        // chosen key to its CSS stack via the FONT_STACKS map.
+        form.querySelectorAll("select[data-font]").forEach(function (select) {
+            var cssVar = FONT_VARS[select.dataset.font];
+            var stack = FONT_STACKS[select.value];
+            if (cssVar && stack) preview.style.setProperty(cssVar, stack);
+        });
+    }
+    document.querySelectorAll("form").forEach(function (form) {
+        if (!form.querySelector(".brand-preview")) return;
+        sync(form);  // seed from the actual input values on load
+        // 'input' fires live as color pickers drag; 'change' covers the font
+        // <select>s (and is a belt-and-braces for pickers that only commit on
+        // release).
+        ["input", "change"].forEach(function (evt) {
+            form.addEventListener(evt, function (e) {
+                if (e.target.matches("input[data-role], select[data-font]")) sync(form);
+            });
+        });
+    });
+
+    // "Preview" on a scheme card: load that scheme's colors into the
+    // "Save a custom scheme" editor + its live preview (client-side only --
+    // nothing is applied to the storefront until Apply/Save), then scroll to it
+    // so staff can tweak from there.
+    var editorSection = document.getElementById("save-scheme");
+    var editorForm = editorSection && editorSection.querySelector("form");
+    if (editorForm) {
+        document.querySelectorAll(".scheme-preview-btn").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var nameInput = editorForm.querySelector('input[name="name"]');
+                if (nameInput) nameInput.value = btn.dataset.name || "";
+                editorForm.querySelectorAll("input[data-role]").forEach(function (input) {
+                    var value = btn.dataset[input.dataset.role];
+                    if (value) input.value = value;
+                });
+                sync(editorForm);
+                editorSection.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
+        });
+    }
+})();
+</script>
+{% endblock %}

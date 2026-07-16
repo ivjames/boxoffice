@@ -5,6 +5,8 @@
 
 {# Drop the site-wide header so the scanner is a single-bar, app-like screen: the scan bar's own burger carries the section nav (incl. storefront + log out). #}
 {% block site_header %}{% endblock %}
+{# Staff door screen: reset storefront brand fonts to the fixed staff font. #}
+{% block body_class %}app-internal{% endblock %}
 
 {% block content %}
 <div class="scan" x-data="qrScanner()" x-init="start()">

@@ -184,6 +184,83 @@ class ExtractionTests(TestCase):
             derive_scheme_from_url("roxy.example", fetch=dead)
 
 
+class ContextAwareRankingTests(TestCase):
+    """The derive agent must rank colors by *where* they're used, not raw
+    frequency -- so a default link color that paints every link on the page
+    can't outrank the brand color a header/button actually uses (the reported
+    "bright blue link color became primary" bug)."""
+
+    # A warm-maroon theater with a gold CTA, whose theme also sets a bright
+    # blue link color on *every* link. By raw count the blue dominates.
+    BRAND = "#6a1e32"
+    GOLD = "#c9a227"
+    LINK_BLUE = "#1a73e8"
+
+    def _page(self, link_rules=30):
+        # The blue appears far more often than the brand color, but only ever
+        # as link/anchor text; the brand color is a header + button surface.
+        links = "\n".join(
+            f".nav-item-{i} a {{ color:{self.LINK_BLUE}; }}" for i in range(link_rules)
+        )
+        return f"""
+        <html><head><style>
+          header {{ background:{self.BRAND}; }}
+          .btn {{ background:{self.BRAND}; color:#ffffff; }}
+          a {{ color:{self.LINK_BLUE}; }}
+          {links}
+          .cta {{ background:{self.GOLD}; }}
+          body {{ background:#faf0ec; color:#211719; }}
+        </style></head><body></body></html>
+        """
+
+    def test_frequent_link_color_does_not_win_primary(self):
+        cands = extract_candidate_colors(self._page())
+        as_dict = dict(cands)
+        # The blue is used the most by far, yet the brand surface color leads.
+        self.assertGreater(as_dict[self.LINK_BLUE], as_dict[self.BRAND])
+        self.assertEqual(cands[0][0], self.BRAND)
+
+        roles = assign_roles(cands)
+        self.assertEqual(roles["primary"], self.BRAND)
+        self.assertNotEqual(roles["primary"], self.LINK_BLUE)
+        # The link color is still captured as a candidate -- just deprioritized.
+        self.assertIn(self.LINK_BLUE, as_dict)
+
+    def test_named_brand_variable_outranks_link_frequency(self):
+        # A theme that declares its brand color as a custom property wins even
+        # against a flood of link references to another color.
+        html = f"""
+        <html><head><style>
+          :root {{ --brand-primary:{self.BRAND}; --link-color:{self.LINK_BLUE}; }}
+          a {{ color:var(--link-color); }}
+          {chr(10).join(f'.n{i} a {{ color:{self.LINK_BLUE}; }}' for i in range(40))}
+        </style></head><body></body></html>
+        """
+        roles = assign_roles(extract_candidate_colors(html))
+        self.assertEqual(roles["primary"], self.BRAND)
+
+    def test_derive_exposes_usage_context(self):
+        html = self._page()
+        derived = derive_scheme_from_url("roxy.example", fetch=lambda _u: html)
+        # The context map labels each color by where it's used; the link blue is
+        # labelled a link, the brand color a surface.
+        self.assertEqual(derived["context"].get(self.LINK_BLUE), "link")
+        self.assertIn("surface", derived["context"].get(self.BRAND, ""))
+        self.assertEqual(derived["roles"]["primary"], self.BRAND)
+
+    def test_inline_link_style_is_still_suppressed(self):
+        # A brand color on a header vs. a blue set inline on an <a> many times.
+        anchors = "".join(
+            f'<a style="color:{self.LINK_BLUE}">x</a>' for _ in range(20)
+        )
+        html = f"""
+        <html><head><style>header {{ background:{self.BRAND}; }}</style></head>
+        <body>{anchors}</body></html>
+        """
+        roles = assign_roles(extract_candidate_colors(html))
+        self.assertEqual(roles["primary"], self.BRAND)
+
+
 class SSRFGuardTests(TestCase):
     """The derive fetch must reject non-public hosts (SSRF hardening) -- IP
     literals + localhost resolve without network, so these don't hit DNS."""

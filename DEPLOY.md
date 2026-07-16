@@ -797,6 +797,19 @@ The one thing pip does *not* cover is the model: on the **first** background
 removal, rembg downloads its ~170 MB U²-Net model, so that first call needs
 **outbound egress** and is slow; it's cached for every call after.
 
+**Cold start (why it's handled in gunicorn, not just the view).** The removal
+itself is cheap (~2s for a normalized ≤512px logo), but the *first* use in a
+fresh worker pays a big one-time cost: importing rembg (numba + onnxruntime is
+~20s on a 2-core droplet) plus building the model session (~4s). Run inside a
+request that exceeded gunicorn's default 30s worker timeout, so the arbiter
+SIGABRT'd the worker mid-import and the click 500'd. `deploy/gunicorn.conf.py`
+(loaded by `bin/boxoffice serve`) fixes this two ways: it **warms rembg in a
+background thread at each worker boot** — via `post_worker_init` calling
+`tenants.logo_bg.warm()` — so that cost is paid at startup off the request path,
+and it raises `timeout` to **120s** as a backstop. The session is cached
+per-process (`tenants/logo_bg.py`), so every removal after the warm reuses it.
+Nothing here is beta-specific; it ships for prod too on `staging → main`.
+
 - The model lands in the **pm2 app user's** `~/.u2net` by default. To make it
   user-independent (mirrors the Playwright `PLAYWRIGHT_BROWSERS_PATH` advice
   above), set `U2NET_HOME=/opt/u2net` in `.env` and pre-warm it once as that
@@ -808,8 +821,10 @@ removal, rembg downloads its ~170 MB U²-Net model, so that first call needs
   the button returns a clean "background removal isn't available" message — it
   never 500s.
 
-Optional one-time pre-warm on the droplet (so the first *user* click isn't the
-one that pays for the 170 MB download), adjusting the dir for the site:
+Boot-warming (above) already keeps the first *user* click fast. This optional
+one-time step just pre-fetches the ~170 MB model **before** the first worker
+boot, so that boot's background warm isn't the one waiting on the download —
+handy when egress is slow. Adjust the dir for the site:
 
 ```bash
 cd /var/www/boxoffice-beta && source venv/bin/activate

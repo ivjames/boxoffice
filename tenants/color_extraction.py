@@ -6,15 +6,20 @@ Two stages, each independently testable:
 1. `extract_candidate_colors(html, base_url, fetch=...)` -- pull every color
    token out of the page: inline `style=""`, `<style>` blocks, and linked
    stylesheets (a bounded few, fetched via the injected `fetch`). Colors are
-   parsed from hex, rgb()/rgba(), and the common CSS named colors, then
-   weighted by how often they appear (a color used 30 times outranks a
-   one-off). Returns `[(hex, weight), ...]`, most-used first.
+   parsed from hex, rgb()/rgba(), and the common CSS named colors, then ranked
+   by CONTEXT, not raw frequency. Where a color is used decides how much it
+   counts: painted surfaces (backgrounds), explicit brand/CTA elements, and
+   `--brand`/`--primary` CSS variables are weighted heavily; link/anchor text
+   colors are suppressed to zero (they're the framework defaults that used to
+   hijack `primary` -- a default link blue is on every link, so by raw count it
+   buried the real brand). Returns `[(hex, count), ...]`, strongest brand
+   signal first, with `count` an honest occurrence tally for display.
 
-2. `assign_roles(candidates)` -- deterministically slot the weighted
-   candidates into the six roles by luminance and saturation: the most-used
-   saturated color becomes `primary`, the next distinct one `secondary`, the
-   darkest becomes `dark_accent` / `neutral`, the lightest `light_neutral`, and
-   the most saturated warm/gold-ish one `feature_accent`. Always returns all six
+2. `assign_roles(candidates)` -- deterministically slot the ranked candidates
+   into the six roles by luminance and saturation: the top-ranked saturated
+   color becomes `primary`, the next distinct one `secondary`, the darkest
+   becomes `dark_accent` / `neutral`, the lightest `light_neutral`, and the
+   most saturated warm/gold-ish one `feature_accent`. Always returns all six
    roles (falling back to sensible defaults when the page is monochrome).
 
 `derive_scheme_from_url(url)` ties them together: fetch the page, extract,
@@ -58,14 +63,10 @@ _NAMED_COLORS = {
 
 _HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b")
 _RGB_RE = re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", re.IGNORECASE)
-# Named colors only in a CSS *value* position: right after a `:` (optionally
-# with whitespace), as a whole token. This deliberately misses `border: 1px
-# solid navy` but avoids the far worse false positives -- class selectors like
-# `.gold`, ids like `#navy`, and English words in body text ("Golden Age").
-_NAMED_RE = re.compile(
-    r":\s*(" + "|".join(sorted(_NAMED_COLORS, key=len, reverse=True)) + r")(?![\w-])",
-    re.IGNORECASE,
-)
+# Named colors are matched only inside an isolated CSS declaration value
+# (_NAMED_VALUE_RE, defined with the stage-1 machinery below) -- never against
+# raw markup, where `.gold` selectors and prose like "Golden Age" would be
+# false positives.
 _LINK_CSS_RE = re.compile(
     r"""<link\b[^>]*\brel\s*=\s*["']?[^"'>]*stylesheet[^"'>]*["']?[^>]*>""",
     re.IGNORECASE,
@@ -124,12 +125,129 @@ def _warmth(hex_color):
     return (r + g) / 2 - b
 
 
-# --- stage 1: extract candidate colors ------------------------------------
+# --- stage 1: extract candidate colors (context-aware) --------------------
+#
+# The old pass counted every color token equally, so a default link blue -- one
+# `a { color }` rule that paints every link on the page -- outweighed the brand
+# color a header or button uses once. We now score each color by the CSS
+# CONTEXT it appears in: a color is a brand signal in proportion to how much of
+# the page it *paints* and how deliberately it's named, not how many little
+# links reuse it. Ranking is by that score; the tally we return/display stays an
+# honest occurrence count.
+
+# Named colors, matched as a whole token inside an already-isolated CSS *value*
+# (so no leading-colon anchor needed and no risk of hitting prose -- the value
+# is known CSS, not body text).
+_NAMED_VALUE_RE = re.compile(
+    r"(?<![\w-])(" + "|".join(sorted(_NAMED_COLORS, key=len, reverse=True)) + r")(?![\w-])",
+    re.IGNORECASE,
+)
+
+# One CSS rule: `selector { declarations }`. Non-greedy, brace-free bodies, so a
+# flat scan also picks the inner rules out of `@media { ... }` wrappers.
+_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.DOTALL)
+
+# Any element with an inline `style=""` (tag captured so we know when it's a
+# link, whose text color we still want to suppress).
+_INLINE_STYLE_RE = re.compile(
+    r"""<\s*([a-zA-Z][\w-]*)\b[^>]*\bstyle\s*=\s*["']([^"']*)["']""", re.IGNORECASE
+)
+
+# --- selector / property classification for scoring ---
+#
+# Selectors and custom-property names are classified by their WORD TOKENS, split
+# on every non-alphanumeric (`.`, `#`, `-`, `_`, whitespace, combinators). That
+# way `btn-primary`, `site-logo`, and `--brand-color` all surface their meaning
+# token -- a plain word-boundary regex would choke on the hyphens that class and
+# variable names lean on everywhere.
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+# Link/anchor pseudo-classes need the `:`, so they stay a regex over the raw
+# selector; the standalone `a` element and `.link` classes fall out as tokens.
+_PSEUDO_LINK_RE = re.compile(r":(?:link|visited|hover|focus|active)\b", re.IGNORECASE)
+_LINK_SEL_TOKENS = {"a", "link", "links", "anchor"}
+# Deliberate brand / call-to-action surfaces -- the strongest painted signal.
+_BRAND_SEL_TOKENS = {"brand", "logo", "cta", "btn", "button", "primary", "accent"}
+# Big chrome surfaces that carry the brand's fill across large areas.
+_SURFACE_SEL_TOKENS = {
+    "body", "header", "footer", "nav", "navbar", "main", "section", "aside",
+    "hero", "banner", "masthead", "jumbotron", "topbar", "cover", "splash",
+}
+# CSS custom properties a theme names for its brand vs. its links.
+_BRAND_VAR_TOKENS = {"brand", "primary", "accent", "theme", "logo", "main"}
+_LINK_VAR_TOKENS = {"link", "links", "anchor"}
+
+_BG_PROPS = {"background", "background-color", "background-image"}
+_EDGE_PROPS = {
+    "border", "border-color", "border-top-color", "border-right-color",
+    "border-bottom-color", "border-left-color", "outline", "outline-color",
+    "box-shadow", "text-shadow", "text-decoration-color",
+}
 
 
-def _colors_in(text):
-    """Every color token in a blob of HTML/CSS, normalized to #rrggbb, in
-    appearance order (with repeats -- repetition is the weight signal)."""
+def _context_score(selector, prop):
+    """How strong a brand signal a color is, given the CSS (selector, property)
+    it was declared in. Returns `(weight, label)`; weight 0 means "seen, but
+    never let this steer a role" (the link-text suppression that fixes a default
+    link color winning `primary`). `label` is a human context hint passed on to
+    Claude's refinement."""
+    sel = (selector or "").strip().lower()
+    prop = (prop or "").strip().lower()
+
+    # Custom properties: the theme has *named* the color's job -- trust the name.
+    if prop.startswith("--"):
+        tokens = set(_TOKEN_SPLIT_RE.split(prop[2:]))
+        if tokens & _LINK_VAR_TOKENS:
+            return 0, "link variable"
+        if tokens & _BRAND_VAR_TOKENS:
+            return 12, "brand variable"
+        return 3, "variable"
+
+    tokens = set(_TOKEN_SPLIT_RE.split(sel))
+    interactive = bool(_PSEUDO_LINK_RE.search(sel)) or bool(tokens & _LINK_SEL_TOKENS)
+
+    if prop == "color":
+        # Link/anchor text: the framework-default culprit. Never rank it.
+        if interactive:
+            return 0, "link"
+        return 1, "text"
+
+    if prop in _BG_PROPS:
+        if tokens & _BRAND_SEL_TOKENS:
+            return 10, "brand surface"
+        if tokens & _SURFACE_SEL_TOKENS:
+            return 6, "surface"
+        if interactive:
+            return 2, "interactive surface"
+        return 4, "background"
+
+    if prop in _EDGE_PROPS:
+        return 1, "accent"
+
+    if prop in ("fill", "stroke"):  # SVG -- often the logo itself
+        return 2, "graphic"
+
+    return 1, "other"
+
+
+def _colors_in_value(value):
+    """Every color in an isolated CSS declaration value, normalized to #rrggbb."""
+    found = []
+    for m in _HEX_RE.finditer(value):
+        hex_color = _normalize_hex(m.group(0))
+        if hex_color:
+            found.append(hex_color)
+    for m in _RGB_RE.finditer(value):
+        r, g, b = (min(255, int(m.group(i))) for i in (1, 2, 3))
+        found.append("#%02x%02x%02x" % (r, g, b))
+    for m in _NAMED_VALUE_RE.finditer(value):
+        found.append(_NAMED_COLORS[m.group(1).lower()])
+    return found
+
+
+def _hex_rgb_in(text):
+    """Bare hex/rgb() colors in a blob of markup (SVG fills, `bgcolor=`, etc.),
+    with no CSS context. Named colors are skipped here -- outside a CSS value
+    they're far likelier to be English words than colors."""
     found = []
     for m in _HEX_RE.finditer(text):
         hex_color = _normalize_hex(m.group(0))
@@ -138,26 +256,75 @@ def _colors_in(text):
     for m in _RGB_RE.finditer(text):
         r, g, b = (min(255, int(m.group(i))) for i in (1, 2, 3))
         found.append("#%02x%02x%02x" % (r, g, b))
-    for m in _NAMED_RE.finditer(text):
-        found.append(_NAMED_COLORS[m.group(1).lower()])
     return found
 
 
-def extract_candidate_colors(html, base_url="", fetch=None):
-    """Weighted candidate colors from a page and its stylesheets, most-used
-    first. `fetch(url) -> str` retrieves a linked stylesheet's text (injected
-    so callers/tests control the network); stylesheet fetch failures are
-    skipped, not fatal -- the inline colors still count."""
-    weights = defaultdict(int)
+def _tally_css(css_text, score, count, context, *, selector_hint=None):
+    """Accumulate one CSS blob into the running score/count/context maps. When
+    `selector_hint` is given (an inline style's element) it stands in for the
+    selector; otherwise rules are parsed out of `css_text`."""
+    def record(hex_color, weight, label):
+        count[hex_color] += 1
+        score[hex_color] += weight
+        # Label the color by the strongest context it was ever seen in.
+        best = context.get(hex_color)
+        if best is None or weight > best[0]:
+            context[hex_color] = (weight, label)
 
-    def tally(text):
-        for hex_color in _colors_in(text):
-            weights[hex_color] += 1
+    if selector_hint is not None:
+        for decl in css_text.split(";"):
+            prop, sep, value = decl.partition(":")
+            if not sep:
+                continue
+            weight, label = _context_score(selector_hint, prop)
+            for hex_color in _colors_in_value(value):
+                record(hex_color, weight, label)
+        return
 
-    tally(html)
+    for selector, body in _RULE_RE.findall(css_text):
+        if selector.lstrip().startswith("@"):  # @font-face/@keyframes: no brand color
+            continue
+        for decl in body.split(";"):
+            prop, sep, value = decl.partition(":")
+            if not sep:
+                continue
+            weight, label = _context_score(selector, prop)
+            for hex_color in _colors_in_value(value):
+                record(hex_color, weight, label)
+
+
+def _extract_weighted(html, base_url="", fetch=None):
+    """Context-aware core: returns `(ranked, context)` where `ranked` is
+    `[(hex, count), ...]` strongest-brand-signal first and `context` maps each
+    hex to a short "where it's used" label. `extract_candidate_colors` is the
+    thin public wrapper (drops the context); `derive_scheme_from_url` uses the
+    context to brief Claude."""
+    score = defaultdict(int)
+    count = defaultdict(int)
+    context = {}
+
+    # 1. <style> blocks -- parsed as CSS (selector-aware).
     for block in _STYLE_BLOCK_RE.findall(html):
-        tally(block)
+        _tally_css(block, score, count, context)
 
+    # 2. Inline style="" -- property context only, but still link-aware via tag.
+    html_wo_style = _STYLE_BLOCK_RE.sub(" ", html)
+    consumed = []
+    for tag, decls in _INLINE_STYLE_RE.findall(html_wo_style):
+        _tally_css(decls, score, count, context, selector_hint=tag)
+        consumed.append(decls)
+
+    # 3. Everything else in the markup (SVG fills, bgcolor=, stray tokens) at a
+    #    low, context-free weight -- present so nothing is lost, never dominant.
+    leftover = html_wo_style
+    for decls in consumed:
+        leftover = leftover.replace(decls, " ", 1)
+    for hex_color in _hex_rgb_in(leftover):
+        count[hex_color] += 1
+        score[hex_color] += 1
+        context.setdefault(hex_color, (1, "markup"))
+
+    # 4. Linked stylesheets -- the richest source; parsed as CSS like (1).
     if fetch is not None and base_url:
         sheet_urls = []
         for link in _LINK_CSS_RE.findall(html):
@@ -166,14 +333,26 @@ def extract_candidate_colors(html, base_url="", fetch=None):
                 sheet_urls.append(urljoin(base_url, href_match.group(1)))
         for sheet_url in sheet_urls[:MAX_STYLESHEETS]:
             try:
-                tally(fetch(sheet_url))
+                _tally_css(fetch(sheet_url), score, count, context)
             except Exception:  # noqa: BLE001 -- a bad stylesheet is not fatal
                 logger.debug("Skipped stylesheet %s", sheet_url, exc_info=True)
 
-    # Pure #000000 / #ffffff dominate almost every page's CSS reset and carry
-    # no brand signal on their own; keep them only as neutral fallbacks, never
-    # let them outrank a real brand color.
-    return sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
+    # Rank by brand-signal score (context), break ties by honest count then hex;
+    # the returned weight is the count, so display ("used N×") stays truthful.
+    ranked = sorted(
+        count.items(), key=lambda kv: (-score[kv[0]], -kv[1], kv[0])
+    )
+    return ranked, {h: label for h, (_w, label) in context.items()}
+
+
+def extract_candidate_colors(html, base_url="", fetch=None):
+    """Candidate colors from a page and its stylesheets, ranked by CONTEXT
+    (brand surfaces and named brand variables first; link/anchor text colors
+    last), each paired with its honest occurrence count. `fetch(url) -> str`
+    retrieves a linked stylesheet's text (injected so callers/tests control the
+    network); stylesheet fetch failures are skipped, not fatal."""
+    ranked, _context = _extract_weighted(html, base_url=base_url, fetch=fetch)
+    return ranked
 
 
 # --- stage 2: assign roles ------------------------------------------------
@@ -189,9 +368,11 @@ _FALLBACK = {
 
 
 def assign_roles(candidates):
-    """Slot weighted candidates (from extract_candidate_colors) into the six
-    roles by luminance/saturation/warmth. Always returns every role; leans on
-    _FALLBACK for any role the page gives nothing usable for."""
+    """Slot context-ranked candidates (from extract_candidate_colors) into the
+    six roles by luminance/saturation/warmth. `candidates` arrives strongest
+    brand signal first, so index 0 is the color the page most deliberately
+    paints -- not merely its most frequent token. Always returns every role;
+    leans on _FALLBACK for any role the page gives nothing usable for."""
     roles = dict(_FALLBACK)
     if not candidates:
         return roles
@@ -199,8 +380,8 @@ def assign_roles(candidates):
     colors = [c for c, _w in candidates]
     saturated = [c for c in colors if _saturation(c) >= 0.2]
 
-    # Primary + secondary: the two most-used *saturated* brand colors (fall
-    # back to most-used overall when the page is largely gray).
+    # Primary + secondary: the top two *saturated* brand-ranked colors (fall
+    # back to the overall ranking when the page is largely gray).
     brand_ranked = saturated or colors
     roles["primary"] = brand_ranked[0]
     roles["secondary"] = next(
@@ -306,13 +487,14 @@ def derive_scheme_from_url(url, *, fetch=None):
             f"Couldn't load {url}. Check the address and that the site is reachable."
         ) from exc
 
-    candidates = extract_candidate_colors(html, base_url=url, fetch=fetch)
+    candidates, context = _extract_weighted(html, base_url=url, fetch=fetch)
     roles = assign_roles(candidates)
     scheme = {
         "name": _default_name(url),
         "roles": roles,
         "source_url": url,
         "candidates": candidates[:24],
+        "context": context,
     }
 
     if getattr(settings, "ANTHROPIC_API_KEY", ""):
@@ -348,17 +530,27 @@ def _refine_with_claude(scheme):
 
     client = anthropic.Anthropic(api_key=getattr(settings, "ANTHROPIC_API_KEY", "") or None)
     model = getattr(settings, "CHART_PARSING_MODEL", "claude-opus-4-8")
-    swatches = ", ".join(f"{c} (used {w}x)" for c, w in scheme["candidates"])
+    # Give Claude the *context* each color was found in, not just a count -- so
+    # it can tell a header/button brand color from a default link color rather
+    # than being anchored on raw frequency.
+    context = scheme.get("context", {})
+    swatches = ", ".join(
+        f"{c} (used {w}x, mostly {context.get(c, 'markup')})" for c, w in scheme["candidates"]
+    )
     prompt = (
         "You are a brand designer. From these colors extracted from a theater's "
         f"homepage ({scheme['source_url']}), choose a cohesive six-role palette.\n\n"
-        f"Colors, most-used first: {swatches}\n\n"
+        "Colors, strongest brand signal first (with where each is used on the "
+        f"page):\n{swatches}\n\n"
         f"A first-pass heuristic proposed: {json.dumps(scheme['roles'])}\n\n"
         "Refine into the six roles: primary (main brand), secondary (supporting), "
         "dark_accent (deep shade), feature_accent (warm highlight/CTA), light_neutral "
-        "(light background), neutral (near-black text). Prefer colors actually "
-        "present on the page; only invent a color if a role has no good match. "
-        "Give a short evocative name."
+        "(light background), neutral (near-black text). Judge each color by CONTEXT, "
+        "not how often it appears: a color used on brand surfaces, the header/nav, "
+        "buttons, or a named brand variable is a strong `primary` candidate; a color "
+        "used only for links/anchor text is almost always a framework default -- do "
+        "NOT make it the primary. Prefer colors actually present on the page; only "
+        "invent a color if a role has no good match. Give a short evocative name."
     )
     response = client.messages.create(
         model=model,

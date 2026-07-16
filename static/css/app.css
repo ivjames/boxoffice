@@ -3468,33 +3468,40 @@ table.dash-table th {
    CLAUDE.md "Frontend / styling". */
 
 .brand-section {
-    margin: 2rem 0;
-    padding-bottom: 1.5rem;
+    margin: 1.25rem 0;
+    padding-bottom: 1rem;
     border-bottom: 1px solid var(--border-color);
 }
 
 .brand-section h2 {
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+
+/* Keep the page's primary actions compact so the tools stay above the fold --
+   scoped to the branding page (:not(.button--sm) leaves the already-small
+   card/tool buttons alone). */
+.brand-section .button:not(.button--sm) {
+    padding: 0.45rem 1rem;
 }
 
 /* Labelled swatches (the "current colors" preview). */
 .swatch-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 1rem;
+    gap: 0.65rem;
 }
 
 .swatch {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.15rem;
     font-size: 0.8125rem;
 }
 
 .swatch__chip {
-    width: 3rem;
-    height: 3rem;
+    width: 2.25rem;
+    height: 2.25rem;
     border-radius: 0.5rem;
     border: 1px solid var(--border-color);
 }
@@ -3522,17 +3529,18 @@ table.dash-table th {
 /* Preset / saved-scheme gallery. */
 .scheme-gallery {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr));
+    gap: 0.75rem;
 }
 
 /* The preset gallery holds the full catalog (36+), so it scrolls inside a
-   fixed-height viewport instead of stretching the page. Padding + top border
-   keep the scrollbar and the last row off the cards' edges. */
+   fixed-height viewport instead of stretching the page. Kept short (320px) so
+   the logo/fonts/fine-tuning tools below stay within reach. Padding + top
+   border keep the scrollbar and the last row off the cards' edges. */
 .scheme-gallery--scroll {
-    max-height: 32rem;
+    max-height: 320px;
     overflow-y: auto;
-    padding: 0.75rem;
+    padding: 0.5rem;
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     background: color-mix(in srgb, var(--border-color) 12%, transparent);
@@ -3579,9 +3587,9 @@ table.dash-table th {
 .font-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-    gap: 0.75rem 1rem;
+    gap: 0.55rem 0.85rem;
     max-width: 40rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
 }
 
 .font-grid .field {
@@ -3591,10 +3599,10 @@ table.dash-table th {
 /* The six color pickers, laid out in a responsive grid. */
 .color-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-    gap: 0.75rem 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+    gap: 0.55rem 0.85rem;
     max-width: 40rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.6rem;
 }
 
 .color-grid__field {
@@ -3612,7 +3620,7 @@ table.dash-table th {
 
 .brand-actions {
     display: flex;
-    gap: 0.75rem;
+    gap: 0.6rem;
 }
 
 .brand-derived {
@@ -3623,9 +3631,9 @@ table.dash-table th {
 .brand-editor {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
-    gap: 1.5rem;
+    gap: 1.25rem;
     align-items: start;
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
 }
 
 .brand-editor .color-grid {
@@ -3633,7 +3641,7 @@ table.dash-table th {
 }
 
 .page-tint-field {
-    margin-top: 1.25rem;
+    margin-top: 0.85rem;
     max-width: 24rem;
 }
 
@@ -3651,7 +3659,7 @@ table.dash-table th {
     flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem 0.75rem;
-    margin-top: 1.25rem;
+    margin-top: 0.85rem;
 }
 
 .brand-tools__hint {
@@ -3665,7 +3673,7 @@ table.dash-table th {
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    margin-top: 1rem;
+    margin-top: 0.75rem;
 }
 
 .brand-history {

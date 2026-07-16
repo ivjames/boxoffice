@@ -21,6 +21,7 @@ from django.test import TestCase, override_settings
 from accounts.models import Membership
 from accounts.tests import StaffFixtureMixin, host_for
 from dashboard.tests import DashFixtureMixin
+from dashboard.views.branding import LOGO_BG_PREVIEW_SESSION_KEY
 from tenants.logo_bg import BackgroundRemovalUnavailable
 from tenants.models import ColorScheme
 from tenants.test_logo import image_bytes
@@ -388,8 +389,9 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.org.save()
         self.org.refresh_from_db()
 
-    def _post(self):
-        return self.client.post(LOGO_BG_URL, HTTP_HOST=host_for("roxy"))
+    def _post(self, action=None):
+        data = {"action": action} if action else {}
+        return self.client.post(LOGO_BG_URL, data, HTTP_HOST=host_for("roxy"))
 
     def _messages(self, resp):
         return [str(m) for m in get_messages(resp.wsgi_request)]
@@ -405,17 +407,57 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertNotIn("Background removal is its OWN", html)
         self.assertNotIn("{#", html)
 
-    def test_success_saves_cleaned_logo(self):
+    def test_preview_does_not_change_the_logo_and_stashes_a_preview(self):
+        # The default "preview" action runs the model but must NOT overwrite the
+        # live logo -- it stashes the result for the manager to confirm.
         self._give_logo()
         original = self.org.logo.name
         fake_png = image_bytes(size=(200, 200), mode="RGBA")
         with patch("dashboard.views.branding.remove_logo_background", return_value=fake_png) as m:
-            resp = self._post()
+            resp = self._post()  # action defaults to preview
         self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
         m.assert_called_once()
         self.org.refresh_from_db()
+        self.assertEqual(self.org.logo.name, original)  # logo untouched by preview
+        self.assertIn(LOGO_BG_PREVIEW_SESSION_KEY, self.client.session)
+        # The branding page then shows the before/after + a "Use this logo" CTA.
+        page = self.client.get(BRANDING_URL, HTTP_HOST=host_for("roxy")).content.decode()
+        self.assertIn("Use this logo", page)
+        self.assertIn("data:image/png;base64,", page)
+
+    def test_confirm_applies_the_pending_preview(self):
+        self._give_logo()
+        original = self.org.logo.name
+        fake_png = image_bytes(size=(200, 200), mode="RGBA")
+        with patch("dashboard.views.branding.remove_logo_background", return_value=fake_png):
+            self._post()  # preview
+        resp = self._post(action="confirm")
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
         self.assertNotEqual(self.org.logo.name, original)
         self.assertTrue(self.org.logo.name.endswith("-nobg.png"))
+        self.assertNotIn(LOGO_BG_PREVIEW_SESSION_KEY, self.client.session)  # cleared
+
+    def test_discard_drops_the_preview_and_keeps_the_logo(self):
+        self._give_logo()
+        original = self.org.logo.name
+        fake_png = image_bytes(size=(200, 200), mode="RGBA")
+        with patch("dashboard.views.branding.remove_logo_background", return_value=fake_png):
+            self._post()  # preview
+        resp = self._post(action="discard")
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.logo.name, original)  # untouched
+        self.assertNotIn(LOGO_BG_PREVIEW_SESSION_KEY, self.client.session)
+
+    def test_confirm_without_a_pending_preview_is_a_clean_error(self):
+        self._give_logo()
+        original = self.org.logo.name
+        resp = self._post(action="confirm")
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.logo.name, original)
+        self.assertTrue(any("preview expired" in msg.lower() for msg in self._messages(resp)))
 
     def test_no_logo_is_a_clean_error(self):
         with patch("dashboard.views.branding.remove_logo_background") as m:
@@ -435,6 +477,7 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
         self.org.refresh_from_db()
         self.assertEqual(self.org.logo.name, original)  # logo untouched
+        self.assertNotIn(LOGO_BG_PREVIEW_SESSION_KEY, self.client.session)  # no preview stashed
         self.assertTrue(any("isn’t available" in msg for msg in self._messages(resp)))
 
     def test_manager_gated(self):

@@ -538,15 +538,23 @@ class BrandingForm(forms.ModelForm):
             "dark_accent_color",
             "light_neutral_color",
             "neutral_color",
+            "page_tint",
         ]
         # data-role tags each picker with its scheme role so the branding
         # page's live-preview JS maps it to the right CSS variable regardless
-        # of the (org-field) input name.
+        # of the (org-field) input name. data-page-tint lets that JS recolor the
+        # preview's page background live as the intensity changes.
         widgets = {
-            field: forms.TextInput(attrs={"type": "color", "data-role": role})
-            for role, _label, field in COLOR_ROLES
+            **{
+                field: forms.TextInput(attrs={"type": "color", "data-role": role})
+                for role, _label, field in COLOR_ROLES
+            },
+            "page_tint": forms.Select(attrs={"data-page-tint": "true"}),
         }
-        labels = {field: label for _role, label, field in COLOR_ROLES}
+        labels = {
+            **{field: label for _role, label, field in COLOR_ROLES},
+            "page_tint": "Page background",
+        }
 
 
 class ColorSchemeForm(forms.ModelForm):

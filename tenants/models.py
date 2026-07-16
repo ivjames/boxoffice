@@ -26,6 +26,16 @@ class Organization(models.Model):
         PROVISIONED = "provisioned", "Live"
         FAILED = "failed", "Failed"
 
+    class PageTint(models.TextChoices):
+        # How much brand presence the storefront page background carries. The
+        # page tint is DERIVED from the scheme's brand hue at this intensity
+        # (tenants.color_generator.page_background), kept above WCAG AAA for body
+        # text. "none" is the untinted near-white (the original look).
+        NONE = "none", "None — clean white"
+        SUBTLE = "subtle", "Subtle — a hint of brand color"
+        MEDIUM = "medium", "Medium — clearly branded"
+        BOLD = "bold", "Bold — saturated ground"
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True)
     subdomain = models.SlugField(
@@ -65,6 +75,15 @@ class Organization(models.Model):
     neutral_color = models.CharField(
         max_length=7, default="#111111", validators=[validate_hex_color],
         help_text="Near-black neutral (body text). Hex, e.g. #111111.",
+    )
+    # Storefront page-background presence. The background is derived from the
+    # brand hue at this intensity (Organization.page_background_color); "subtle"
+    # gives a gentle brand tint out of the box, tenants can dial it up or down.
+    page_tint = models.CharField(
+        max_length=7,
+        choices=PageTint.choices,
+        default=PageTint.SUBTLE,
+        help_text="How much brand color the storefront page background carries.",
     )
 
     # Storefront typography (see tenants/fonts.py). Stored as catalog font
@@ -157,15 +176,27 @@ class Organization(models.Model):
         }
 
     @property
+    def page_background_color(self):
+        """The storefront page background (emitted as --bg-color in base.html).
+        Derived from the brand hue at the tenant's `page_tint` intensity and
+        kept above WCAG AAA for body text; "none" is the untinted light_neutral
+        (the original near-white). See color_generator.page_background."""
+        from .color_generator import page_background
+
+        return page_background(self.palette, self.page_tint)
+
+    @property
     def ink_colors(self):
         """Legible 'ink' versions of the brand colors for use AS TEXT
-        (headings, links) on the light_neutral page background -- a pale brand
-        color is darkened to the same hue so it stays readable, while fills keep
-        the exact brand color. Emitted as --primary-ink/--accent-ink/
-        --secondary-ink in base.html. See color_generator.readable_on."""
+        (headings, links) on the PAGE background -- a pale brand color is
+        darkened to the same hue so it stays readable, while fills keep the
+        exact brand color. Computed against page_background_color (not raw
+        light_neutral) so ink stays legible even when the page is tinted.
+        Emitted as --primary-ink/--accent-ink/--secondary-ink in base.html.
+        See color_generator.readable_on."""
         from .color_generator import readable_on
 
-        bg = self.light_neutral_color
+        bg = self.page_background_color
         return {
             "primary": readable_on(self.primary_color, bg),
             "accent": readable_on(self.accent_color, bg),

@@ -3632,6 +3632,20 @@ table.dash-table th {
     margin-bottom: 0;
 }
 
+.page-tint-field {
+    margin-top: 1.25rem;
+    max-width: 24rem;
+}
+
+.page-tint-field select {
+    width: 100%;
+}
+
+.page-tint-field__hint {
+    margin: 0.4rem 0 0;
+    font-size: 0.8rem;
+}
+
 .brand-preview-wrap__label {
     font-weight: 600;
     margin: 0 0 0.4rem;
@@ -3645,7 +3659,11 @@ table.dash-table th {
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     overflow: hidden;
-    background: var(--light-neutral-color);
+    /* --preview-bg is the derived page tint (seeded inline from
+       page_background_color, updated live by the branding JS as the page_tint
+       select changes); falls back to the untinted light_neutral. A dedicated
+       var -- not --bg-color -- so it never inherits the dashboard's white. */
+    background: var(--preview-bg, var(--light-neutral-color));
     color: var(--neutral-color);
     font-size: 0.875rem;
     /* Use the preview's OWN inline --body-font (seeded server-side, updated

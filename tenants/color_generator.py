@@ -304,6 +304,54 @@ def dark_ink(color, dark_bg):
     return readable_on(color, dark_bg)
 
 
+# --- storefront page tint --------------------------------------------------
+#
+# The light page background can carry far more brand presence than the near-
+# white `light_neutral` role, which stays pale because it doubles as the light-
+# on-dark text color. So we derive a SEPARATE page background that leans on the
+# scheme's brand hue, at a tenant-chosen intensity, bounded so the near-black
+# body text still clears WCAG AAA over it -- presence never costs legibility.
+
+# (saturation, lightness) per intensity: more saturation + lower lightness =
+# more presence. Tuned for a brand hue (more chromatic than a neutral), so the
+# page reads as a confident tint rather than a loud wash. "none" is handled
+# separately (returns the untinted light_neutral -- today's near-white look).
+PAGE_TINT_LEVELS = {
+    "subtle": (0.20, 0.94),
+    "medium": (0.34, 0.89),
+    "bold": (0.48, 0.83),
+}
+
+
+def _brand_hue(palette):
+    """The hue to lean the page tint on: the first sufficiently-chromatic brand
+    role (primary, then secondary / dark_accent / feature_accent), falling back
+    to light_neutral's own hue for an all-neutral scheme."""
+    for role in ("primary", "secondary", "dark_accent", "feature_accent"):
+        if _hls(palette[role])[2] >= ACCENT_MIN_SATURATION:
+            return _hls(palette[role])[0]
+    return _hls(palette["light_neutral"])[0]
+
+
+def page_background(palette, level, *, floor=AAA):
+    """The storefront page background at tint intensity `level` (a
+    PAGE_TINT_LEVELS key, or anything else -- e.g. "none" -- for the untinted
+    light_neutral). The tint leans on the scheme's brand hue and is lightened
+    just enough that the dark `neutral` body text clears `floor` (AAA), so more
+    presence never drops the page below AAA. Pure."""
+    target = PAGE_TINT_LEVELS.get(level)
+    if target is None:
+        return palette["light_neutral"]
+    hue = _brand_hue(palette)
+    sat, lightness = target
+    neutral = palette["neutral"]
+    bg = _from_hls(hue, lightness, sat)
+    while contrast_ratio(neutral, bg) < floor and lightness < 1.0:
+        lightness += 0.004
+        bg = _from_hls(hue, lightness, sat)
+    return bg
+
+
 def adjust_scheme(roles):
     """Return (adjusted_roles, warnings) for one scheme's role dict under the
     best-of-two contract. Only `light_neutral` and `neutral` may change; brand

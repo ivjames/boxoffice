@@ -79,7 +79,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
             </div>
             <div class="brand-preview-wrap">
                 <p class="brand-preview-wrap__label">Live preview</p>
-                {% include "dashboard/_brand_preview.html" with palette=derived.roles|default:current_palette %}
+                {% include "dashboard/_brand_preview.html" with palette=derived.roles|default:current_palette page_bg=organization.page_background_color %}
             </div>
         </div>
         <div class="brand-actions">
@@ -183,7 +183,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                 </div>
                 <div class="color-grid">
                     {% for field in branding_form %}
-                        {% if field.name != 'logo' and field.name != 'heading_font' and field.name != 'body_font' %}
+                        {% if field.name != 'logo' and field.name != 'heading_font' and field.name != 'body_font' and field.name != 'page_tint' %}
                             <div class="field color-grid__field">
                                 {{ field.label_tag }}
                                 {{ field }}
@@ -192,10 +192,16 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                         {% endif %}
                     {% endfor %}
                 </div>
+                <div class="field page-tint-field">
+                    {{ branding_form.page_tint.label_tag }}
+                    {{ branding_form.page_tint }}
+                    <p class="muted page-tint-field__hint">How much brand color the storefront page carries behind your content. Every level stays high-contrast for readability.</p>
+                    {{ branding_form.page_tint.errors }}
+                </div>
             </div>
             <div class="brand-preview-wrap">
                 <p class="brand-preview-wrap__label">Live preview</p>
-                {% include "dashboard/_brand_preview.html" with palette=current_palette %}
+                {% include "dashboard/_brand_preview.html" with palette=current_palette page_bg=organization.page_background_color %}
             </div>
         </div>
         <button type="submit" class="button">Save branding</button>
@@ -260,6 +266,62 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         return "#000000";
     }
 
+    // Page tint: mirror tenants.color_generator.page_background so the preview's
+    // page background tracks the intensity <select> live. (saturation, lightness)
+    // per level -- keep in sync with PAGE_TINT_LEVELS.
+    var TINT_LEVELS = { subtle: [0.20, 0.94], medium: [0.34, 0.89], bold: [0.48, 0.83] };
+    function hexToRgb(hex) {
+        hex = hex.replace("#", "");
+        if (hex.length === 3) hex = hex.split("").map(function (c) { return c + c; }).join("");
+        return [0, 2, 4].map(function (i) { return parseInt(hex.substr(i, 2), 16) / 255; });
+    }
+    function rgbToHsl(r, g, b) {
+        var mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, h = 0, s = 0;
+        if (mx !== mn) {
+            var d = mx - mn;
+            s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+            if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+            else if (mx === g) h = (b - r) / d + 2;
+            else h = (r - g) / d + 4;
+            h /= 6;
+        }
+        return [h, s, l];
+    }
+    function hslToHex(h, s, l) {
+        var r, g, b;
+        if (s === 0) { r = g = b = l; }
+        else {
+            var hue2rgb = function (p, q, t) {
+                if (t < 0) t += 1; if (t > 1) t -= 1;
+                if (t < 1 / 6) return p + (q - p) * 6 * t;
+                if (t < 1 / 2) return q;
+                if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+                return p;
+            };
+            var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+            r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3);
+        }
+        return "#" + [r, g, b].map(function (v) { return ("0" + Math.round(v * 255).toString(16)).slice(-2); }).join("");
+    }
+    function brandHue(vals) {
+        var roles = ["primary", "secondary", "dark_accent", "feature_accent"];
+        for (var i = 0; i < roles.length; i++) {
+            var hsl = rgbToHsl.apply(null, hexToRgb(vals[roles[i]] || "#000000"));
+            if (hsl[1] >= 0.20) return hsl[0];  // ACCENT_MIN_SATURATION
+        }
+        return rgbToHsl.apply(null, hexToRgb(vals.light_neutral))[0];
+    }
+    function pageBackground(vals, level) {
+        var t = TINT_LEVELS[level];
+        if (!t) return vals.light_neutral;  // "none"
+        var hue = brandHue(vals), sat = t[0], light = t[1], bg = hslToHex(hue, sat, light);
+        while (contrast(vals.neutral, bg) < 7.0 && light < 1.0) {  // AAA for body text
+            light += 0.004;
+            bg = hslToHex(hue, sat, light);
+        }
+        return bg;
+    }
+
     function sync(form) {
         var preview = form.querySelector(".brand-preview");
         if (!preview) return;
@@ -273,12 +335,18 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         // this previewed scheme (same rules as the storefront).
         if (vals.primary && vals.light_neutral && vals.neutral) {
             var ln = vals.light_neutral, n = vals.neutral;
+            // --on-* is text over FILLS (buttons/header) -- independent of the
+            // page tint, so keep using the two neutrals. --*-ink is text on the
+            // PAGE, so compute it against the derived (possibly tinted) bg.
+            var tintSel = form.querySelector("select[data-page-tint]");
+            var pageBg = tintSel ? pageBackground(vals, tintSel.value) : ln;
+            preview.style.setProperty("--preview-bg", pageBg);
             preview.style.setProperty("--on-primary", textOver(vals.primary, ln, n));
             preview.style.setProperty("--on-accent", textOver(vals.feature_accent, ln, n));
             preview.style.setProperty("--on-dark-accent", textOver(vals.dark_accent, ln, n));
-            preview.style.setProperty("--primary-ink", readableOn(vals.primary, ln));
-            preview.style.setProperty("--accent-ink", readableOn(vals.feature_accent, ln));
-            preview.style.setProperty("--secondary-ink", readableOn(vals.secondary, ln));
+            preview.style.setProperty("--primary-ink", readableOn(vals.primary, pageBg));
+            preview.style.setProperty("--accent-ink", readableOn(vals.feature_accent, pageBg));
+            preview.style.setProperty("--secondary-ink", readableOn(vals.secondary, pageBg));
         }
         // Font <select>s (only the fine-tuning form has them): resolve the
         // chosen key to its CSS stack via the FONT_STACKS map.
@@ -296,7 +364,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         // release).
         ["input", "change"].forEach(function (evt) {
             form.addEventListener(evt, function (e) {
-                if (e.target.matches("input[data-role], select[data-font]")) sync(form);
+                if (e.target.matches("input[data-role], select[data-font], select[data-page-tint]")) sync(form);
             });
         });
     });

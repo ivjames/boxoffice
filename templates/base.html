@@ -42,7 +42,11 @@
                on dark fills -- see Organization.on_colors). Platform host keeps
                the legacy fixed values. */
             {% if organization %}
-            --bg-color: {{ organization.light_neutral_color }};
+            /* Page background: derived from the brand hue at the tenant's
+               page_tint intensity (kept above WCAG AAA for body text); "none"
+               is the untinted light_neutral. The light_neutral role itself is
+               still emitted below as the light-on-dark text color. */
+            --bg-color: {{ organization.page_background_color }};
             --text-color: {{ organization.neutral_color }};
             --on-primary: {{ organization.on_colors.primary }};
             --on-secondary: {{ organization.on_colors.secondary }};

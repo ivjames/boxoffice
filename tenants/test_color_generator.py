@@ -197,3 +197,33 @@ class DarkThemeTests(SimpleTestCase):
                 self.assertGreaterEqual(
                     contrast_ratio(ink, d["bg"]), AA, f"{name}: {role} ink on dark bg",
                 )
+
+
+class PageTintTests(SimpleTestCase):
+    def test_none_is_the_untinted_light_neutral(self):
+        from tenants.color_generator import page_background
+
+        for _slug, _name, roles in BUILTIN_SCHEMES:
+            self.assertEqual(page_background(roles, "none"), roles["light_neutral"])
+            self.assertEqual(page_background(roles, "anything-unknown"), roles["light_neutral"])
+
+    def test_every_level_stays_above_aaa_for_body_text(self):
+        # The whole point: more page presence never drops body text below AAA.
+        from tenants.color_generator import AAA, page_background, PAGE_TINT_LEVELS
+
+        for _slug, name, roles in BUILTIN_SCHEMES:
+            for level in PAGE_TINT_LEVELS:
+                bg = page_background(roles, level)
+                self.assertGreaterEqual(
+                    contrast_ratio(roles["neutral"], bg), AAA,
+                    f"{name} @ {level}: body text {contrast_ratio(roles['neutral'], bg):.1f}:1",
+                )
+
+    def test_higher_intensity_is_more_saturated(self):
+        # subtle -> medium -> bold gets progressively more present (saturated).
+        from tenants.color_generator import _hls, page_background
+
+        roles = {s: r for s, _n, r in BUILTIN_SCHEMES}["sapphire-night"]
+        sats = [_hls(page_background(roles, lvl))[2] for lvl in ("subtle", "medium", "bold")]
+        self.assertLess(sats[0], sats[1])
+        self.assertLess(sats[1], sats[2])

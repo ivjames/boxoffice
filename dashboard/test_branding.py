@@ -150,6 +150,7 @@ class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
             "dark_accent_color": "#010101", "accent_color": "#d4af37",
             "light_neutral_color": "#fafafa", "neutral_color": "#020202",
             "heading_font": "system-sans", "body_font": "system-sans",
+            "page_tint": "subtle",
         }
         data.update(overrides)
         return data

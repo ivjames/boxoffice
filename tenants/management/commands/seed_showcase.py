@@ -47,9 +47,9 @@ from django.utils import timezone
 from accounts.models import Membership
 from events import zones as zone_services
 from events.models import Event, GAAllocation, Performance, PriceTier
+from fulfillment import services as fulfillment_services
 from orders import services as order_services
 from orders.models import Order, OrderItem, PerformanceSeatBlock, Ticket
-from payments import services as payment_services
 from tenants.models import Organization
 from venues import generation
 from venues.models import Section, SeatingChart, Venue
@@ -639,7 +639,7 @@ class Command(BaseCommand):
                 return None
         if hold is None:
             return None
-        return payment_services.fulfill_hold(
+        return fulfillment_services.fulfill_hold(
             hold, buyer_email=buyer[0], buyer_name=buyer[1],
             payment_ref=f"seed-{uuid4()}", provider="seed",
         )

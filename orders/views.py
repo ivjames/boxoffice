@@ -12,6 +12,7 @@ from django.views.decorators.http import require_POST
 
 from donations.models import DonationCampaign
 from events.models import Performance, PriceTier
+from fulfillment import services as fulfillment_services
 from guests import services as guest_services
 from guests.models import normalize_email
 from payments import services as payment_services
@@ -517,7 +518,7 @@ def checkout_test(request):
         return redirect("checkout")
 
     try:
-        order = payment_services.fulfill_hold(
+        order = fulfillment_services.fulfill_hold(
             hold,
             buyer_email=buyer_email,
             buyer_name=buyer_name,
@@ -525,7 +526,7 @@ def checkout_test(request):
             provider="test",
             marketing_opt_in=_marketing_opt_in(request),
         )
-    except payment_services.FulfillmentError as exc:
+    except fulfillment_services.FulfillmentError as exc:
         messages.error(request, str(exc))
         return redirect("cart")
 
@@ -587,7 +588,7 @@ def checkout_stub(request):
             return redirect(f"{reverse('checkout_stub')}?hold_id={hold.pk}")
 
         try:
-            order = payment_services.fulfill_hold(
+            order = fulfillment_services.fulfill_hold(
                 hold,
                 buyer_email=buyer_email,
                 buyer_name=buyer_name,
@@ -595,7 +596,7 @@ def checkout_stub(request):
                 provider="stub",
                 marketing_opt_in=_marketing_opt_in(request),
             )
-        except payment_services.FulfillmentError as exc:
+        except fulfillment_services.FulfillmentError as exc:
             messages.error(request, str(exc))
             return redirect("cart")
 

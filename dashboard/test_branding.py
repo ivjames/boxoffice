@@ -244,7 +244,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
 
     def test_derive_renders_suggested_palette(self):
         # No-JS fallback (no X-Requested-With): full page re-render.
-        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE) as m:
+        with patch("dashboard.views.branding.derive_scheme_from_url", return_value=self.FAKE) as m:
             resp = self.client.post(DERIVE_URL, {"url": "roxy.example"}, HTTP_HOST=host_for("roxy"))
         m.assert_called_once_with("roxy.example")
         self.assertEqual(resp.status_code, 200)
@@ -252,7 +252,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertContains(resp, "Roxy palette")
 
     def test_derive_ajax_returns_json(self):
-        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+        with patch("dashboard.views.branding.derive_scheme_from_url", return_value=self.FAKE):
             resp = self.client.post(
                 DERIVE_URL, {"url": "roxy.example"},
                 HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
@@ -269,7 +269,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def test_derive_ajax_error_is_json_not_redirect(self):
         from tenants.color_extraction import ColorDeriveError
 
-        with patch("dashboard.views.derive_scheme_from_url", side_effect=ColorDeriveError("nope")):
+        with patch("dashboard.views.branding.derive_scheme_from_url", side_effect=ColorDeriveError("nope")):
             resp = self.client.post(
                 DERIVE_URL, {"url": "bad"},
                 HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
@@ -282,7 +282,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     )
     def test_derive_is_rate_limited_per_org(self):
         # Cooldown off here so this exercises only the window cap.
-        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+        with patch("dashboard.views.branding.derive_scheme_from_url", return_value=self.FAKE):
             for _ in range(2):  # cap is 2
                 ok = self.client.post(
                     DERIVE_URL, {"url": "roxy.example"},
@@ -298,7 +298,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
 
     @override_settings(DERIVE_COOLDOWN_SECONDS=20, DERIVE_RATELIMIT_MAX=8)
     def test_derive_cooldown_blocks_an_immediate_repeat(self):
-        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+        with patch("dashboard.views.branding.derive_scheme_from_url", return_value=self.FAKE):
             first = self.client.post(
                 DERIVE_URL, {"url": "roxy.example"},
                 HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
@@ -317,14 +317,14 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def test_failed_derive_does_not_start_the_cooldown(self):
         from tenants.color_extraction import ColorDeriveError
 
-        with patch("dashboard.views.derive_scheme_from_url", side_effect=ColorDeriveError("typo")):
+        with patch("dashboard.views.branding.derive_scheme_from_url", side_effect=ColorDeriveError("typo")):
             first = self.client.post(
                 DERIVE_URL, {"url": "bad"},
                 HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
             )
         self.assertEqual(first.status_code, 400)  # a fixable failure, not a 429
         # A corrected URL can be tried right away -- no cooldown was armed.
-        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+        with patch("dashboard.views.branding.derive_scheme_from_url", return_value=self.FAKE):
             retry = self.client.post(
                 DERIVE_URL, {"url": "roxy.example"},
                 HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
@@ -332,7 +332,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertEqual(retry.status_code, 200)
 
     def test_derive_rejects_an_overlong_url(self):
-        with patch("dashboard.views.derive_scheme_from_url") as m:
+        with patch("dashboard.views.branding.derive_scheme_from_url") as m:
             resp = self.client.post(
                 DERIVE_URL, {"url": "http://x.example/" + "a" * 3000},
                 HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
@@ -343,7 +343,7 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def test_derive_error_redirects_with_message(self):
         from tenants.color_extraction import ColorDeriveError
 
-        with patch("dashboard.views.derive_scheme_from_url", side_effect=ColorDeriveError("nope")):
+        with patch("dashboard.views.branding.derive_scheme_from_url", side_effect=ColorDeriveError("nope")):
             resp = self.client.post(DERIVE_URL, {"url": "bad"}, HTTP_HOST=host_for("roxy"))
         self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
 
@@ -398,7 +398,7 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self._give_logo()
         original = self.org.logo.name
         fake_png = image_bytes(size=(200, 200), mode="RGBA")
-        with patch("dashboard.views.remove_logo_background", return_value=fake_png) as m:
+        with patch("dashboard.views.branding.remove_logo_background", return_value=fake_png) as m:
             resp = self._post()
         self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
         m.assert_called_once()
@@ -407,7 +407,7 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertTrue(self.org.logo.name.endswith("-nobg.png"))
 
     def test_no_logo_is_a_clean_error(self):
-        with patch("dashboard.views.remove_logo_background") as m:
+        with patch("dashboard.views.branding.remove_logo_background") as m:
             resp = self._post()
         self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
         m.assert_not_called()
@@ -417,7 +417,7 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self._give_logo()
         original = self.org.logo.name
         with patch(
-            "dashboard.views.remove_logo_background",
+            "dashboard.views.branding.remove_logo_background",
             side_effect=BackgroundRemovalUnavailable("Background removal isn’t available."),
         ):
             resp = self._post()

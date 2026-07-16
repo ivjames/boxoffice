@@ -101,6 +101,22 @@ class SeatNumberTests(TestCase):
             generate_seat_numbers(3, Section.NumberingScheme.HUNDREDS, row_index=1), [201, 202, 203]
         )
 
+    def test_seat_number_base_composes_with_every_scheme(self):
+        # Section.seat_number_base: the "center block in the 100s, keeping
+        # the odd/even convention" style -- e.g. ...105 103 101 / 102 104...
+        self.assertEqual(
+            generate_seat_numbers(3, Section.NumberingScheme.ODD_DESC_LEFT, row_index=0, base=100),
+            [105, 103, 101],
+        )
+        self.assertEqual(
+            generate_seat_numbers(3, Section.NumberingScheme.EVEN_ASC_RIGHT, row_index=0, base=100),
+            [102, 104, 106],
+        )
+        self.assertEqual(
+            generate_seat_numbers(3, Section.NumberingScheme.SEQUENTIAL, row_index=0, base=200),
+            [201, 202, 203],
+        )
+
     def test_hundreds_flat_restarts_every_row(self):
         # Continental center-block style: 101, 102, ... on EVERY row.
         self.assertEqual(

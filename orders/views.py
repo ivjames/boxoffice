@@ -11,7 +11,6 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from donations.models import DonationCampaign
-from donations.services import get_or_create_general_fund
 from events.models import Performance, PriceTier
 from guests import services as guest_services
 from guests.models import normalize_email
@@ -95,7 +94,7 @@ def _send_tickets_best_effort(order, request):
     the buyer's click even though nothing about the order failed. We log it
     and move on; the buyer still lands on their receipt."""
     try:
-        send_order_receipt(order, request)
+        send_order_receipt(order)
     except Exception:
         logger.exception(
             "Receipt email for order %s could not be sent; the order is still "
@@ -367,13 +366,30 @@ def donation_add(request):
     add-on's "add a donation" control. Scoped exactly like promo_apply above
     (org + session_key + hold_id from POST): a request can no more add a
     donation to another session's or another tenant's hold than it can apply
-    a promo code to one. Always gives to the org's single general-fund
-    campaign (donations.services.get_or_create_general_fund -- v1 has no
+    a promo code to one. Gives to the org's single active campaign (v1 has no
     per-campaign picker on the storefront, see DonationCampaign's docstring).
+
+    The campaign is resolved READ-ONLY -- an ACTIVE row must already exist,
+    the same stance as /donate/'s _active_campaign_or_404 and the
+    donations_enabled context processor. It must NOT call
+    get_or_create_general_fund here: that helper CREATES an active campaign
+    as a side effect, so a direct POST to this public endpoint (the cart
+    hides the form when donations are off, but nothing stops a hand-crafted
+    request) would silently switch donations ON for the whole tenant.
+
     Always redirects to the cart: on success the hold's snapshot
     (Hold.donation_amount) now reflects the gift, which cart_view already
     reads to render the donation line; on failure services.set_hold_donation
     raises HoldError with a buyer-safe message, flashed instead of a 500/404."""
+    campaign = (
+        DonationCampaign.objects.filter(organization=request.organization, is_active=True)
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if campaign is None:
+        messages.error(request, "Donations aren't available right now.")
+        return redirect("cart")
+
     session_key = services.get_session_key(request)
     try:
         services.set_hold_donation(
@@ -381,7 +397,7 @@ def donation_add(request):
             session_key=session_key,
             hold_id=request.POST.get("hold_id"),
             amount=request.POST.get("amount"),
-            campaign=get_or_create_general_fund(request.organization),
+            campaign=campaign,
         )
     except services.HoldError as exc:
         messages.error(request, str(exc))
@@ -627,19 +643,30 @@ def checkout_success(request):
     # account for the Stripe path -- once the order has appeared. If it hasn't
     # yet (webhook lag), the template auto-refreshes and we catch it next load.
     donation_item = None
+    pass_item = None
     if order is not None:
         _sign_in_buyer(order, request)
         if order.performance_id is None:
-            # Donation-only order: no performance/tickets to show, just the
-            # gift amount + its campaign's acknowledgment blurb (see the
-            # template's kind-aware branch).
-            donation_item = (
-                order.items.filter(kind=OrderItem.Kind.DONATION)
-                .select_related("donation_campaign")
+            # No performance means a pass purchase OR a donation-only order
+            # (both have Order.performance null). Resolve the pass line FIRST,
+            # mirroring send_order_receipt's dispatch order -- without it a
+            # pass buyer would land on the donation thank-you (the template's
+            # old fallback). Same OrderItem-based detection ticket_detail uses.
+            pass_item = (
+                order.items.filter(kind=OrderItem.Kind.PASS)
+                .select_related("pass_product")
                 .first()
             )
+            if pass_item is None:
+                donation_item = (
+                    order.items.filter(kind=OrderItem.Kind.DONATION)
+                    .select_related("donation_campaign")
+                    .first()
+                )
     return render(
-        request, "orders/checkout_success.html", {"order": order, "donation_item": donation_item}
+        request,
+        "orders/checkout_success.html",
+        {"order": order, "donation_item": donation_item, "pass_item": pass_item},
     )
 
 

@@ -71,6 +71,15 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--no-verify",
+            action="store_true",
+            help=(
+                "Skip the second verification pass (the image + first-pass spec sent back "
+                "for a row-by-row recount). Halves token cost; lowers recall on removed "
+                "seats and numbering edge cases."
+            ),
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help=(
@@ -146,7 +155,7 @@ class Command(BaseCommand):
             raise CommandError(f"Couldn't read {path}: {exc}")
 
         try:
-            spec = parse_chart_file(data, media_type)
+            spec = parse_chart_file(data, media_type, verify=not options["no_verify"])
             if options["dry_run"]:
                 printable = {key: value for key, value in spec.items() if key != "usage"}
                 self.stdout.write(json.dumps(printable, indent=2))

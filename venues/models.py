@@ -64,8 +64,8 @@ class Section(TenantScopedModel):
 
     class NumberingScheme(models.TextChoices):
         SEQUENTIAL = "sequential", "Sequential (1, 2, 3…)"
-        ODD_DESC_LEFT = "odd_desc_left", "Odd, descending toward the aisle (…5, 3, 1)"
-        EVEN_ASC_RIGHT = "even_asc_right", "Even, ascending away from the aisle (2, 4, 6…)"
+        ODD_DESC_LEFT = "odd_desc_left", "Odd, right to left (…5, 3, 1)"
+        EVEN_ASC_RIGHT = "even_asc_right", "Even, left to right (2, 4, 6…)"
         HUNDREDS = "hundreds", "Hundreds by row (101, 102… / 201, 202…)"
         HUNDREDS_FLAT = "hundreds_flat", "Hundreds, same every row (101, 102… / 101, 102…)"
 
@@ -213,6 +213,17 @@ class Section(TenantScopedModel):
     row_label_scheme = models.CharField(
         max_length=20, choices=RowLabelScheme.choices, default=RowLabelScheme.SKIP_IO
     )
+    seat_number_base = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Added to every generated seat number, composing with numbering_scheme -- many "
+            "houses number their center blocks in the 100s while keeping the side blocks' "
+            "odd/even convention: odd_desc_left with base 100 gives ...119, 117 ... 103, 101; "
+            "even_asc_right with base 100 gives 102, 104... A pure label offset, like "
+            "row_label_start: never affects geometry. See venues.generation."
+            "generate_seat_numbers, mirrored in static/js/seat_geometry.js."
+        ),
+    )
     row_label_start = models.PositiveIntegerField(
         default=0,
         help_text=(
@@ -260,3 +271,95 @@ class Seat(TenantScopedModel):
 
     def __str__(self):
         return f"{self.row_label}{self.number}"
+
+class ChartParseJob(TenantScopedModel):
+    """One background run of the AI chart parse (venues/chart_parsing.py).
+
+    The dashboard upload views create a PENDING job (storing the uploaded
+    image/PDF) and spawn the `run_chart_parse` management command as a
+    DETACHED subprocess (chart_parsing.spawn_parse_job) -- the parse makes
+    two multi-minute vision calls, far past any sane request timeout, and
+    this stack deliberately has no celery/redis, so a subprocess that
+    survives web-worker recycling is the right-sized worker. The row IS the
+    job queue, the progress channel (status/progress polled by
+    dashboard_chart_parse_status) and the audit trail (usage/error/result).
+
+    `replace_chart` set = the chart editor's "re-parse into this chart"
+    flow: the worker rebuilds that chart's sections in place (same
+    live-ticket guard as every replace). Otherwise a new chart is created
+    on `venue` named `chart_name` (or whatever the parse picks).
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+
+    # A worker that dies without writing FAILED (deploy restart, OOM) would
+    # leave RUNNING forever -- effective_status reports anything older than
+    # this as failed so the UI never spins eternally.
+    STALE_AFTER_MINUTES = 15
+
+    venue = models.ForeignKey(Venue, on_delete=models.CASCADE, related_name="chart_parse_jobs")
+    replace_chart = models.ForeignKey(
+        SeatingChart,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="parse_jobs",
+        help_text="Re-parse INTO this chart (replace its sections). Null = create a new chart.",
+    )
+    upload = models.FileField(upload_to="chart_parse_uploads/%Y/%m/")
+    media_type = models.CharField(max_length=50)
+    chart_name = models.CharField(
+        max_length=255, blank=True, help_text="Optional name override for a newly created chart."
+    )
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    progress = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Worker stage while running: extracting / verifying / building.",
+    )
+    error = models.TextField(blank=True)
+    usage = models.JSONField(default=dict, blank=True)
+    chart = models.ForeignKey(
+        SeatingChart,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text="The resulting chart once the job succeeds.",
+    )
+    created_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta(TenantScopedModel.Meta):
+        indexes = TenantScopedModel.Meta.indexes + [models.Index(fields=["venue", "-created_at"])]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"parse #{self.pk} ({self.status}) for {self.venue}"
+
+    @property
+    def effective_status(self):
+        """`status`, except a RUNNING/PENDING job whose worker has clearly
+        died (no finish after STALE_AFTER_MINUTES) reports as failed --
+        see STALE_AFTER_MINUTES."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        if self.status in (self.Status.PENDING, self.Status.RUNNING):
+            anchor = self.started_at or self.created_at
+            if anchor and timezone.now() - anchor > timedelta(minutes=self.STALE_AFTER_MINUTES):
+                return self.Status.FAILED
+        return self.status
+
+    @property
+    def is_finished(self):
+        return self.effective_status in (self.Status.SUCCEEDED, self.Status.FAILED)

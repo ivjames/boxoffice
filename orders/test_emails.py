@@ -8,7 +8,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.core import mail
-from django.test import RequestFactory, TestCase
+from django.test import TestCase
 
 from donations.services import get_or_create_general_fund
 from orders.emails import send_donation_receipt_email, send_order_receipt, send_ticket_email
@@ -33,10 +33,9 @@ class SendTicketEmailTests(OrdersFixtureMixin, TestCase):
         Ticket.objects.create(
             organization=self.org, order=self.order, performance=self.performance, holder_name="Buyer Person"
         )
-        self.request = RequestFactory().get("/", HTTP_HOST=f"{self.org.subdomain}.localhost")
 
     def test_sends_one_email_with_html_and_text_parts(self):
-        send_ticket_email(self.order, self.request)
+        send_ticket_email(self.order)
 
         self.assertEqual(len(mail.outbox), 1)
         email = mail.outbox[0]
@@ -55,7 +54,7 @@ class SendTicketEmailTests(OrdersFixtureMixin, TestCase):
         self.org.accent_color = "#f4a261"
         self.org.save(update_fields=["primary_color", "accent_color"])
 
-        send_ticket_email(self.order, self.request)
+        send_ticket_email(self.order)
 
         html_body = mail.outbox[0].alternatives[0][0]
         self.assertIn("#0d3b66", html_body)
@@ -64,7 +63,7 @@ class SendTicketEmailTests(OrdersFixtureMixin, TestCase):
     def test_no_logo_falls_back_to_the_org_name(self):
         # No logo uploaded on the fixture org -> the header shows the name,
         # and there's no broken <img> pointing at an empty ImageField URL.
-        send_ticket_email(self.order, self.request)
+        send_ticket_email(self.order)
 
         html_body = mail.outbox[0].alternatives[0][0]
         self.assertIn(self.org.name, html_body)
@@ -79,7 +78,6 @@ class SendTicketEmailReservedSeatTests(OrdersFixtureMixin, TestCase):
 
     def setUp(self):
         self.build_reserved_performance()
-        self.request = RequestFactory().get("/", HTTP_HOST=f"{self.org.subdomain}.localhost")
 
     def test_reserved_ticket_email_mentions_seat(self):
         order = Order.objects.create(
@@ -91,7 +89,7 @@ class SendTicketEmailReservedSeatTests(OrdersFixtureMixin, TestCase):
         )
         Ticket.objects.create(organization=self.org, order=order, performance=self.performance, seat=self.seat)
 
-        send_ticket_email(order, self.request)
+        send_ticket_email(order)
 
         email = mail.outbox[-1]
         self.assertIn("A1", email.body)
@@ -124,10 +122,9 @@ class SendDonationReceiptEmailTests(OrdersFixtureMixin, TestCase):
             unit_amount=Decimal("50.00"),
             donation_campaign=self.campaign,
         )
-        self.request = RequestFactory().get("/", HTTP_HOST=f"{self.org.subdomain}.localhost")
 
     def test_sends_receipt_with_amount_and_blurb_no_qr(self):
-        send_donation_receipt_email(self.order, self.request)
+        send_donation_receipt_email(self.order)
 
         self.assertEqual(len(mail.outbox), 1)
         email = mail.outbox[0]
@@ -145,7 +142,7 @@ class SendDonationReceiptEmailTests(OrdersFixtureMixin, TestCase):
 
     def test_no_campaign_omits_the_blurb_without_crashing(self):
         self.order.items.update(donation_campaign=None)
-        send_donation_receipt_email(self.order, self.request)
+        send_donation_receipt_email(self.order)
         self.assertEqual(len(mail.outbox), 1)
         self.assertNotIn("501(c)(3)", mail.outbox[0].body)
 
@@ -157,7 +154,6 @@ class OrderReceiptDispatcherTests(OrdersFixtureMixin, TestCase):
     def setUp(self):
         self.build_ga_performance()
         self.campaign = get_or_create_general_fund(self.org)
-        self.request = RequestFactory().get("/", HTTP_HOST=f"{self.org.subdomain}.localhost")
 
     def test_ticketed_order_dispatches_to_ticket_email(self):
         order = Order.objects.create(
@@ -172,9 +168,9 @@ class OrderReceiptDispatcherTests(OrdersFixtureMixin, TestCase):
         with patch("orders.emails.send_ticket_email") as mock_ticket, patch(
             "orders.emails.send_donation_receipt_email"
         ) as mock_donation:
-            send_order_receipt(order, self.request)
+            send_order_receipt(order)
 
-        mock_ticket.assert_called_once_with(order, self.request)
+        mock_ticket.assert_called_once_with(order)
         mock_donation.assert_not_called()
 
     def test_donation_only_order_dispatches_to_donation_email(self):
@@ -197,9 +193,9 @@ class OrderReceiptDispatcherTests(OrdersFixtureMixin, TestCase):
         with patch("orders.emails.send_ticket_email") as mock_ticket, patch(
             "orders.emails.send_donation_receipt_email"
         ) as mock_donation:
-            send_order_receipt(order, self.request)
+            send_order_receipt(order)
 
-        mock_donation.assert_called_once_with(order, self.request)
+        mock_donation.assert_called_once_with(order)
         mock_ticket.assert_not_called()
 
     def test_mixed_order_ticket_email_mentions_the_donation(self):
@@ -227,7 +223,7 @@ class OrderReceiptDispatcherTests(OrdersFixtureMixin, TestCase):
             donation_campaign=self.campaign,
         )
 
-        send_order_receipt(order, self.request)
+        send_order_receipt(order)
 
         self.assertEqual(len(mail.outbox), 1)
         email = mail.outbox[0]
@@ -238,3 +234,31 @@ class OrderReceiptDispatcherTests(OrdersFixtureMixin, TestCase):
         self.assertIn("Thank you for supporting the Roxy!", html_body)
         # Still has the QR for the one real ticket.
         self.assertIn("data:image/png;base64,", html_body)
+
+
+class ReceiptLinksUseTenantHostTests(OrdersFixtureMixin, TestCase):
+    """Regression for the Connect-webhook host bug: receipt emails are sent
+    from the platform-host webhook (boxo.show/webhooks/stripe/), so their
+    links must be rebuilt from the order's Organization -- a request-derived
+    URL would put buyers on tenant-gated routes on the wrong host (404)."""
+
+    def test_ticket_email_links_carry_the_tenant_subdomain(self):
+        self.build_ga_performance()
+        order = Order.objects.create(
+            organization=self.org,
+            performance=self.performance,
+            buyer_email="buyer@example.com",
+            buyer_name="Buyer Person",
+            total=Decimal("35.00"),
+            status=Order.Status.PAID,
+        )
+        Ticket.objects.create(
+            organization=self.org, order=order, performance=self.performance, holder_name="Buyer Person"
+        )
+
+        # No request in sight -- exactly the webhook situation.
+        send_order_receipt(order)
+
+        body = mail.outbox[0].body
+        self.assertIn(f"http://{self.org.subdomain}.localhost/tickets/{order.token}/", body)
+        self.assertNotIn("://testserver", body)

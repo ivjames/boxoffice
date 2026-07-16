@@ -128,7 +128,7 @@ class ParseSeatingChartCommandTests(TestCase):
                 call_command("parse_seating_chart", path, "--venue", str(self.venue.pk), stdout=buf)
         output = buf.getvalue()
         self.assertIn("12 seat(s)", output)
-        self.assertIn("4,182 tokens in", output)
+        self.assertIn("8,364 tokens in", output)  # two passes
         self.assertTrue(SeatingChart.objects.filter(venue=self.venue, name="Main house").exists())
 
     def test_dry_run_prints_spec_and_creates_nothing(self):
@@ -150,7 +150,7 @@ class ParseSeatingChartCommandTests(TestCase):
         spec = json.loads(output[: output.rindex("}") + 1])
         self.assertEqual(spec["chart_name"], "Main house")
         self.assertNotIn("usage", spec)
-        self.assertIn("4,182 tokens in", output)
+        self.assertIn("8,364 tokens in", output)
         self.assertFalse(SeatingChart.objects.exists())
 
     def test_unsupported_file_type_errors(self):
@@ -219,3 +219,19 @@ class ParseSeatingChartCommandTests(TestCase):
         output = self._run("--dry-run")
         self.assertIn('"chart_name": "Main house"', output)
         self.assertFalse(SeatingChart.objects.exists())
+
+    def test_no_verify_runs_a_single_pass(self):
+        import tempfile
+        from io import StringIO
+        from unittest import mock
+
+        from venues import chart_parsing
+
+        client = self._patched_client()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_png(tmp)
+            with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+                call_command(
+                    "parse_seating_chart", path, "--org", "roxy", "--no-verify", stdout=StringIO()
+                )
+        self.assertEqual(client.messages.create.call_count, 1)

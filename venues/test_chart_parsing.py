@@ -39,11 +39,8 @@ def section_spec(**overrides):
         "seat_pitch": 1.0,
         "row_pitch": 1.0,
         "arc_radius": None,
-        "row_alignment": "edge",
-        "offset_mode": "repeated",
-        "row_x_offset": 0.0,
-        "alt_row_seat_delta": 0,
         "numbering_scheme": "sequential",
+        "seat_number_base": 0,
         "row_label_scheme": "skip_io",
         "row_label_start": 0,
         "removed_seats": [],
@@ -129,17 +126,37 @@ class ParseChartFileTests(TestCase):
                     parse_chart_file(b"fake", "image/png")
 
     def test_usage_is_attached_and_describable(self):
+        # Default parse is two passes (extract + verify) -- usage sums both.
         client = fake_client(fake_response(chart_spec()))
         with mock.patch.object(chart_parsing, "_get_client", return_value=client):
             spec = parse_chart_file(b"fake", "image/png")
-        self.assertEqual(spec["usage"]["input_tokens"], 4182)
-        self.assertEqual(spec["usage"]["output_tokens"], 1905)
-        self.assertIn("4,182 tokens in", chart_parsing.describe_usage(spec["usage"]))
-        self.assertIn("1,905 out", chart_parsing.describe_usage(spec["usage"]))
+        self.assertEqual(client.messages.create.call_count, 2)
+        self.assertEqual(spec["usage"]["input_tokens"], 8364)
+        self.assertEqual(spec["usage"]["output_tokens"], 3810)
+        self.assertIn("8,364 tokens in", chart_parsing.describe_usage(spec["usage"]))
+        self.assertIn("3,810 out", chart_parsing.describe_usage(spec["usage"]))
         # A spec carrying usage still builds (validate ignores unknown keys).
         org = make_org("usage")
         venue = Venue.objects.create(organization=org, name="Stage")
         build_chart_from_spec(venue, spec)
+
+    def test_verify_pass_sends_first_pass_spec_back(self):
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(b"fake", "image/png")
+        second_prompt = client.messages.create.call_args_list[1].kwargs["messages"][0]["content"][1]["text"]
+        self.assertIn("Re-examine the chart", second_prompt)
+        self.assertIn('"chart_name": "Main house"', second_prompt)
+        # The image rides along on the verify pass too.
+        second_file_block = client.messages.create.call_args_list[1].kwargs["messages"][0]["content"][0]
+        self.assertEqual(second_file_block["type"], "image")
+
+    def test_verify_false_is_a_single_pass(self):
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            spec = parse_chart_file(b"fake", "image/png", verify=False)
+        self.assertEqual(client.messages.create.call_count, 1)
+        self.assertEqual(spec["usage"]["input_tokens"], 4182)
 
     def test_describe_usage_is_empty_when_unknown(self):
         # A response with no usage (or a caller without a parse) renders
@@ -186,17 +203,28 @@ class ValidateChartSpecTests(TestCase):
     def test_unknown_enums_fall_back_to_defaults(self):
         spec = validate_chart_spec(
             chart_spec(
-                section_spec(
-                    numbering_scheme="roman-numerals",
-                    row_label_scheme="emoji",
-                    offset_mode="diagonal",
-                )
+                section_spec(numbering_scheme="roman-numerals", row_label_scheme="emoji")
             )
         )
         section = spec["sections"][0]
         self.assertEqual(section["numbering_scheme"], Section.NumberingScheme.SEQUENTIAL)
         self.assertEqual(section["row_label_scheme"], Section.RowLabelScheme.SKIP_IO)
+
+    def test_offset_params_are_always_left_at_defaults(self):
+        # The AI parse no longer determines per-row stagger/rake -- staff set
+        # it in the editor. Whatever a section dict carries for those fields,
+        # validate emits the neutral grid defaults.
+        spec = validate_chart_spec(
+            chart_spec(
+                section_spec(
+                    offset_mode="alternating", row_x_offset=1.5, alt_row_seat_delta=-1
+                )
+            )
+        )
+        section = spec["sections"][0]
         self.assertEqual(section["offset_mode"], Section.OffsetMode.REPEATED)
+        self.assertEqual(section["row_x_offset"], 0.0)
+        self.assertEqual(section["alt_row_seat_delta"], 0)
 
     def test_duplicate_and_blank_section_names(self):
         spec = validate_chart_spec(
@@ -221,81 +249,6 @@ class ValidateChartSpecTests(TestCase):
         section = spec["sections"][0]
         self.assertEqual(section["removed_seats"], [["A", "1"]])
         self.assertEqual(section["accessible_seats"], [])
-
-    def test_center_alignment_derives_a_recentering_offset(self):
-        # A center block that widens toward the back (widths 4, 5, 6 in a
-        # 6-wide grid, trimmed from the high-number end) is left-aligned by
-        # the removals alone; row_alignment="center" folds in the offset
-        # that re-centers it: -seat_pitch/2 * (per-row widening) = -0.5.
-        removed = [["A", "5"], ["A", "6"], ["B", "6"]]
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=3, seats_per_row=6, row_alignment="center", removed_seats=removed
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], -0.5)
-        # Idempotent: re-validating the folded spec doesn't double-apply.
-        revalidated = validate_chart_spec(spec)
-        self.assertEqual(revalidated["sections"][0]["row_x_offset"], -0.5)
-
-    def test_center_alignment_ignores_outlier_back_row(self):
-        # The slope anchors on the WIDEST row, so a single odd back row (a
-        # mix-desk cut-out) doesn't flip the derived offset: widths 4, 5, 6,
-        # 2 still derive from rows A->C.
-        removed = [["A", "5"], ["A", "6"], ["B", "6"], ["D", "3"], ["D", "4"], ["D", "5"], ["D", "6"]]
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=4, seats_per_row=6, row_alignment="center", removed_seats=removed
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], -0.5)
-
-    def test_center_alignment_attempts_nothing_without_a_clear_taper(self):
-        # Oscillating widths (5, 4, 6, 3, 5 in a 6-wide grid) fit no linear
-        # taper -- the derivation declines rather than applying an offset
-        # that would merely look deliberate. Same when the section uses
-        # ALTERNATING stagger, which is its own mechanism.
-        removed = [["A", "6"], ["B", "5"], ["B", "6"], ["D", "4"], ["D", "5"], ["D", "6"], ["E", "6"]]
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=5, seats_per_row=6, row_alignment="center", removed_seats=removed
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
-
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=3, seats_per_row=6, row_alignment="center",
-                    offset_mode="alternating", alt_row_seat_delta=-1,
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
-
-    def test_edge_alignment_and_explicit_offsets_are_untouched(self):
-        # Default/edge alignment never derives an offset...
-        spec = validate_chart_spec(
-            chart_spec(section_spec(rows=3, seats_per_row=6, removed_seats=[["A", "6"]]))
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.0)
-        # ...and a centered section whose parse already reported an offset
-        # (centered AND raked) keeps the reported value.
-        spec = validate_chart_spec(
-            chart_spec(
-                section_spec(
-                    rows=3, seats_per_row=6, row_alignment="center",
-                    row_x_offset=0.75, removed_seats=[["A", "6"]],
-                )
-            )
-        )
-        self.assertEqual(spec["sections"][0]["row_x_offset"], 0.75)
 
     def test_blank_chart_name_gets_default(self):
         spec = validate_chart_spec({"chart_name": "  ", "sections": [section_spec()]})
@@ -397,8 +350,7 @@ class BuildChartFromSpecTests(TestCase):
 
 
 def _house_section(
-    name, tier, *, numbering, width, start, keeps, origin, rotation=0.0,
-    row_alignment="edge", accessible=(),
+    name, tier, *, numbering, width, start, keeps, origin, rotation=0.0, accessible=(),
 ):
     """One section of the transcribed house. `keeps` is front-to-back, one
     entry per row: an int n keeps the n aisle-most seats of a `width`-wide
@@ -432,7 +384,6 @@ def _house_section(
         origin_x=origin[0],
         origin_y=origin[1],
         rotation=rotation,
-        row_alignment=row_alignment,
         removed_seats=removed,
         accessible_seats=[list(identity) for identity in accessible],
     )
@@ -452,7 +403,7 @@ def real_world_chart_spec():
                 "Orchestra Center", "Orchestra", numbering="hundreds_flat", width=15, start=0,
                 # Row D is a cross-aisle gap in the printed chart.
                 keeps=[9, 10, 11, 0, 11, 12, 13, 12, 13, 14, 15, 12],
-                origin=(0.0, 0.0), row_alignment="center",
+                origin=(0.0, 0.0),
                 accessible=[("M", "101"), ("M", "106"), ("M", "107"), ("M", "112")],
             ),
             _house_section(
@@ -469,7 +420,7 @@ def real_world_chart_spec():
                 "Parterre Center", "Parterre", numbering="hundreds_flat", width=21, start=12,
                 # Row U keeps only its two flanks (mix desk in the middle).
                 keeps=[18, 19, 18, 19, 20, 21, [101, 102, 117, 118, 119, 120]],
-                origin=(-6.3, 13.5), row_alignment="center",
+                origin=(-6.3, 13.5),
                 accessible=[("U", "101")],
             ),
             _house_section(
@@ -482,7 +433,7 @@ def real_world_chart_spec():
             ),
             _house_section(
                 "Balcony Center", "Balcony", numbering="hundreds_flat", width=15, start=19,
-                keeps=[14, 13, 15, 13, 14], origin=(-3.3, 23.0), row_alignment="center",
+                keeps=[14, 13, 15, 13, 14], origin=(-3.3, 23.0),
             ),
             _house_section(
                 "Balcony Right", "Balcony", numbering="even_asc_right", width=7, start=19,
@@ -562,26 +513,15 @@ class RealWorldChartTests(TestCase):
         )
         self.assertEqual(row_u, [101, 102, 117, 118, 119, 120])  # mix-desk gap
 
-    def test_center_blocks_get_recentering_offsets(self):
-        # The center blocks are reported as row_alignment="center" and get
-        # their re-centering row_x_offset derived from the row widths --
-        # front row vs widest row, /2 (see _derived_center_offset).
-        offsets = {
-            s.name: s.row_x_offset
-            for s in self.chart.sections.filter(name__endswith="Center")
-        }
-        self.assertEqual(
-            offsets,
-            {
-                "Orchestra Center": -0.3,  # steady taper A=9 -> L=15 over 10 rows
-                "Parterre Center": -0.3,   # steady taper N=18 -> T=21 over 5 rows
-                # Balcony widths oscillate (14, 13, 15, 13, 14) -- no clear
-                # taper, so the derivation declines and attempts nothing.
-                "Balcony Center": 0.0,
-            },
-        )
-        # Side blocks stay edge-aligned with no offset.
-        self.assertEqual(self.chart.sections.get(name="Orchestra Left").row_x_offset, 0.0)
+    def test_parse_never_sets_a_stagger_offset(self):
+        # The parse leaves every section a plain grid (offset_mode/
+        # row_x_offset/alt_row_seat_delta at defaults) -- staff dial in any
+        # rake/centering with the editor's slider. Ragged widths still come
+        # through as removed_seats; only the geometry offset is left alone.
+        for section in self.chart.sections.all():
+            self.assertEqual(section.row_x_offset, 0.0)
+            self.assertEqual(section.offset_mode, Section.OffsetMode.REPEATED)
+            self.assertEqual(section.alt_row_seat_delta, 0)
 
     def test_wheelchair_inventory(self):
         accessible = {
@@ -605,3 +545,226 @@ class RealWorldChartTests(TestCase):
                 ("Parterre Center", "U", "101"),
             },
         )
+
+
+# --- background jobs (run_parse_job / run_chart_parse) ----------------------
+
+import tempfile
+
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+
+from venues.chart_parsing import run_parse_job
+from venues.models import ChartParseJob
+
+MEDIA_TMP = tempfile.mkdtemp(prefix="boxoffice-test-media-")
+
+
+@override_settings(MEDIA_ROOT=MEDIA_TMP)
+class RunParseJobTests(TestCase):
+    def setUp(self):
+        self.org = make_org("roxy")
+        self.venue = Venue.objects.create(organization=self.org, name="Main Stage")
+
+    def make_job(self, **overrides):
+        fields = {
+            "organization": self.org,
+            "venue": self.venue,
+            "upload": SimpleUploadedFile("house.png", b"fake-png", content_type="image/png"),
+            "media_type": "image/png",
+        }
+        fields.update(overrides)
+        return ChartParseJob.objects.create(**fields)
+
+    def test_success_builds_chart_and_records_outcome(self):
+        job = self.make_job(chart_name="Cabaret setup")
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            result = run_parse_job(job.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.SUCCEEDED)
+        self.assertEqual(job.chart.name, "Cabaret setup")
+        self.assertEqual(job.usage["input_tokens"], 8364)  # both passes summed
+        self.assertEqual(job.progress, "")
+        self.assertIsNotNone(job.started_at)
+        self.assertIsNotNone(job.finished_at)
+        self.assertEqual(result.pk, job.pk)
+        self.assertEqual(Seat.objects.filter(section__chart=job.chart).count(), 12)
+
+    def test_replace_target_rebuilds_that_chart_in_place(self):
+        chart = SeatingChart.objects.create(
+            organization=self.org, venue=self.venue, name="Main house"
+        )
+        Section.objects.create(organization=self.org, chart=chart, name="Old section")
+        job = self.make_job(replace_chart=chart)
+        with mock.patch.object(
+            chart_parsing, "_get_client", return_value=fake_client(fake_response(chart_spec()))
+        ):
+            run_parse_job(job.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.SUCCEEDED)
+        self.assertEqual(job.chart_id, chart.pk)  # identity survives the replace
+        self.assertEqual(
+            list(chart.sections.values_list("name", flat=True)), ["Orchestra"]
+        )
+
+    def test_parsing_error_marks_failed_with_staff_safe_message(self):
+        job = self.make_job()
+        client = fake_client(fake_response(chart_spec(), stop_reason="refusal"))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            run_parse_job(job.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.FAILED)
+        self.assertIn("declined", job.error)
+        self.assertIsNone(job.chart)
+
+    def test_unexpected_crash_is_caught_not_raised(self):
+        job = self.make_job()
+        with mock.patch.object(chart_parsing, "_get_client", side_effect=RuntimeError("boom")):
+            run_parse_job(job.pk)  # must not raise -- nobody catches in the worker
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.FAILED)
+        self.assertIn("Unexpected error", job.error)
+
+    def test_only_pending_jobs_are_claimable(self):
+        job = self.make_job(status=ChartParseJob.Status.RUNNING)
+        self.assertIsNone(run_parse_job(job.pk))
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.RUNNING)  # untouched
+
+    def test_progress_stages_are_written_to_the_row(self):
+        job = self.make_job()
+        stages = []
+        real_parse = chart_parsing.parse_chart_file
+
+        def spying_parse(data, media_type, **kwargs):
+            on_progress = kwargs.get("on_progress")
+            with mock.patch.object(
+                chart_parsing, "_get_client", return_value=fake_client(fake_response(chart_spec()))
+            ):
+                spec = real_parse(data, media_type, on_progress=on_progress)
+            return spec
+
+        original_on_progress_write = ChartParseJob.save
+
+        def spying_save(self, *args, **kwargs):
+            if kwargs.get("update_fields") == ["progress"]:
+                stages.append(self.progress)
+            return original_on_progress_write(self, *args, **kwargs)
+
+        with mock.patch.object(chart_parsing, "parse_chart_file", side_effect=spying_parse):
+            with mock.patch.object(ChartParseJob, "save", spying_save):
+                run_parse_job(job.pk)
+        self.assertEqual(stages, ["extracting", "verifying", "building"])
+
+    def test_worker_command_runs_a_job_end_to_end(self):
+        from django.core.management import CommandError, call_command
+        from io import StringIO
+
+        job = self.make_job()
+        buf = StringIO()
+        with mock.patch.object(
+            chart_parsing, "_get_client", return_value=fake_client(fake_response(chart_spec()))
+        ):
+            call_command("run_chart_parse", str(job.pk), stdout=buf)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ChartParseJob.Status.SUCCEEDED)
+        self.assertIn("succeeded", buf.getvalue())
+
+        with self.assertRaises(CommandError):
+            call_command("run_chart_parse", "999999", stdout=StringIO())
+
+
+# --- upload preparation (sniffing / normalising) ----------------------------
+
+
+def real_image_bytes(fmt="PNG", size=(8, 6), mode="RGB"):
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new(mode, size, "red").save(buffer, fmt)
+    return buffer.getvalue()
+
+
+class PrepareUploadTests(TestCase):
+    def test_sniffs_the_common_formats(self):
+        sniff = chart_parsing._sniff_media_type
+        self.assertEqual(sniff(real_image_bytes("PNG")), "image/png")
+        self.assertEqual(sniff(real_image_bytes("JPEG")), "image/jpeg")
+        self.assertEqual(sniff(real_image_bytes("GIF", mode="P")), "image/gif")
+        self.assertEqual(sniff(real_image_bytes("WEBP")), "image/webp")
+        self.assertEqual(sniff(b"%PDF-1.7 ..."), "application/pdf")
+        self.assertEqual(sniff(b"\x00\x00\x00\x18ftypheic rest"), "image/heic")
+        self.assertIsNone(sniff(b"fake-png-bytes"))
+
+    def test_bytes_win_over_the_claimed_media_type(self):
+        # A JPEG renamed to .png (classic phone-photo move): the request
+        # must go out as image/jpeg or the API 400s on the mismatch.
+        jpeg = real_image_bytes("JPEG")
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(jpeg, "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        self.assertEqual(file_block["source"]["media_type"], "image/jpeg")
+
+    def test_pdf_bytes_claimed_as_image_become_a_document_block(self):
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(b"%PDF-1.7 fake pdf", "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        self.assertEqual(file_block["type"], "document")
+        self.assertEqual(file_block["source"]["media_type"], "application/pdf")
+
+    def test_heic_is_rejected_with_an_actionable_message(self):
+        with self.assertRaisesMessage(ChartParsingError, "HEIC"):
+            parse_chart_file(b"\x00\x00\x00\x18ftypheic rest-of-file", "image/png")
+
+    def test_oversized_images_are_downscaled_before_upload(self):
+        import base64
+        import io
+
+        from PIL import Image
+
+        big = real_image_bytes("PNG", size=(40, 20))
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "MAX_IMAGE_EDGE_PX", 10):
+            with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+                parse_chart_file(big, "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        sent = Image.open(io.BytesIO(base64.standard_b64decode(file_block["source"]["data"])))
+        self.assertEqual(sent.size, (10, 5))
+
+    def test_small_images_pass_through_unreencoded(self):
+        import base64
+
+        png = real_image_bytes("PNG")
+        client = fake_client(fake_response(chart_spec()))
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            parse_chart_file(png, "image/png", verify=False)
+        file_block = client.messages.create.call_args.kwargs["messages"][0]["content"][0]
+        self.assertEqual(base64.standard_b64decode(file_block["source"]["data"]), png)
+
+    def test_corrupt_image_with_valid_magic_is_a_clear_error(self):
+        truncated = real_image_bytes("PNG")[:20]  # valid magic, unreadable body
+        with self.assertRaisesMessage(ChartParsingError, "corrupted"):
+            parse_chart_file(truncated, "image/png")
+
+    def test_api_status_errors_surface_the_apis_explanation(self):
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx.Response(400, request=request)
+        error = anthropic.BadRequestError(
+            "image exceeds 8000 pixels on its longest edge",
+            response=response,
+            body={"error": {"message": "image exceeds 8000 pixels on its longest edge"}},
+        )
+        client = mock.Mock()
+        client.messages.create.side_effect = error
+        with mock.patch.object(chart_parsing, "_get_client", return_value=client):
+            with self.assertRaisesMessage(ChartParsingError, "8000 pixels") as ctx:
+                parse_chart_file(b"fake-png-bytes", "image/png")
+        self.assertIn("(400)", str(ctx.exception))

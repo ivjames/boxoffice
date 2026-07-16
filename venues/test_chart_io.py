@@ -62,16 +62,24 @@ class ChartIOTests(TestCase):
             name="Parterre",
             ordering=2,
             row_label_start=12,  # first row is N, continuing the A-M orchestra
+            numbering_scheme=Section.NumberingScheme.ODD_DESC_LEFT,
+            seat_number_base=100,  # ...105 103 101 center-block style
         )
         generate_seats(parterre, [3, 3])
         self.assertEqual(
             sorted(set(parterre.seats.values_list("row_label", flat=True))), ["N", "P"]
         )
 
+        self.assertEqual(
+            sorted(parterre.seats.filter(row_label="N").values_list("number", flat=True)),
+            ["101", "103", "105"],
+        )
+
         data = export_chart_data(self.chart)
         imported = import_chart_data(self.venue, data, name="Reimported house")
         reimported = imported.sections.get(name="Parterre")
         self.assertEqual(reimported.row_label_start, 12)
+        self.assertEqual(reimported.seat_number_base, 100)
         self.assertEqual(
             sorted(set(reimported.seats.values_list("row_label", flat=True))), ["N", "P"]
         )

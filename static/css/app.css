@@ -3826,6 +3826,91 @@ table.dash-table th {
     background-position: 0 0, 9px 9px;
 }
 
+.brand-logo__preview[data-zoomable] {
+    cursor: zoom-in;
+}
+
+/* Lightbox for the logo before/after thumbs. Default display is flex (centred);
+   the [hidden] rule below out-specifies it so the modal stays hidden until JS
+   drops the attribute -- the classic `hidden` + `display:` gotcha. */
+.logo-zoom {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+}
+
+.logo-zoom[hidden] {
+    display: none;
+}
+
+.logo-zoom__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.logo-zoom__dialog {
+    position: relative;
+    margin: 0;
+    max-width: min(90vw, 640px);
+    background: #fff;
+    border-radius: 12px;
+    padding: 1.5rem 1.25rem 1.25rem;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    text-align: center;
+}
+
+/* Same transparency checkerboard as the thumbs, larger -- this is what makes a
+   removed background read as transparent when zoomed in. */
+.logo-zoom__img {
+    display: block;
+    max-width: 100%;
+    max-height: 70vh;
+    width: auto;
+    height: auto;
+    margin: 0 auto;
+    border-radius: 8px;
+    background-color: #fff;
+    background-image:
+        linear-gradient(45deg, #e5e7eb 25%, transparent 25%, transparent 75%, #e5e7eb 75%),
+        linear-gradient(45deg, #e5e7eb 25%, transparent 25%, transparent 75%, #e5e7eb 75%);
+    background-size: 22px 22px;
+    background-position: 0 0, 11px 11px;
+}
+
+.logo-zoom__caption {
+    margin: 0.7rem 0 0;
+    font-size: 0.8rem;
+    color: var(--muted-color, #6b7280);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.logo-zoom__close {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.45rem;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: 1.7rem;
+    line-height: 1;
+    color: #6b7280;
+    cursor: pointer;
+    border-radius: 6px;
+}
+
+.logo-zoom__close:hover {
+    background: #f3f4f6;
+    color: #111827;
+}
+
 .brand-save-row {
     display: flex;
     flex-wrap: wrap;

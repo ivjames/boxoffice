@@ -418,6 +418,16 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.assertNotIn("Background removal is its OWN", html)
         self.assertNotIn("{#", html)
 
+    def test_preview_thumbs_are_zoomable_with_a_lightbox(self):
+        self._give_logo()
+        fake_png = image_bytes(size=(200, 200), mode="RGBA")
+        with patch("dashboard.views.branding.remove_logo_background", return_value=fake_png):
+            self._post()  # arm a preview
+        html = self.client.get(BRANDING_URL, HTTP_HOST=host_for("roxy")).content.decode()
+        self.assertIn('id="logo-zoom"', html)  # the lightbox markup is present
+        self.assertIn("data-zoomable", html)  # thumbs are click-to-enlarge
+        self.assertIn('data-caption="Background removed"', html)
+
     def test_preview_does_not_change_the_logo_and_stashes_a_preview(self):
         # The default "preview" action runs the model but must NOT overwrite the
         # live logo -- it stashes the result for the manager to confirm.

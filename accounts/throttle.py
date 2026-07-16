@@ -61,3 +61,26 @@ def clear(scope, request):
     if not _enabled():
         return
     cache.delete(_key(scope, request))
+
+
+def over_limit(bucket, identity, max_hits, window_seconds):
+    """Generic fixed-window limiter: record one hit for (bucket, identity) and
+    return True once it has exceeded `max_hits` within `window_seconds`. The
+    first hit sets the window's TTL; later ones increment within it.
+
+    Unlike the login helpers above -- which split is_locked_out/register_failure
+    so only FAILURES count -- this counts EVERY call, for endpoints where each
+    call is itself the cost to bound (e.g. the branding derive agent: an
+    external fetch + optional headless render + a Claude request). `identity` is
+    whatever the caller wants the window keyed on (an org id, a client IP, …).
+    `max_hits <= 0` disables the limit. Shares the same cache caveat as above --
+    only effective across workers with a shared cache (prod's file cache)."""
+    if max_hits <= 0:
+        return False
+    key = f"ratelimit:{bucket}:{identity}"
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=window_seconds)
+        count = 1
+    return count > max_hits

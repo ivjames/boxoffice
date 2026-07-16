@@ -3918,3 +3918,36 @@ table.dash-table th {
     background: #b91c1c;
     color: #fff;
 }
+
+/* Inline loading spinner (branding "Derive from your website", etc.). Inherits
+   the current text color via currentColor, so it reads correctly on any button
+   or surface without hardcoding a tenant brand color. The [hidden] rule needs
+   the extra specificity to beat the base .spinner display. */
+.spinner {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    margin-left: 0.5em;
+    vertical-align: -0.12em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spinner-rotate 0.6s linear infinite;
+}
+.spinner[hidden] {
+    display: none;
+}
+@keyframes spinner-rotate {
+    to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .spinner { animation-duration: 1.6s; }
+}
+
+/* Inline error under the derive form (shown by JS on a failed/blocked derive).
+   A semantic UI red, not a tenant brand color -- safe to hardcode. */
+.derive-error {
+    margin-top: 0.5rem;
+    color: #b91c1c;
+    font-size: 0.9rem;
+}

@@ -10,7 +10,8 @@ in tenants/test_color_schemes.py.
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.core.cache import cache
+from django.test import TestCase, override_settings
 
 from accounts.models import Membership
 from accounts.tests import StaffFixtureMixin, host_for
@@ -221,23 +222,77 @@ class DeriveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         self.org, self.venue = self.build_org("roxy")
         self.manager = self.make_staff(self.org, Membership.Role.MANAGER)[0]
         self.client.force_login(self.manager)
+        cache.clear()  # reset the per-org derive rate-limit window between tests
+
+    FAKE = {
+        "name": "Roxy palette",
+        "roles": {
+            "primary": "#4b2e83", "secondary": "#7e5ba7", "dark_accent": "#0e0e12",
+            "feature_accent": "#d4af37", "light_neutral": "#f2e8d6", "neutral": "#0e0e12",
+        },
+        "source_url": "https://roxy.example",
+        "candidates": [("#4b2e83", 4), ("#d4af37", 2)],
+        "method": "vision",
+    }
 
     def test_derive_renders_suggested_palette(self):
-        fake = {
-            "name": "Roxy palette",
-            "roles": {
-                "primary": "#4b2e83", "secondary": "#7e5ba7", "dark_accent": "#0e0e12",
-                "feature_accent": "#d4af37", "light_neutral": "#f2e8d6", "neutral": "#0e0e12",
-            },
-            "source_url": "https://roxy.example",
-            "candidates": [("#4b2e83", 4), ("#d4af37", 2)],
-        }
-        with patch("dashboard.views.derive_scheme_from_url", return_value=fake) as m:
+        # No-JS fallback (no X-Requested-With): full page re-render.
+        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE) as m:
             resp = self.client.post(DERIVE_URL, {"url": "roxy.example"}, HTTP_HOST=host_for("roxy"))
         m.assert_called_once_with("roxy.example")
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Suggested scheme")
         self.assertContains(resp, "Roxy palette")
+
+    def test_derive_ajax_returns_json(self):
+        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+            resp = self.client.post(
+                DERIVE_URL, {"url": "roxy.example"},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["name"], "Roxy palette")
+        self.assertEqual(data["roles"]["primary"], "#4b2e83")
+        self.assertEqual(data["method"], "vision")
+        self.assertEqual(data["candidates"][0], ["#4b2e83", 4])
+
+    def test_derive_ajax_error_is_json_not_redirect(self):
+        from tenants.color_extraction import ColorDeriveError
+
+        with patch("dashboard.views.derive_scheme_from_url", side_effect=ColorDeriveError("nope")):
+            resp = self.client.post(
+                DERIVE_URL, {"url": "bad"},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json(), {"ok": False, "error": "nope"})
+
+    @override_settings(DERIVE_RATELIMIT_MAX=2, DERIVE_RATELIMIT_WINDOW_SECONDS=300)
+    def test_derive_is_rate_limited_per_org(self):
+        with patch("dashboard.views.derive_scheme_from_url", return_value=self.FAKE):
+            for _ in range(2):  # cap is 2
+                ok = self.client.post(
+                    DERIVE_URL, {"url": "roxy.example"},
+                    HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+                )
+                self.assertEqual(ok.status_code, 200)
+            blocked = self.client.post(
+                DERIVE_URL, {"url": "roxy.example"},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(blocked.status_code, 429)
+        self.assertFalse(blocked.json()["ok"])
+
+    def test_derive_rejects_an_overlong_url(self):
+        with patch("dashboard.views.derive_scheme_from_url") as m:
+            resp = self.client.post(
+                DERIVE_URL, {"url": "http://x.example/" + "a" * 3000},
+                HTTP_HOST=host_for("roxy"), HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+        self.assertEqual(resp.status_code, 400)
+        m.assert_not_called()  # never reaches the expensive agent
 
     def test_derive_error_redirects_with_message(self):
         from tenants.color_extraction import ColorDeriveError

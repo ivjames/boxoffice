@@ -110,13 +110,15 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                                "Use this logo".{% endcomment %}
                             <div class="brand-logo__current">
                                 <figure class="brand-logo__shot">
-                                    <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview">
+                                    <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview"
+                                         data-zoomable data-caption="Current logo" role="button" tabindex="0" title="Click to enlarge">
                                     <figcaption class="brand-logo__caption">Current</figcaption>
                                 </figure>
                                 {% if logo_bg_preview %}
                                     <span class="brand-logo__arrow" aria-hidden="true">&rarr;</span>
                                     <figure class="brand-logo__shot">
-                                        <img src="{{ logo_bg_preview }}" alt="Logo with the background removed (preview)" class="brand-logo__preview">
+                                        <img src="{{ logo_bg_preview }}" alt="Logo with the background removed (preview)" class="brand-logo__preview"
+                                             data-zoomable data-caption="Background removed" role="button" tabindex="0" title="Click to enlarge">
                                         <figcaption class="brand-logo__caption">Background removed</figcaption>
                                     </figure>
                                 {% endif %}
@@ -266,6 +268,20 @@ colors straight into these pickers (id="save-scheme" is the JS target).
         {% endfor %}
     </div>
 </section>
+{% endif %}
+
+{% comment %}Lightbox for the logo before/after thumbs -- click either to see it
+full-size on the transparency checkerboard, which is what makes a removed
+background obvious. Top-level (outside every form) so it never nests.{% endcomment %}
+{% if organization.logo %}
+<div class="logo-zoom" id="logo-zoom" hidden>
+    <div class="logo-zoom__backdrop" data-logo-zoom-close></div>
+    <figure class="logo-zoom__dialog" role="dialog" aria-modal="true" aria-label="Logo preview">
+        <button type="button" class="logo-zoom__close" data-logo-zoom-close aria-label="Close preview">&times;</button>
+        <img class="logo-zoom__img" id="logo-zoom-img" alt="Logo preview">
+        <figcaption class="logo-zoom__caption" id="logo-zoom-caption"></figcaption>
+    </figure>
+</div>
 {% endif %}
 
 {{ font_stacks|json_script:"font-stacks" }}
@@ -703,6 +719,40 @@ colors straight into these pickers (id="save-scheme" is the JS target).
             var spinner = btn.querySelector(".spinner");
             if (label) label.textContent = "Removing…";
             if (spinner) spinner.hidden = false;
+        });
+    }
+
+    // ---- Logo thumbnails: click (or Enter/Space) to open a full-size lightbox.
+    // Server-rendered, so the thumbs present on this load are all we bind.
+    var zoom = document.getElementById("logo-zoom");
+    if (zoom) {
+        var zoomImg = document.getElementById("logo-zoom-img");
+        var zoomCap = document.getElementById("logo-zoom-caption");
+        var lastFocus = null;
+        var openZoom = function (src, caption) {
+            zoomImg.src = src;
+            zoomCap.textContent = caption || "";
+            zoom.hidden = false;
+            lastFocus = document.activeElement;
+            zoom.querySelector(".logo-zoom__close").focus();
+        };
+        var closeZoom = function () {
+            zoom.hidden = true;
+            zoomImg.removeAttribute("src");
+            if (lastFocus && lastFocus.focus) lastFocus.focus();
+        };
+        document.querySelectorAll("[data-zoomable]").forEach(function (thumb) {
+            var fire = function () { openZoom(thumb.getAttribute("src"), thumb.getAttribute("data-caption")); };
+            thumb.addEventListener("click", fire);
+            thumb.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(); }
+            });
+        });
+        zoom.querySelectorAll("[data-logo-zoom-close]").forEach(function (el) {
+            el.addEventListener("click", closeZoom);
+        });
+        document.addEventListener("keydown", function (e) {
+            if (!zoom.hidden && e.key === "Escape") closeZoom();
         });
     }
 })();

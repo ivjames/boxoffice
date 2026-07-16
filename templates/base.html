@@ -32,6 +32,19 @@
             --light-neutral-color: {% if organization %}{{ organization.light_neutral_color }}{% else %}#f5f5f4{% endif %};
             --neutral-color: {% if organization %}{{ organization.neutral_color }}{% else %}#111111{% endif %};
 
+            /* Text colors driven by the neutrals. --text-color (body text) is
+               the dark `neutral`; each --on-* is the WCAG best-of-two text color
+               for that themed fill (dark neutral on light fills, light neutral
+               on dark fills -- see Organization.on_colors). Platform host keeps
+               the legacy fixed values. */
+            {% if organization %}
+            --text-color: {{ organization.neutral_color }};
+            --on-primary: {{ organization.on_colors.primary }};
+            --on-secondary: {{ organization.on_colors.secondary }};
+            --on-accent: {{ organization.on_colors.accent }};
+            --on-dark-accent: {{ organization.on_colors.dark_accent }};
+            {% endif %}
+
             /* Storefront typography (tenants/fonts.py). Defaults are the system
                stacks; --brand-* is applied only on public/storefront pages, not
                the internal staff UI (see app.css .app-internal reset). */

@@ -133,6 +133,14 @@ def _is_light(hex_color):
     return relative_luminance(hex_color) > TEXT_LUMINANCE_THRESHOLD
 
 
+def text_over(fill, light_neutral, neutral):
+    """The neutral to use as legible text over `fill` (best-of-two): the dark
+    `neutral` on a light fill, the light `light_neutral` on a dark fill. The
+    same rule the generator guarantees AA for, so a storefront that colors text
+    with this over each surface is accessible by construction."""
+    return neutral if _is_light(fill) else light_neutral
+
+
 def adjust_scheme(roles):
     """Return (adjusted_roles, warnings) for one scheme's role dict under the
     best-of-two contract. Only `light_neutral` and `neutral` may change; brand

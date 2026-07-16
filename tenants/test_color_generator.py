@@ -13,6 +13,7 @@ from tenants.color_generator import (
     contrast_ratio,
     relative_luminance,
     scheme_report,
+    text_over,
 )
 from tenants.color_schemes import BUILTIN_SCHEMES, SOURCE_SCHEMES
 
@@ -74,6 +75,22 @@ class AdjustSchemeTests(SimpleTestCase):
         once = build_wcag_schemes([("x", "X", self.DARK)])
         twice = build_wcag_schemes([("x", "X", once[0][2])])
         self.assertEqual(once[0][2], twice[0][2])
+
+
+class TextOverTests(SimpleTestCase):
+    def test_dark_fill_gets_light_text_and_vice_versa(self):
+        ln, n = "#F7EFE3", "#181312"
+        self.assertEqual(text_over("#2C0E17", ln, n), ln)  # dark fill -> light text
+        self.assertEqual(text_over("#D89AA6", ln, n), n)   # light fill -> dark text
+
+    def test_text_over_is_always_aa(self):
+        # The chosen text clears AA over every shipped scheme's fills.
+        ln_role, n_role = "light_neutral", "neutral"
+        for _slug, name, roles in BUILTIN_SCHEMES:
+            for fill_role in ("primary", "secondary", "feature_accent", "dark_accent"):
+                fill = roles[fill_role]
+                text = text_over(fill, roles[ln_role], roles[n_role])
+                self.assertGreaterEqual(contrast_ratio(text, fill), AA, f"{name}.{fill_role}")
 
 
 class ShippedCatalogTests(SimpleTestCase):

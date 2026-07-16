@@ -224,13 +224,39 @@ ready-made scheme, save your own, or let us read one off your website.</p>
     var FONT_VARS = { heading: "--heading-font", body: "--body-font" };
     var stacksEl = document.getElementById("font-stacks");
     var FONT_STACKS = stacksEl ? JSON.parse(stacksEl.textContent) : {};
+
+    // WCAG best-of-two, mirrored from tenants.color_generator so the preview's
+    // text-on-fill matches the real storefront (--on-* vars): dark neutral over
+    // a light fill, light neutral over a dark fill.
+    function luminance(hex) {
+        hex = hex.replace("#", "");
+        if (hex.length === 3) hex = hex.split("").map(function (c) { return c + c; }).join("");
+        var lin = [0, 2, 4].map(function (i) {
+            var c = parseInt(hex.substr(i, 2), 16) / 255;
+            return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        });
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+    }
+    function textOver(fill, lightNeutral, neutral) {
+        return luminance(fill) > 0.1791 ? neutral : lightNeutral;  // TEXT_LUMINANCE_THRESHOLD
+    }
+
     function sync(form) {
         var preview = form.querySelector(".brand-preview");
         if (!preview) return;
+        var vals = {};
         form.querySelectorAll("input[data-role]").forEach(function (input) {
+            vals[input.dataset.role] = input.value;
             var cssVar = ROLE_VARS[input.dataset.role];
             if (cssVar) preview.style.setProperty(cssVar, input.value);
         });
+        // Derive the --on-* text colors for this previewed scheme.
+        if (vals.primary && vals.light_neutral && vals.neutral) {
+            var ln = vals.light_neutral, n = vals.neutral;
+            preview.style.setProperty("--on-primary", textOver(vals.primary, ln, n));
+            preview.style.setProperty("--on-accent", textOver(vals.feature_accent, ln, n));
+            preview.style.setProperty("--on-dark-accent", textOver(vals.dark_accent, ln, n));
+        }
         // Font <select>s (only the fine-tuning form has them): resolve the
         // chosen key to its CSS stack via the FONT_STACKS map.
         form.querySelectorAll("select[data-font]").forEach(function (select) {

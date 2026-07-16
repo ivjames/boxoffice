@@ -11,6 +11,13 @@
     --text-color: #1a1a1a;
     --muted-color: #6b7280;
     --border-color: #e5e7eb;
+    /* Text color over each themed fill -- overridden per-tenant in base.html
+       (Organization.on_colors) with the WCAG best-of-two neutral. White is the
+       platform-host/default fallback for the legacy dark brand colors. */
+    --on-primary: #fff;
+    --on-secondary: #fff;
+    --on-accent: #fff;
+    --on-dark-accent: #fff;
     /* Storefront typography, overridden per-tenant inline in base.html. The
        system stack here is the fallback for the platform host and any page
        without an organization. See tenants/fonts.py. */
@@ -208,7 +215,7 @@ textarea:focus-visible,
 
 .site-header {
     background: var(--primary-color);
-    color: #fff;
+    color: var(--on-primary);
 }
 
 .site-header__inner {
@@ -225,7 +232,7 @@ textarea:focus-visible,
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    color: #fff;
+    color: var(--on-primary);
     font-weight: 700;
     font-size: 1.25rem;
     margin-right: auto;
@@ -259,7 +266,7 @@ textarea:focus-visible,
     display: block;
     width: 1.25rem;
     height: 2px;
-    background: #fff;
+    background: var(--on-primary);
     margin: 0 auto;
 }
 
@@ -271,7 +278,7 @@ textarea:focus-visible,
 }
 
 .site-nav__link {
-    color: #fff;
+    color: var(--on-primary);
     font-weight: 600;
     opacity: 0.85;
     background: none;
@@ -308,7 +315,7 @@ textarea:focus-visible,
     padding: 0 0.35rem;
     border-radius: 999px;
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
     font-size: 0.7rem;
     font-weight: 700;
 }
@@ -451,7 +458,7 @@ textarea:focus-visible,
 .button {
     display: inline-block;
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
     padding: 0.6rem 1.25rem;
     border-radius: 0.375rem;
     font-weight: 600;
@@ -1147,7 +1154,7 @@ textarea:focus-visible,
 
 .seat-btn--selected {
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .seat-btn--unavailable {
@@ -1192,7 +1199,7 @@ textarea:focus-visible,
 .seat-btn--ro-sold {
     background: var(--accent-color);
     border-color: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .seat-btn--ro-used {
@@ -2467,7 +2474,7 @@ table.dash-table th {
 
 .chart-editor__toggle button.is-active {
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .chart-editor__toggle button:disabled,
@@ -3185,7 +3192,7 @@ table.dash-table th {
     flex-wrap: wrap;
     gap: 0.75rem;
     background: var(--primary-color);
-    color: #fff;
+    color: var(--on-primary);
     padding: 0.6rem 1rem;
     border-radius: 0.375rem;
     margin-bottom: 1rem;
@@ -3495,7 +3502,7 @@ table.dash-table th {
     gap: 0.5rem;
     padding: 0.6rem 0.85rem;
     background: var(--primary-color);
-    color: #fff;
+    color: var(--on-primary);
 }
 
 .brand-preview__brand {
@@ -3540,7 +3547,7 @@ table.dash-table th {
     padding: 0.15rem 0.5rem;
     border-radius: 999px;
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
     font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -3562,7 +3569,7 @@ table.dash-table th {
     padding: 0.35rem 0.7rem;
     border-radius: 0.375rem;
     background: var(--accent-color);
-    color: #fff;
+    color: var(--on-accent);
     font-weight: 600;
     font-size: 0.8125rem;
 }
@@ -3576,7 +3583,7 @@ table.dash-table th {
 .brand-preview__foot {
     padding: 0.5rem 0.85rem;
     background: var(--dark-accent-color);
-    color: #fff;
+    color: var(--on-dark-accent);
     font-size: 0.75rem;
 }
 

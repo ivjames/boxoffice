@@ -140,6 +140,23 @@ class Organization(models.Model):
         }
 
     @property
+    def on_colors(self):
+        """The legible text color to use over each themed fill (best-of-two:
+        dark `neutral` on a light fill, light `light_neutral` on a dark one) --
+        emitted as --on-* CSS variables in base.html so the storefront's text on
+        colored surfaces is WCAG-accessible for whatever scheme is applied. See
+        tenants.color_generator.text_over."""
+        from .color_generator import text_over
+
+        ln, n = self.light_neutral_color, self.neutral_color
+        return {
+            "primary": text_over(self.primary_color, ln, n),
+            "secondary": text_over(self.secondary_color, ln, n),
+            "accent": text_over(self.accent_color, ln, n),
+            "dark_accent": text_over(self.dark_accent_color, ln, n),
+        }
+
+    @property
     def heading_font_stack(self):
         """The CSS font-family stack for the org's heading font (base.html)."""
         return font_stack(self.heading_font)

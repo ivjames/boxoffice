@@ -141,6 +141,19 @@ def text_over(fill, light_neutral, neutral):
     return neutral if _is_light(fill) else light_neutral
 
 
+def readable_on(color, background, target=AA):
+    """`color` nudged (HSL lightness, hue + saturation held) until it's legible
+    AS TEXT on `background` -- darkened on a light background, lightened on a
+    dark one. Returned unchanged when it already clears `target`. Used to make
+    brand-colored headings/links ('ink') stay readable on the page background:
+    a pale primary becomes a deeper shade of the same hue for text, while the
+    fill keeps the exact brand color."""
+    if contrast_ratio(color, background) >= target:
+        return color
+    adjusted, _ok = _search(color, [background], target, lighten=not _is_light(background))
+    return adjusted
+
+
 def adjust_scheme(roles):
     """Return (adjusted_roles, warnings) for one scheme's role dict under the
     best-of-two contract. Only `light_neutral` and `neutral` may change; brand

@@ -157,6 +157,22 @@ class Organization(models.Model):
         }
 
     @property
+    def ink_colors(self):
+        """Legible 'ink' versions of the brand colors for use AS TEXT
+        (headings, links) on the light_neutral page background -- a pale brand
+        color is darkened to the same hue so it stays readable, while fills keep
+        the exact brand color. Emitted as --primary-ink/--accent-ink/
+        --secondary-ink in base.html. See color_generator.readable_on."""
+        from .color_generator import readable_on
+
+        bg = self.light_neutral_color
+        return {
+            "primary": readable_on(self.primary_color, bg),
+            "accent": readable_on(self.accent_color, bg),
+            "secondary": readable_on(self.secondary_color, bg),
+        }
+
+    @property
     def heading_font_stack(self):
         """The CSS font-family stack for the org's heading font (base.html)."""
         return font_stack(self.heading_font)

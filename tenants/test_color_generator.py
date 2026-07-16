@@ -11,6 +11,7 @@ from tenants.color_generator import (
     adjust_scheme,
     build_wcag_schemes,
     contrast_ratio,
+    readable_on,
     relative_luminance,
     scheme_report,
     text_over,
@@ -91,6 +92,27 @@ class TextOverTests(SimpleTestCase):
                 fill = roles[fill_role]
                 text = text_over(fill, roles[ln_role], roles[n_role])
                 self.assertGreaterEqual(contrast_ratio(text, fill), AA, f"{name}.{fill_role}")
+
+
+class ReadableOnTests(SimpleTestCase):
+    def test_pale_color_is_darkened_to_pass(self):
+        # A pale blush is illegible on a near-white page; ink darkens it to AA.
+        bg = "#FFF8F4"
+        self.assertLess(contrast_ratio("#D89AA6", bg), AA)
+        ink = readable_on("#D89AA6", bg)
+        self.assertGreaterEqual(contrast_ratio(ink, bg), AA)
+
+    def test_already_legible_color_is_unchanged(self):
+        bg = "#F2E8D6"
+        self.assertEqual(readable_on("#4B2E83", bg), "#4B2E83")
+
+    def test_ink_clears_aa_for_every_shipped_scheme(self):
+        for _slug, name, roles in BUILTIN_SCHEMES:
+            bg = roles["light_neutral"]
+            for role in ("primary", "secondary", "feature_accent"):
+                self.assertGreaterEqual(
+                    contrast_ratio(readable_on(roles[role], bg), bg), AA, f"{name}.{role}"
+                )
 
 
 class ShippedCatalogTests(SimpleTestCase):

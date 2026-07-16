@@ -240,6 +240,25 @@ ready-made scheme, save your own, or let us read one off your website.</p>
     function textOver(fill, lightNeutral, neutral) {
         return luminance(fill) > 0.1791 ? neutral : lightNeutral;  // TEXT_LUMINANCE_THRESHOLD
     }
+    function contrast(a, b) {
+        var la = luminance(a), lb = luminance(b);
+        return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    }
+    // 'Ink': darken a brand color (uniform RGB scale holds hue) until it's
+    // legible as text on the light background. Mirrors color_generator.readable_on.
+    function readableOn(color, bg) {
+        if (contrast(color, bg) >= 4.5) return color;
+        var hex = color.replace("#", "");
+        if (hex.length === 3) hex = hex.split("").map(function (c) { return c + c; }).join("");
+        var rgb = [0, 2, 4].map(function (i) { return parseInt(hex.substr(i, 2), 16); });
+        for (var t = 0.95; t >= 0; t -= 0.04) {
+            var c = "#" + rgb.map(function (v) {
+                return ("0" + Math.round(v * t).toString(16)).slice(-2);
+            }).join("");
+            if (contrast(c, bg) >= 4.5) return c;
+        }
+        return "#000000";
+    }
 
     function sync(form) {
         var preview = form.querySelector(".brand-preview");
@@ -250,12 +269,16 @@ ready-made scheme, save your own, or let us read one off your website.</p>
             var cssVar = ROLE_VARS[input.dataset.role];
             if (cssVar) preview.style.setProperty(cssVar, input.value);
         });
-        // Derive the --on-* text colors for this previewed scheme.
+        // Derive the --on-* text colors and the 'ink' brand-text colors for
+        // this previewed scheme (same rules as the storefront).
         if (vals.primary && vals.light_neutral && vals.neutral) {
             var ln = vals.light_neutral, n = vals.neutral;
             preview.style.setProperty("--on-primary", textOver(vals.primary, ln, n));
             preview.style.setProperty("--on-accent", textOver(vals.feature_accent, ln, n));
             preview.style.setProperty("--on-dark-accent", textOver(vals.dark_accent, ln, n));
+            preview.style.setProperty("--primary-ink", readableOn(vals.primary, ln));
+            preview.style.setProperty("--accent-ink", readableOn(vals.feature_accent, ln));
+            preview.style.setProperty("--secondary-ink", readableOn(vals.secondary, ln));
         }
         // Font <select>s (only the fine-tuning form has them): resolve the
         // chosen key to its CSS stack via the FONT_STACKS map.

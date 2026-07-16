@@ -38,11 +38,16 @@
                on dark fills -- see Organization.on_colors). Platform host keeps
                the legacy fixed values. */
             {% if organization %}
+            --bg-color: {{ organization.light_neutral_color }};
             --text-color: {{ organization.neutral_color }};
             --on-primary: {{ organization.on_colors.primary }};
             --on-secondary: {{ organization.on_colors.secondary }};
             --on-accent: {{ organization.on_colors.accent }};
             --on-dark-accent: {{ organization.on_colors.dark_accent }};
+            /* Legible 'ink' brand colors for text on the page (headings/links). */
+            --primary-ink: {{ organization.ink_colors.primary }};
+            --accent-ink: {{ organization.ink_colors.accent }};
+            --secondary-ink: {{ organization.ink_colors.secondary }};
             {% endif %}
 
             /* Storefront typography (tenants/fonts.py). Defaults are the system

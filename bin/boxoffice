@@ -118,7 +118,10 @@ cmd_serve() {
   [ -n "${PORT:-}" ] || die "PORT is not set in $APP_DIR/.env"
   [ -x "$GUNICORN" ] || die "gunicorn not found at $GUNICORN — run 'venv/bin/pip install -r requirements.txt' first"
   cd "$APP_DIR"
+  # --config sets timeout + warms rembg at worker boot (deploy/gunicorn.conf.py);
+  # --bind/--workers stay on the CLI (from .env) and override the config file.
   exec "$GUNICORN" config.wsgi:application \
+    --config "$APP_DIR/deploy/gunicorn.conf.py" \
     --bind "127.0.0.1:${PORT}" \
     --workers "${WEB_CONCURRENCY:-3}" \
     --access-logfile - \

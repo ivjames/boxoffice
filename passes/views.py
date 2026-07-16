@@ -34,6 +34,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from fulfillment import services as fulfillment_services
 from guests import services as guest_services
 from guests.models import normalize_email
 from orders import services as order_services
@@ -130,7 +131,7 @@ def pass_detail(request, pk):
         marketing_opt_in = _marketing_opt_in(request)
 
         if not organization.stripe_charges_enabled and settings.ENABLE_TEST_CHECKOUT:
-            order = payment_services.fulfill_pass_purchase(
+            order = fulfillment_services.fulfill_pass_purchase(
                 organization,
                 product=product,
                 buyer_email=buyer_email,
@@ -187,7 +188,7 @@ def pass_stub(request):
             messages.error(request, "Enter an email address for your receipt.")
             return redirect(f"{reverse('pass_stub')}?product_id={product.pk}")
 
-        order = payment_services.fulfill_pass_purchase(
+        order = fulfillment_services.fulfill_pass_purchase(
             organization,
             product=product,
             buyer_email=buyer_email,
@@ -281,10 +282,10 @@ def pass_redeem(request):
         return redirect("cart")
 
     try:
-        order = payment_services.fulfill_hold_with_pass(
+        order = fulfillment_services.fulfill_hold_with_pass(
             hold, pass_purchase, buyer_email=guest.email, buyer_name=guest.name
         )
-    except (payment_services.PassRedemptionError, payment_services.HoldGoneError) as exc:
+    except (fulfillment_services.PassRedemptionError, fulfillment_services.HoldGoneError) as exc:
         messages.error(request, str(exc))
         return redirect("cart")
 

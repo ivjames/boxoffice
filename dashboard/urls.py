@@ -121,6 +121,11 @@ urlpatterns = [
         views.branding_derive,
         name="dashboard_branding_derive",
     ),
+    path(
+        "dashboard/branding/harmonize/",
+        views.branding_harmonize,
+        name="dashboard_branding_harmonize",
+    ),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),

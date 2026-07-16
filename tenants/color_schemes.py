@@ -64,7 +64,7 @@ SOURCE_SCHEMES = [
     ("cherry-spotlight", "Cherry Spotlight", {
         "primary": "#B33A4A", "secondary": "#D98B96", "feature_accent": "#57928F",
         "dark_accent": "#541923", "light_neutral": "#FFF4F3", "neutral": "#2A1D21"}),
-    ("blush-teal", "Blush & Teal", {
+    ("blush-clay", "Blush & Clay", {
         "primary": "#D89AA6", "secondary": "#EBC2C8", "feature_accent": "#557873",
         "dark_accent": "#532B38", "light_neutral": "#FFF8F4", "neutral": "#30292B"}),
     ("brick-playhouse", "Brick Playhouse", {
@@ -91,7 +91,7 @@ SOURCE_SCHEMES = [
     ("mustard-moderne", "Mustard Moderne", {
         "primary": "#B99A32", "secondary": "#D8C77B", "feature_accent": "#62678D",
         "dark_accent": "#50451F", "light_neutral": "#FBF4D8", "neutral": "#26231A"}),
-    ("ivory-sapphire", "Ivory & Sapphire", {
+    ("ivory-garnet", "Ivory & Garnet", {
         "primary": "#EFE6D4", "secondary": "#BCA98D", "feature_accent": "#3D587D",
         "dark_accent": "#4A3528", "light_neutral": "#FCFBF7", "neutral": "#2D2724"}),
     ("chartreuse-cabaret", "Chartreuse Cabaret", {

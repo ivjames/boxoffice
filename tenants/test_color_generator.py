@@ -132,13 +132,134 @@ class ShippedCatalogTests(SimpleTestCase):
                     contrast_ratio(text, fill), AA, f"{name}: text on {fill_role} {fill}"
                 )
 
-    def test_brand_roles_match_source(self):
+    def test_untouched_brand_roles_match_source(self):
+        # primary / secondary / dark_accent pass through the generator unchanged;
+        # only the feature accent (harmonized) and the two neutrals may move.
         source = {slug: roles for slug, _n, roles in SOURCE_SCHEMES}
         for slug, _name, roles in BUILTIN_SCHEMES:
-            for role in ("primary", "secondary", "feature_accent", "dark_accent"):
+            for role in ("primary", "secondary", "dark_accent"):
                 self.assertEqual(roles[role], source[slug][role], f"{slug}.{role}")
+
+    def test_feature_accent_is_harmonized(self):
+        # The shipped accent is the harmonized (analogous) accent, and it stays
+        # visibly distinct from the primary fill.
+        from tenants.color_generator import (
+            harmonize_accent,
+            ACCENT_MIN_CONTRAST_VS_PRIMARY,
+        )
+
+        source = {slug: roles for slug, _n, roles in SOURCE_SCHEMES}
+        for slug, _name, roles in BUILTIN_SCHEMES:
+            expected = harmonize_accent(source[slug])["feature_accent"]
+            self.assertEqual(roles["feature_accent"], expected, f"{slug}.feature_accent")
+            self.assertGreaterEqual(
+                contrast_ratio(roles["feature_accent"], roles["primary"]),
+                ACCENT_MIN_CONTRAST_VS_PRIMARY - 0.05,  # rounding slack
+                f"{slug}: accent vs primary too close",
+            )
 
     def test_report_has_no_shortfalls(self):
         report = scheme_report(SOURCE_SCHEMES)
         self.assertEqual(len(report), len(SOURCE_SCHEMES))
         self.assertEqual([r for r in report if r["warnings"]], [])
+
+    def test_harmonized_accents_avoid_the_muddy_band(self):
+        # No shipped accent lands in the olive/khaki dead-zone the rule steers
+        # around (the source's gold/yellow primaries used to produce olive).
+        from tenants.color_generator import _hls, _MUDDY_ACCENT_BAND, harmonize_accent
+
+        lo, hi = _MUDDY_ACCENT_BAND
+        source = {slug: roles for slug, _n, roles in SOURCE_SCHEMES}
+        for slug, _name, roles in BUILTIN_SCHEMES:
+            if harmonize_accent(source[slug])["feature_accent"] == source[slug]["feature_accent"]:
+                continue  # neutral scheme kept its curated accent -- not derived
+            hue = _hls(roles["feature_accent"])[0]
+            self.assertFalse(lo <= hue <= hi, f"{slug}: accent hue {hue:.3f} is in the muddy band")
+
+
+class DarkThemeTests(SimpleTestCase):
+    def test_dark_variant_is_dark_and_legible(self):
+        # Every scheme's derived dark theme has a genuinely dark page, and its
+        # text + brand ink all clear WCAG AA on that page.
+        from tenants.color_generator import dark_surfaces, dark_ink, TEXT_LUMINANCE_THRESHOLD
+
+        for slug, name, roles in BUILTIN_SCHEMES:
+            d = dark_surfaces(roles)
+            self.assertLess(
+                relative_luminance(d["bg"]), TEXT_LUMINANCE_THRESHOLD,
+                f"{name}: dark bg {d['bg']} is not dark",
+            )
+            self.assertGreaterEqual(
+                contrast_ratio(d["text"], d["bg"]), AA, f"{name}: body text on dark bg",
+            )
+            for role in ("primary", "feature_accent", "secondary"):
+                ink = dark_ink(roles[role], d["bg"])
+                self.assertGreaterEqual(
+                    contrast_ratio(ink, d["bg"]), AA, f"{name}: {role} ink on dark bg",
+                )
+
+
+class PageTintTests(SimpleTestCase):
+    def test_none_is_the_untinted_light_neutral(self):
+        from tenants.color_generator import page_background
+
+        for _slug, _name, roles in BUILTIN_SCHEMES:
+            self.assertEqual(page_background(roles, "none"), roles["light_neutral"])
+            self.assertEqual(page_background(roles, "anything-unknown"), roles["light_neutral"])
+
+    def test_every_level_stays_above_aaa_for_body_text(self):
+        # The whole point: more page presence never drops body text below AAA.
+        from tenants.color_generator import AAA, page_background, PAGE_TINT_LEVELS
+
+        for _slug, name, roles in BUILTIN_SCHEMES:
+            for level in PAGE_TINT_LEVELS:
+                bg = page_background(roles, level)
+                self.assertGreaterEqual(
+                    contrast_ratio(roles["neutral"], bg), AAA,
+                    f"{name} @ {level}: body text {contrast_ratio(roles['neutral'], bg):.1f}:1",
+                )
+
+    def test_higher_intensity_is_more_saturated(self):
+        # subtle -> medium -> bold gets progressively more present (saturated).
+        from tenants.color_generator import _hls, page_background
+
+        roles = {s: r for s, _n, r in BUILTIN_SCHEMES}["sapphire-night"]
+        sats = [_hls(page_background(roles, lvl))[2] for lvl in ("subtle", "medium", "bold")]
+        self.assertLess(sats[0], sats[1])
+        self.assertLess(sats[1], sats[2])
+
+
+class SchemeFromPrimaryTests(SimpleTestCase):
+    ROLE_KEYS = ("primary", "secondary", "feature_accent", "dark_accent", "light_neutral", "neutral")
+    SEEDS = ["#6A1E32", "#1D4ED8", "#16A34A", "#B8860B", "#4B2E83", "#0D6B73", "#111111"]
+
+    def test_returns_a_complete_scheme(self):
+        from tenants.color_generator import scheme_from_primary
+
+        for seed in self.SEEDS:
+            roles = scheme_from_primary(seed)
+            self.assertEqual(set(roles), set(self.ROLE_KEYS), seed)
+            # The primary is preserved (normalized to #RRGGBB upper-case).
+            self.assertEqual(roles["primary"], seed.upper())
+
+    def test_generated_scheme_is_aa_legible(self):
+        # Text (best-of-two) clears AA over every surface of a from-primary scheme.
+        from tenants.color_generator import scheme_from_primary
+
+        surfaces = ("primary", "secondary", "feature_accent", "dark_accent", "light_neutral")
+        for seed in self.SEEDS:
+            roles = scheme_from_primary(seed)
+            for fill_role in surfaces:
+                fill = roles[fill_role]
+                text = _text_for(fill, roles)
+                self.assertGreaterEqual(
+                    contrast_ratio(text, fill), AA, f"{seed}: text on {fill_role}",
+                )
+
+    def test_accent_matches_the_harmonize_rule(self):
+        # A chromatic primary yields the same analogous accent the catalog uses.
+        from tenants.color_generator import scheme_from_primary, harmonize_accent
+
+        roles = scheme_from_primary("#6A1E32")
+        expected = harmonize_accent({**roles, "feature_accent": "#6A1E32"})["feature_accent"]
+        self.assertEqual(roles["feature_accent"], expected)

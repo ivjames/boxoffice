@@ -79,7 +79,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
             </div>
             <div class="brand-preview-wrap">
                 <p class="brand-preview-wrap__label">Live preview</p>
-                {% include "dashboard/_brand_preview.html" with palette=derived.roles|default:current_palette %}
+                {% include "dashboard/_brand_preview.html" with palette=derived.roles|default:current_palette page_bg=organization.page_background_color %}
             </div>
         </div>
         <div class="brand-actions">
@@ -183,7 +183,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                 </div>
                 <div class="color-grid">
                     {% for field in branding_form %}
-                        {% if field.name != 'logo' and field.name != 'heading_font' and field.name != 'body_font' %}
+                        {% if field.name != 'logo' and field.name != 'heading_font' and field.name != 'body_font' and field.name != 'page_tint' %}
                             <div class="field color-grid__field">
                                 {{ field.label_tag }}
                                 {{ field }}
@@ -192,13 +192,34 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                         {% endif %}
                     {% endfor %}
                 </div>
+                <div class="brand-tools">
+                    <button type="button" class="button button--secondary button--sm" id="harmonize-btn"
+                            data-url="{% url 'dashboard_branding_harmonize' %}">
+                        Harmonize from Primary
+                    </button>
+                    <span class="muted brand-tools__hint">Fills Secondary, Feature Accent, Dark Accent &amp; the neutrals from your Primary color, using the same color-theory rules as the presets. Undo if you don&rsquo;t like it.</span>
+                </div>
+                <div class="field page-tint-field">
+                    {{ branding_form.page_tint.label_tag }}
+                    {{ branding_form.page_tint }}
+                    <p class="muted page-tint-field__hint">How much brand color the storefront page carries behind your content. Every level stays high-contrast for readability.</p>
+                    {{ branding_form.page_tint.errors }}
+                </div>
             </div>
             <div class="brand-preview-wrap">
                 <p class="brand-preview-wrap__label">Live preview</p>
-                {% include "dashboard/_brand_preview.html" with palette=current_palette %}
+                {% include "dashboard/_brand_preview.html" with palette=current_palette page_bg=organization.page_background_color %}
             </div>
         </div>
-        <button type="submit" class="button">Save branding</button>
+        <div class="brand-save-row">
+            <button type="submit" class="button">Save branding</button>
+            <div class="brand-history" role="group" aria-label="Undo and redo edits">
+                <button type="button" class="button button--secondary button--sm" id="brand-undo" disabled
+                        title="Undo (Ctrl/Cmd+Z)">Undo</button>
+                <button type="button" class="button button--secondary button--sm" id="brand-redo" disabled
+                        title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
+            </div>
+        </div>
     </form>
 </section>
 
@@ -260,6 +281,62 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         return "#000000";
     }
 
+    // Page tint: mirror tenants.color_generator.page_background so the preview's
+    // page background tracks the intensity <select> live. (saturation, lightness)
+    // per level -- keep in sync with PAGE_TINT_LEVELS.
+    var TINT_LEVELS = { subtle: [0.20, 0.94], medium: [0.34, 0.89], bold: [0.48, 0.83] };
+    function hexToRgb(hex) {
+        hex = hex.replace("#", "");
+        if (hex.length === 3) hex = hex.split("").map(function (c) { return c + c; }).join("");
+        return [0, 2, 4].map(function (i) { return parseInt(hex.substr(i, 2), 16) / 255; });
+    }
+    function rgbToHsl(r, g, b) {
+        var mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, h = 0, s = 0;
+        if (mx !== mn) {
+            var d = mx - mn;
+            s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+            if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+            else if (mx === g) h = (b - r) / d + 2;
+            else h = (r - g) / d + 4;
+            h /= 6;
+        }
+        return [h, s, l];
+    }
+    function hslToHex(h, s, l) {
+        var r, g, b;
+        if (s === 0) { r = g = b = l; }
+        else {
+            var hue2rgb = function (p, q, t) {
+                if (t < 0) t += 1; if (t > 1) t -= 1;
+                if (t < 1 / 6) return p + (q - p) * 6 * t;
+                if (t < 1 / 2) return q;
+                if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+                return p;
+            };
+            var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+            r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3);
+        }
+        return "#" + [r, g, b].map(function (v) { return ("0" + Math.round(v * 255).toString(16)).slice(-2); }).join("");
+    }
+    function brandHue(vals) {
+        var roles = ["primary", "secondary", "dark_accent", "feature_accent"];
+        for (var i = 0; i < roles.length; i++) {
+            var hsl = rgbToHsl.apply(null, hexToRgb(vals[roles[i]] || "#000000"));
+            if (hsl[1] >= 0.20) return hsl[0];  // ACCENT_MIN_SATURATION
+        }
+        return rgbToHsl.apply(null, hexToRgb(vals.light_neutral))[0];
+    }
+    function pageBackground(vals, level) {
+        var t = TINT_LEVELS[level];
+        if (!t) return vals.light_neutral;  // "none"
+        var hue = brandHue(vals), sat = t[0], light = t[1], bg = hslToHex(hue, sat, light);
+        while (contrast(vals.neutral, bg) < 7.0 && light < 1.0) {  // AAA for body text
+            light += 0.004;
+            bg = hslToHex(hue, sat, light);
+        }
+        return bg;
+    }
+
     function sync(form) {
         var preview = form.querySelector(".brand-preview");
         if (!preview) return;
@@ -273,12 +350,18 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         // this previewed scheme (same rules as the storefront).
         if (vals.primary && vals.light_neutral && vals.neutral) {
             var ln = vals.light_neutral, n = vals.neutral;
+            // --on-* is text over FILLS (buttons/header) -- independent of the
+            // page tint, so keep using the two neutrals. --*-ink is text on the
+            // PAGE, so compute it against the derived (possibly tinted) bg.
+            var tintSel = form.querySelector("select[data-page-tint]");
+            var pageBg = tintSel ? pageBackground(vals, tintSel.value) : ln;
+            preview.style.setProperty("--preview-bg", pageBg);
             preview.style.setProperty("--on-primary", textOver(vals.primary, ln, n));
             preview.style.setProperty("--on-accent", textOver(vals.feature_accent, ln, n));
             preview.style.setProperty("--on-dark-accent", textOver(vals.dark_accent, ln, n));
-            preview.style.setProperty("--primary-ink", readableOn(vals.primary, ln));
-            preview.style.setProperty("--accent-ink", readableOn(vals.feature_accent, ln));
-            preview.style.setProperty("--secondary-ink", readableOn(vals.secondary, ln));
+            preview.style.setProperty("--primary-ink", readableOn(vals.primary, pageBg));
+            preview.style.setProperty("--accent-ink", readableOn(vals.feature_accent, pageBg));
+            preview.style.setProperty("--secondary-ink", readableOn(vals.secondary, pageBg));
         }
         // Font <select>s (only the fine-tuning form has them): resolve the
         // chosen key to its CSS stack via the FONT_STACKS map.
@@ -296,7 +379,7 @@ ready-made scheme, save your own, or let us read one off your website.</p>
         // release).
         ["input", "change"].forEach(function (evt) {
             form.addEventListener(evt, function (e) {
-                if (e.target.matches("input[data-role], select[data-font]")) sync(form);
+                if (e.target.matches("input[data-role], select[data-font], select[data-page-tint]")) sync(form);
             });
         });
     });
@@ -318,6 +401,104 @@ ready-made scheme, save your own, or let us read one off your website.</p>
                 });
                 sync(editorForm);
                 editorSection.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
+        });
+    }
+
+    // -- Harmonize-from-Primary + Undo/Redo on the branding (fine-tuning) form -
+    var harmBtn = document.getElementById("harmonize-btn");
+    var brandingForm = harmBtn && harmBtn.closest("form");
+    if (brandingForm) {
+        var TRACKED = 'input[data-role], select[data-font], select[data-page-tint]';
+        var csrfEl = brandingForm.querySelector("[name=csrfmiddlewaretoken]");
+        var csrf = csrfEl ? csrfEl.value : "";
+
+        // ---- client-side undo/redo over the tracked fields (draft only) -----
+        var undoStack = [], redoStack = [], applying = false;
+        var undoBtn = document.getElementById("brand-undo");
+        var redoBtn = document.getElementById("brand-redo");
+        function snapshot() {
+            var s = {};
+            brandingForm.querySelectorAll(TRACKED).forEach(function (el) { s[el.name] = el.value; });
+            return s;
+        }
+        function applySnap(s) {
+            applying = true;
+            brandingForm.querySelectorAll(TRACKED).forEach(function (el) {
+                if (el.name in s) el.value = s[el.name];
+            });
+            sync(brandingForm);
+            applying = false;
+        }
+        function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+        function updateButtons() {
+            if (undoBtn) undoBtn.disabled = undoStack.length <= 1;
+            if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+        }
+        function record() {
+            if (applying) return;
+            var s = snapshot();
+            if (undoStack.length && same(undoStack[undoStack.length - 1], s)) return;
+            undoStack.push(s);
+            redoStack = [];
+            updateButtons();
+        }
+        function undo() {
+            if (undoStack.length <= 1) return;
+            redoStack.push(undoStack.pop());
+            applySnap(undoStack[undoStack.length - 1]);
+            updateButtons();
+        }
+        function redo() {
+            if (!redoStack.length) return;
+            var s = redoStack.pop();
+            undoStack.push(s);
+            applySnap(s);
+            updateButtons();
+        }
+        undoStack.push(snapshot());  // initial (saved) state
+        updateButtons();
+        // Record a step when a field COMMITS (change), not on every drag frame.
+        brandingForm.addEventListener("change", function (e) {
+            if (e.target.matches(TRACKED)) record();
+        });
+        if (undoBtn) undoBtn.addEventListener("click", undo);
+        if (redoBtn) redoBtn.addEventListener("click", redo);
+        document.addEventListener("keydown", function (e) {
+            if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+            var t = e.target;
+            // Leave native text undo alone inside text fields / textareas.
+            if (t && (t.tagName === "TEXTAREA" ||
+                (t.tagName === "INPUT" && /^(text|search|url|email|number|password|tel)$/.test(t.type)))) return;
+            e.preventDefault();
+            if (e.shiftKey) redo(); else undo();
+        });
+
+        // ---- harmonize the whole palette from the Primary color -------------
+        harmBtn.addEventListener("click", function () {
+            var primaryInput = brandingForm.querySelector('input[data-role="primary"]');
+            if (!primaryInput) return;
+            var label = harmBtn.textContent;
+            harmBtn.disabled = true;
+            harmBtn.textContent = "Harmonizing…";
+            // location.search carries ?_tenant in local dev; empty (harmless) in
+            // production, where the tenant resolves from the subdomain.
+            fetch(harmBtn.dataset.url + window.location.search, {
+                method: "POST",
+                headers: { "X-CSRFToken": csrf, "Content-Type": "application/x-www-form-urlencoded" },
+                body: "primary=" + encodeURIComponent(primaryInput.value),
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                if (data && data.ok) {
+                    Object.keys(data.roles).forEach(function (role) {
+                        var inp = brandingForm.querySelector('input[data-role="' + role + '"]');
+                        if (inp) inp.value = data.roles[role];
+                    });
+                    sync(brandingForm);
+                    record();  // the whole harmonize is a single undo step
+                }
+            }).catch(function () {}).then(function () {
+                harmBtn.disabled = false;
+                harmBtn.textContent = label;
             });
         });
     }

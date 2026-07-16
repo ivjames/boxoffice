@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    {% comment %}Apply the visitor's saved light/dark choice BEFORE any CSS or paint
+    so the storefront never flashes the wrong theme. With no saved choice the
+    attribute is left off and prefers-color-scheme (the OS setting) governs.{% endcomment %}
+    <script>(function(){try{var t=localStorage.getItem('boxo-theme');if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
     <!-- Locked viewport: maximum-scale=1 + user-scalable=no stops iOS Safari's
          page-level pinch / double-tap zoom, which otherwise fights the seating
          editor's own zoom/pan and makes one-finger handle drags flaky (iOS
@@ -38,7 +42,11 @@
                on dark fills -- see Organization.on_colors). Platform host keeps
                the legacy fixed values. */
             {% if organization %}
-            --bg-color: {{ organization.light_neutral_color }};
+            /* Page background: derived from the brand hue at the tenant's
+               page_tint intensity (kept above WCAG AAA for body text); "none"
+               is the untinted light_neutral. The light_neutral role itself is
+               still emitted below as the light-on-dark text color. */
+            --bg-color: {{ organization.page_background_color }};
             --text-color: {{ organization.neutral_color }};
             --on-primary: {{ organization.on_colors.primary }};
             --on-secondary: {{ organization.on_colors.secondary }};
@@ -58,6 +66,49 @@
             --body-font: {% if organization %}{{ organization.body_font_stack|safe }}{% else %}system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif{% endif %};
         }
     </style>
+    {% if organization %}{% with d=organization.dark_colors %}
+    <style>
+        /* Dark storefront theme (tenants/color_generator.dark_surfaces): a
+           branded near-black page, light text, and brand 'ink' lightened so
+           headings/links stay legible on the dark page. The brand FILLS and
+           their --on-* colors are shared with the light theme -- a Buy-tickets
+           button is the same brand color in either.
+
+           Applies when the visitor's OS asks for dark (prefers-color-scheme) OR
+           the header toggle forces it (data-theme="dark" on <html>), and never
+           when the toggle forces light. Scoped to the public storefront: the
+           staff UI (body.app-internal) always stays light. The two selectors
+           share one declaration list -- keep them in sync. */
+        html[data-theme="dark"] body:not(.app-internal) {
+            --bg-color: {{ d.bg }};
+            --surface-color: {{ d.surface }};
+            --surface-subtle: {{ d.surface_subtle }};
+            --surface-muted: {{ d.surface_muted }};
+            --text-color: {{ d.text }};
+            --muted-color: {{ d.muted }};
+            --border-color: {{ d.border }};
+            --primary-ink: {{ d.primary_ink }};
+            --accent-ink: {{ d.accent_ink }};
+            --secondary-ink: {{ d.secondary_ink }};
+            color-scheme: dark;
+        }
+        @media (prefers-color-scheme: dark) {
+            html:not([data-theme="light"]) body:not(.app-internal) {
+                --bg-color: {{ d.bg }};
+                --surface-color: {{ d.surface }};
+                --surface-subtle: {{ d.surface_subtle }};
+                --surface-muted: {{ d.surface_muted }};
+                --text-color: {{ d.text }};
+                --muted-color: {{ d.muted }};
+                --border-color: {{ d.border }};
+                --primary-ink: {{ d.primary_ink }};
+                --accent-ink: {{ d.accent_ink }};
+                --secondary-ink: {{ d.secondary_ink }};
+                color-scheme: dark;
+            }
+        }
+    </style>
+    {% endwith %}{% endif %}
     {% block extra_head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -101,6 +152,19 @@
                         Cart
                         {% if cart_count %}<span class="site-nav__badge">{{ cart_count }}</span>{% endif %}
                     </a>
+                    <button type="button" class="site-nav__link theme-toggle" onclick="boxoToggleTheme()"
+                            aria-label="Switch between light and dark" title="Switch between light and dark">
+                        <svg class="theme-toggle__moon" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                        </svg>
+                        <svg class="theme-toggle__sun" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="4"></circle>
+                            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+                        </svg>
+                        <span class="theme-toggle__label">Theme</span>
+                    </button>
                 {% endif %}
 
                 {% if staff_membership %}
@@ -179,6 +243,20 @@
         {% endif %}
     </footer>
 
+    {% comment %}Header light/dark toggle. Flips from the CURRENTLY EFFECTIVE theme
+    (an explicit choice, or the OS setting when none is saved) and persists it;
+    the no-flash script in <head> re-applies it on the next load.{% endcomment %}
+    <script>
+        function boxoToggleTheme() {
+            var el = document.documentElement;
+            var current = el.getAttribute('data-theme');
+            var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            var effective = current || (systemDark ? 'dark' : 'light');
+            var next = effective === 'dark' ? 'light' : 'dark';
+            el.setAttribute('data-theme', next);
+            try { localStorage.setItem('boxo-theme', next); } catch (e) {}
+        }
+    </script>
     <script src="{% static 'js/alpine.min.js' %}" defer></script>
     {% block extra_scripts %}{% endblock %}
 </body>

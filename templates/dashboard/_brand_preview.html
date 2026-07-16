@@ -15,6 +15,7 @@ idealized mock. `palette` is a role→hex dict (Organization.palette).
             --accent-color: {{ palette.feature_accent }};
             --light-neutral-color: {{ palette.light_neutral }};
             --neutral-color: {{ palette.neutral }};
+            --preview-bg: {{ page_bg|default:palette.light_neutral }};
             --heading-font: {{ organization.heading_font_stack|safe }};
             --body-font: {{ organization.body_font_stack|safe }};">
     <div class="brand-preview__bar">

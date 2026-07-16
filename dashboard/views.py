@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
@@ -38,7 +39,8 @@ from passes.services import remaining_admissions, restore_redemptions_for_order
 from payments.services import RefundError, refund_order
 from promotions.models import PromoCode
 from tenants.color_extraction import ColorDeriveError, derive_scheme_from_url
-from tenants.color_schemes import COLOR_ROLES
+from tenants.color_generator import scheme_from_primary
+from tenants.color_schemes import COLOR_ROLES, HEX_COLOR_RE
 from tenants.fonts import FONTS
 from tenants.models import ColorScheme
 from venues import chart_parsing, generation
@@ -937,6 +939,22 @@ def branding_derive(request):
         "dashboard/branding.html",
         _branding_context(request, scheme_form=scheme_form, derived=derived),
     )
+
+
+@manager_required
+@require_POST
+def branding_harmonize(request):
+    """Build a full six-role scheme from a single primary color (the branding
+    "harmonize" button) using the same rules as the catalog
+    (tenants.color_generator.scheme_from_primary), and return it as JSON for the
+    page's JS to load into the color pickers + live preview. Nothing is saved --
+    it's a client-side suggestion until the manager hits Save."""
+    primary = (request.POST.get("primary") or "").strip()
+    if not re.match(HEX_COLOR_RE, primary):
+        return JsonResponse(
+            {"ok": False, "error": "Pick a valid primary color first."}, status=400
+        )
+    return JsonResponse({"ok": True, "roles": scheme_from_primary(primary)})
 
 
 @manager_required

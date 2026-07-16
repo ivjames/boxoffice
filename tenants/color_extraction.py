@@ -24,9 +24,14 @@ Two stages, each independently testable:
 
 `derive_scheme_from_url(url)` ties them together: fetch the page, extract,
 assign, and -- ONLY when an Anthropic API key is configured (mirroring
-venues.chart_parsing's opt-in) -- ask Claude to name the result and refine the
-role assignment. With no key it still returns a complete, usable scheme from
-the deterministic pass; the network fetch is the only hard dependency.
+venues.chart_parsing's opt-in) -- hand the result to Claude to name and refine.
+When a headless browser is available it renders the homepage to a screenshot
+and lets Claude choose the palette from what's actually VISIBLE (the durable
+answer for monochrome brands and framework sites, where static CSS can't tell a
+faint real brand color from stronger framework noise); with no browser it falls
+back to a text-only refinement of the extracted candidates. With no key at all
+it returns the complete deterministic scheme; the network fetch is the only hard
+dependency -- the browser and the API are both optional, best-effort upgrades.
 
 Nothing here writes to the database. The dashboard view decides whether to
 apply the derived colors or save them as a ColorScheme.
@@ -34,6 +39,7 @@ apply the derived colors or save them as a ColorScheme.
 
 import ipaddress
 import logging
+import os
 import re
 import socket
 from collections import defaultdict
@@ -50,6 +56,13 @@ logger = logging.getLogger(__name__)
 MAX_STYLESHEETS = 5
 MAX_FETCH_BYTES = 2 * 1024 * 1024
 FETCH_TIMEOUT = 10
+
+# Homepage screenshot render (the vision path). Above-the-fold viewport -- the
+# header, logo, hero, and primary buttons that carry the brand live there, and a
+# capped viewport bounds both render time and the image tokens Claude sees.
+RENDER_VIEWPORT = {"width": 1280, "height": 1600}
+RENDER_TIMEOUT_MS = 20000
+RENDER_MAX_EDGE_PX = 1400
 
 # The subset of CSS named colors worth recognizing -- the ones brands actually
 # write by name. Anything exotic is far likelier to appear as a hex.
@@ -477,6 +490,16 @@ def _guard_public_url(url):
             )
 
 
+def _is_public_url(url):
+    """Boolean form of _guard_public_url -- for the screenshot render, where a
+    raise would be noise (a blocked sub-resource is just skipped, not fatal)."""
+    try:
+        _guard_public_url(url)
+        return True
+    except ColorDeriveError:
+        return False
+
+
 def _http_fetch(url):
     """Fetch a URL's text via `requests`, capped at MAX_FETCH_BYTES. Every URL
     (the page, each redirect hop, and each linked stylesheet -- all arrive
@@ -508,16 +531,20 @@ def _default_name(url):
     return f"{label} palette"
 
 
-def derive_scheme_from_url(url, *, fetch=None):
+def derive_scheme_from_url(url, *, fetch=None, render=None):
     """Fetch `url`, extract its colors, and return a derived scheme dict:
     `{"name": str, "roles": {role: hex, ...}, "source_url": url,
-    "candidates": [(hex, weight), ...]}`.
+    "candidates": [(hex, weight), ...], "context": {hex: label},
+    "method": "heuristic"|"vision"|"text"}`.
 
-    `fetch` (injectable for tests) retrieves page/stylesheet text; defaults to
-    a real `requests` GET through the environment proxy. When an Anthropic API
-    key is configured the raw assignment is handed to Claude for naming and
-    refinement (see _refine_with_claude); otherwise the deterministic result
-    is returned as-is."""
+    `fetch` (injectable for tests) retrieves page/stylesheet text; `render`
+    (also injectable) returns a homepage screenshot as PNG bytes, or None. Both
+    default to real implementations through the environment proxy.
+
+    Refinement, when an Anthropic API key is configured: if a screenshot renders
+    Claude picks the palette from what's VISIBLE (`_derive_with_vision`);
+    otherwise it refines the extracted candidates from text alone
+    (`_refine_with_claude`). With no key the deterministic result stands."""
     if not re.match(r"^https?://", url, re.IGNORECASE):
         url = "https://" + url
     fetch = fetch or _http_fetch
@@ -537,15 +564,142 @@ def derive_scheme_from_url(url, *, fetch=None):
         "source_url": url,
         "candidates": candidates[:24],
         "context": context,
+        "method": "heuristic",
     }
 
     if getattr(settings, "ANTHROPIC_API_KEY", ""):
+        render = render or render_homepage_png
+        screenshot = None
         try:
-            _refine_with_claude(scheme)
+            screenshot = render(url)
+        except Exception:  # noqa: BLE001 -- a failed render just means no vision
+            logger.warning("Homepage render failed for %s; refining from text", url, exc_info=True)
+        try:
+            if screenshot:
+                _derive_with_vision(scheme, screenshot)
+            else:
+                _refine_with_claude(scheme)
         except Exception:  # noqa: BLE001 -- refinement is best-effort
             logger.warning("Claude scheme refinement failed; using heuristic result", exc_info=True)
     return scheme
 
+
+# --- stage 3b: render the homepage to a screenshot (the vision path) -------
+
+
+def _find_chromium_executable():
+    """The Chromium binary under PLAYWRIGHT_BROWSERS_PATH, if the environment
+    pins one whose build differs from the pip package's expected revision (so
+    Playwright's own resolution would miss it). None lets Playwright resolve
+    its default -- the normal case on a machine where `playwright install`
+    matched the package."""
+    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if not base:
+        return None
+    import glob
+
+    for pattern in (
+        "chromium-*/chrome-linux/chrome",
+        "chromium_headless_shell-*/chrome-linux/headless_shell",
+    ):
+        hits = sorted(glob.glob(os.path.join(base, pattern)))
+        if hits:
+            return hits[-1]
+    link = os.path.join(base, "chromium")
+    return link if os.path.exists(link) else None
+
+
+def _downscale_png(png_bytes):
+    """Cap the screenshot's long edge at RENDER_MAX_EDGE_PX so the image block
+    stays cheap in tokens. Pillow is already a project dependency; on any
+    decode trouble the original bytes pass through."""
+    try:
+        import io
+
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(png_bytes))
+        image.load()
+        long_edge = max(image.size)
+        if long_edge <= RENDER_MAX_EDGE_PX:
+            return png_bytes
+        scale = RENDER_MAX_EDGE_PX / long_edge
+        image = image.resize(
+            (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+            Image.LANCZOS,
+        )
+        buffer = io.BytesIO()
+        image.convert("RGB").save(buffer, "PNG")
+        return buffer.getvalue()
+    except Exception:  # noqa: BLE001 -- downscale is an optimization, not a gate
+        return png_bytes
+
+
+def render_homepage_png(url):
+    """Render `url`'s above-the-fold homepage with headless Chromium and return
+    a PNG (downscaled), or None if rendering isn't possible (no Playwright, no
+    browser, navigation/timeout failure) -- the caller then refines from text.
+
+    SSRF-guarded like the fetch: the page URL must resolve public, and every
+    sub-resource request is re-checked and aborted if it points anywhere
+    private (a browser would otherwise reach internal hosts the fetch can't).
+    Honors HTTPS_PROXY when the environment sets one (unset in normal prod).
+    `ignore_https_errors` is on deliberately: we're capturing pixels off a
+    manager-supplied public URL to read colors, not transacting -- a cert
+    hiccup shouldn't block branding, and the host is already IP-guarded."""
+    if not _is_public_url(url):
+        return None
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # noqa: BLE001 -- browser automation is an optional extra
+        logger.info("Playwright not installed; deriving colors without a screenshot")
+        return None
+
+    def _guard_route(route):
+        req_url = route.request.url
+        scheme = urlparse(req_url).scheme.lower()
+        if scheme in ("data", "blob", "about"):
+            route.continue_()
+        elif scheme in ("http", "https") and _is_public_url(req_url):
+            route.continue_()
+        else:
+            route.abort()
+
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    png = None
+    try:
+        with sync_playwright() as p:
+            launch = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+            executable = _find_chromium_executable()
+            if executable:
+                launch["executable_path"] = executable
+            if proxy:
+                launch["proxy"] = {"server": proxy}
+            browser = p.chromium.launch(**launch)
+            try:
+                context_ = browser.new_context(
+                    viewport=RENDER_VIEWPORT,
+                    ignore_https_errors=True,
+                    user_agent="boxo.show color-scheme agent",
+                )
+                context_.route("**/*", _guard_route)
+                page = context_.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=RENDER_TIMEOUT_MS)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:  # noqa: BLE001 -- idle is a nicety, not required
+                    pass
+                page.wait_for_timeout(800)
+                png = page.screenshot(full_page=False)
+            finally:
+                browser.close()
+    except Exception:  # noqa: BLE001 -- any render failure falls back to text
+        logger.warning("Homepage render failed for %s", url, exc_info=True)
+        return None
+    return _downscale_png(png) if png else None
+
+
+# --- stage 3c: Claude refinement (vision-first, text fallback) -------------
 
 _REFINE_SCHEMA = {
     "type": "object",
@@ -559,6 +713,71 @@ _REFINE_SCHEMA = {
     "required": ["name", *ROLE_KEYS],
     "additionalProperties": False,
 }
+
+
+def _apply_refinement(scheme, data, method):
+    """Copy a validated model response (name + role hexes) onto the scheme."""
+    scheme["name"] = data.get("name") or scheme["name"]
+    for role in ROLE_KEYS:
+        candidate = _normalize_hex(str(data.get(role, "")))
+        if candidate:
+            scheme["roles"][role] = candidate
+    scheme["method"] = method
+
+
+def _derive_with_vision(scheme, png_bytes):
+    """In-place: show Claude a screenshot of the homepage and let it choose the
+    six-role palette from what's VISIBLE, using the extracted candidates only as
+    a hint. This is what a static-CSS heuristic can't do -- see a black-and-white
+    brand as black-and-white, and ignore framework colors that never render.
+    Best-effort; the caller swallows failures."""
+    import base64
+    import json
+
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=getattr(settings, "ANTHROPIC_API_KEY", "") or None)
+    model = getattr(settings, "CHART_PARSING_MODEL", "claude-opus-4-8")
+    context = scheme.get("context", {})
+    swatches = ", ".join(f"{c} ({context.get(c, 'markup')})" for c, _w in scheme["candidates"])
+    prompt = (
+        "You are a brand designer choosing a six-role color palette for a theater's "
+        "ticketing storefront, so it matches the theater's own website. Attached is a "
+        f"screenshot of the homepage of {scheme['source_url']}.\n\n"
+        "Colors pulled from the page's CSS (a hint only -- this list includes framework "
+        "defaults, focus/hover chrome, and decorative colors that may NOT be part of the "
+        f"visible brand):\n{swatches}\n\n"
+        "Look at the SCREENSHOT and identify the colors the brand actually uses -- its "
+        "logo, header/nav, primary buttons, and the dominant accents a visitor sees. Then "
+        "assign the six roles: primary (main brand), secondary (supporting), feature_accent "
+        "(warm CTA/highlight), dark_accent (deep shade), light_neutral (light background), "
+        "neutral (near-black text).\n"
+        "- Judge by what is VISIBLE in the screenshot, not by how often a color appears in CSS.\n"
+        "- If the site is essentially black-and-white or monochrome, return neutral roles "
+        "that reflect that (a black or near-black primary) rather than inventing an accent.\n"
+        "- Ignore browser chrome, embedded maps/widgets, and incidental colors inside photos.\n"
+        "- Prefer exact hex values from the hint list when they match what you see; otherwise "
+        "use the hex you observe.\n"
+        "Return #rrggbb for every role and a short evocative name."
+    )
+    image_block = {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": base64.standard_b64encode(png_bytes).decode("ascii"),
+        },
+    }
+    response = client.messages.create(
+        model=model,
+        max_tokens=1024,
+        output_config={"format": {"type": "json_schema", "schema": _REFINE_SCHEMA}},
+        messages=[{"role": "user", "content": [image_block, {"type": "text", "text": prompt}]}],
+    )
+    if response.stop_reason == "refusal":
+        return
+    text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
+    _apply_refinement(scheme, json.loads(text), "vision")
 
 
 def _refine_with_claude(scheme):
@@ -603,9 +822,4 @@ def _refine_with_claude(scheme):
     if response.stop_reason == "refusal":
         return
     text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
-    data = json.loads(text)
-    scheme["name"] = data.get("name") or scheme["name"]
-    for role in ROLE_KEYS:
-        candidate = _normalize_hex(str(data.get(role, "")))
-        if candidate:
-            scheme["roles"][role] = candidate
+    _apply_refinement(scheme, json.loads(text), "text")

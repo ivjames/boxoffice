@@ -5,15 +5,19 @@ seeding, and the derive-from-homepage extraction agent
 dashboard/test_branding.py.
 """
 
-from django.core.exceptions import ValidationError
-from django.test import TestCase
+from unittest.mock import patch
 
+from django.core.exceptions import ValidationError
+from django.test import TestCase, override_settings
+
+from tenants import color_extraction as ce
 from tenants.color_extraction import (
     ColorDeriveError,
     _guard_public_url,
     assign_roles,
     derive_scheme_from_url,
     extract_candidate_colors,
+    render_homepage_png,
 )
 from tenants.color_schemes import BUILTIN_SCHEMES, ROLE_KEYS, ROLE_TO_ORG_FIELD
 from tenants.models import ColorScheme, Organization
@@ -300,6 +304,76 @@ class FrameworkNoiseTests(TestCase):
         """
         roles = assign_roles(extract_candidate_colors(html))
         self.assertEqual(roles["primary"], self.BRAND)
+
+
+class VisionDerivePathTests(TestCase):
+    """The derive agent's refinement routing: with a key it renders a screenshot
+    and derives from vision; if the render can't happen it falls back to the
+    text refinement; with no key it stays on the deterministic result. The
+    refinement functions are patched so no browser or API is touched."""
+
+    HTML = "<html><head><style>header{background:#a0241b}</style></head><body></body></html>"
+
+    def _derive(self, render):
+        return derive_scheme_from_url(
+            "example.com", fetch=lambda _u: self.HTML, render=render
+        )
+
+    @override_settings(ANTHROPIC_API_KEY="test-key")
+    def test_vision_path_used_when_a_screenshot_renders(self):
+        seen = {}
+
+        def fake_vision(scheme, png):
+            seen["png"] = png
+            scheme["method"] = "vision"
+
+        with patch.object(ce, "_derive_with_vision", fake_vision), patch.object(
+            ce, "_refine_with_claude", lambda s: seen.setdefault("text", True)
+        ):
+            scheme = self._derive(render=lambda _u: b"PNGBYTES")
+        self.assertEqual(seen.get("png"), b"PNGBYTES")
+        self.assertNotIn("text", seen)
+        self.assertEqual(scheme["method"], "vision")
+
+    @override_settings(ANTHROPIC_API_KEY="test-key")
+    def test_falls_back_to_text_when_render_returns_none(self):
+        seen = {}
+        with patch.object(
+            ce, "_derive_with_vision", lambda s, p: seen.setdefault("vision", True)
+        ), patch.object(ce, "_refine_with_claude", lambda s: seen.setdefault("text", True)):
+            self._derive(render=lambda _u: None)
+        self.assertNotIn("vision", seen)
+        self.assertTrue(seen.get("text"))
+
+    @override_settings(ANTHROPIC_API_KEY="test-key")
+    def test_render_failure_falls_back_to_text(self):
+        seen = {}
+
+        def boom(_u):
+            raise RuntimeError("no browser here")
+
+        with patch.object(
+            ce, "_derive_with_vision", lambda s, p: seen.setdefault("vision", True)
+        ), patch.object(ce, "_refine_with_claude", lambda s: seen.setdefault("text", True)):
+            self._derive(render=boom)
+        self.assertNotIn("vision", seen)
+        self.assertTrue(seen.get("text"))
+
+    def test_no_api_key_stays_on_the_heuristic(self):
+        seen = {}
+        with patch.object(
+            ce, "_derive_with_vision", lambda s, p: seen.setdefault("vision", True)
+        ), patch.object(ce, "_refine_with_claude", lambda s: seen.setdefault("text", True)):
+            scheme = self._derive(render=lambda _u: b"PNG")
+        self.assertEqual(seen, {})
+        self.assertEqual(scheme["method"], "heuristic")
+
+    def test_render_refuses_private_hosts_without_launching(self):
+        # SSRF guard on the render path: private/link-local return None before
+        # any browser import, so these are safe with no Playwright installed.
+        self.assertIsNone(render_homepage_png("http://127.0.0.1/"))
+        self.assertIsNone(render_homepage_png("http://169.254.169.254/latest/meta-data/"))
+        self.assertIsNone(render_homepage_png("ftp://example.com/"))
 
 
 class SSRFGuardTests(TestCase):

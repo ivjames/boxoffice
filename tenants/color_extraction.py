@@ -64,6 +64,20 @@ RENDER_VIEWPORT = {"width": 1280, "height": 1600}
 RENDER_TIMEOUT_MS = 20000
 RENDER_MAX_EDGE_PX = 1400
 
+# Injected before any page script during a render: removes the connection APIs
+# that bypass request-route interception (WebSocket, WebRTC), so a hostile
+# homepage can't reach a private host through them. Defined non-configurable so
+# page code can't restore the originals.
+_RENDER_BLOCK_SOCKETS_JS = """
+(() => {
+  const block = (name) => {
+    try { Object.defineProperty(window, name, {value: undefined, configurable: false, writable: false}); }
+    catch (e) { /* already locked -- fine */ }
+  };
+  ['WebSocket', 'RTCPeerConnection', 'webkitRTCPeerConnection', 'EventSource'].forEach(block);
+})();
+"""
+
 # The subset of CSS named colors worth recognizing -- the ones brands actually
 # write by name. Anything exotic is far likelier to appear as a hex.
 _NAMED_COLORS = {
@@ -683,6 +697,13 @@ def render_homepage_png(url):
                     user_agent="boxo.show color-scheme agent",
                 )
                 context_.route("**/*", _guard_route)
+                # route() guards HTTP(S) sub-resources but NOT WebSocket or
+                # WebRTC connections -- a hostile page's script could otherwise
+                # open ws:// / RTCPeerConnection straight to a private host,
+                # around the guard. Neutralize both APIs before any page script
+                # runs (init scripts execute first in every frame). We only need
+                # a static paint for colors, so nothing of value is lost.
+                context_.add_init_script(_RENDER_BLOCK_SOCKETS_JS)
                 page = context_.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=RENDER_TIMEOUT_MS)
                 try:

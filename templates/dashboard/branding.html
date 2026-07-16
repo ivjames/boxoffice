@@ -9,56 +9,57 @@
 <p class="muted">Your logo, colors, and fonts theme your whole storefront. Pick a
 ready-made scheme, save your own, or let us read one off your website.</p>
 
-{# -- current palette preview ------------------------------------------- #}
-<section class="brand-section">
-    <h2>Current colors</h2>
-    <div class="current-colors">
-        <div class="swatch-strip swatch-strip--fill" aria-label="Current palette">
-            {% for role, label, field in roles %}
-                <span class="swatch-strip__chip" style="background: {{ current_palette|dictkey:role }}"
-                      title="{{ label }}: {{ current_palette|dictkey:role }}"></span>
-            {% endfor %}
-        </div>
-        <div class="current-colors__labels" aria-hidden="true">
-            {% for role, label, field in roles %}
-                <span class="current-colors__label">
-                    <span>{{ label }}</span>
-                    <code>{{ current_palette|dictkey:role }}</code>
-                </span>
-            {% endfor %}
+{# -- current palette (left) + derive-from-homepage (right), side by side - #}
+<section class="brand-section brand-intro-row">
+    <div class="brand-intro-row__col">
+        <h2>Current colors</h2>
+        <div class="current-colors">
+            <div class="swatch-strip swatch-strip--fill" aria-label="Current palette">
+                {% for role, label, field in roles %}
+                    <span class="swatch-strip__chip" style="background: {{ current_palette|dictkey:role }}"
+                          title="{{ label }}: {{ current_palette|dictkey:role }}"></span>
+                {% endfor %}
+            </div>
+            <div class="current-colors__labels" aria-hidden="true">
+                {% for role, label, field in roles %}
+                    <span class="current-colors__label">
+                        <span>{{ label }}</span>
+                        <code>{{ current_palette|dictkey:role }}</code>
+                    </span>
+                {% endfor %}
+            </div>
         </div>
     </div>
-</section>
 
-{# -- derive from homepage (the agent) ---------------------------------- #}
-<section class="brand-section">
-    <h2>Derive from your website</h2>
-    <p class="muted">Enter your homepage and we’ll read its colors and suggest a
-    scheme you can tweak, save, or apply below.</p>
-    <form method="post" action="{% url 'dashboard_branding_derive' %}" class="dash-form dash-form--inline">
-        {% csrf_token %}
-        <div class="field">
-            <label for="derive-url">Homepage URL</label>
-            <input type="text" id="derive-url" name="url" placeholder="example.com"
-                   value="{% if derived %}{{ derived.source_url }}{% endif %}">
-        </div>
-        <button type="submit" class="button">Derive scheme</button>
-    </form>
+    <div class="brand-intro-row__col">
+        <h2>Derive from your website</h2>
+        <p class="muted">Enter your homepage and we’ll read its colors and suggest a
+        scheme you can tweak, save, or apply below.</p>
+        <form method="post" action="{% url 'dashboard_branding_derive' %}" class="dash-form dash-form--inline">
+            {% csrf_token %}
+            <div class="field">
+                <label for="derive-url">Homepage URL</label>
+                <input type="text" id="derive-url" name="url" placeholder="example.com"
+                       value="{% if derived %}{{ derived.source_url }}{% endif %}">
+            </div>
+            <button type="submit" class="button">Derive scheme</button>
+        </form>
 
-    {% if derived %}
-        <div class="brand-derived">
-            <p>Read <strong>{{ derived.candidates|length }}</strong> colors from
-            <a href="{{ derived.source_url }}" rel="noopener noreferrer" target="_blank">{{ derived.source_url }}</a>.
-            Loaded a suggested palette into the editor below — adjust anything, then save it.</p>
-            {% if derived.candidates %}
-                <div class="swatch-strip" aria-label="Colors found on the page">
-                    {% for hex, weight in derived.candidates %}
-                        <span class="swatch-strip__chip" style="background: {{ hex }}" title="{{ hex }} · used {{ weight }}×"></span>
-                    {% endfor %}
-                </div>
-            {% endif %}
-        </div>
-    {% endif %}
+        {% if derived %}
+            <div class="brand-derived">
+                <p>Read <strong>{{ derived.candidates|length }}</strong> colors from
+                <a href="{{ derived.source_url }}" rel="noopener noreferrer" target="_blank">{{ derived.source_url }}</a>.
+                Loaded a suggested palette into the editor below — adjust anything, then save it.</p>
+                {% if derived.candidates %}
+                    <div class="swatch-strip" aria-label="Colors found on the page">
+                        {% for hex, weight in derived.candidates %}
+                            <span class="swatch-strip__chip" style="background: {{ hex }}" title="{{ hex }} · used {{ weight }}×"></span>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
 </section>
 
 {% comment %}

@@ -3477,6 +3477,29 @@ table.dash-table th {
     margin-bottom: 0.35rem;
 }
 
+/* Current colors (left) + Derive-from-website (right) share one row. Stacks
+   on narrow. */
+.brand-intro-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1.25rem 2rem;
+    align-items: start;
+}
+
+.brand-intro-row__col {
+    min-width: 0;
+}
+
+.brand-intro-row__col > h2:first-child {
+    margin-top: 0;
+}
+
+@media (max-width: 52rem) {
+    .brand-intro-row {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Keep the page's primary actions compact so the tools stay above the fold --
    scoped to the branding page (:not(.button--sm) leaves the already-small
    card/tool buttons alone). */

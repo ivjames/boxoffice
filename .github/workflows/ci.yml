@@ -4,6 +4,19 @@ name: CI
 # integration branch -- see CLAUDE.md / DEPLOY.md) and main. There is no
 # reviewer gate in this repo, so this is the safety net before a change ships
 # to beta.boxo.show.
+#
+# The suite is split across two jobs that run IN PARALLEL, so wall-clock is the
+# slower of the two rather than the sum:
+#   * fast        -- the whole suite minus the multiprocess concurrency tests,
+#                    distributed across every runner core with pytest-xdist
+#                    (`-n auto`). pytest-django gives each xdist worker its own
+#                    test database, so the parallelism is safe. This is where
+#                    the ~1.2k tests -- including the slow seating suite -- run.
+#   * concurrency -- orders/test_concurrency_multiprocess.py only. These spawn
+#                    real OS processes and coordinate against on-disk SQLite, so
+#                    they run SERIALLY (no xdist) to avoid worker-vs-subprocess
+#                    contention. Small bucket, runs alongside `fast`.
+# Both jobs are required signal: a change ships only if both are green.
 on:
   push:
     branches: [staging, main]
@@ -12,7 +25,18 @@ on:
 
 jobs:
   test:
+    name: test (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      # Report both jobs' results even if one fails -- we want to see the full
+      # picture, not have the first failure cancel its sibling.
+      fail-fast: false
+      matrix:
+        include:
+          - name: fast
+            pytest_args: '-n auto -m "not multiprocess_concurrency"'
+          - name: concurrency
+            pytest_args: '-m multiprocess_concurrency'
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +57,5 @@ jobs:
 
       - name: Run tests
         # Dev settings (SQLite, zero external services) -- pytest.ini already
-        # points DJANGO_SETTINGS_MODULE at config.settings.dev. The
-        # multiprocess-concurrency tests run too; they're part of a normal run.
-        run: python -m pytest -q
+        # points DJANGO_SETTINGS_MODULE at config.settings.dev.
+        run: python -m pytest -q ${{ matrix.pytest_args }}

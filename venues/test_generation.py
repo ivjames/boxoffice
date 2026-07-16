@@ -11,6 +11,7 @@ involved."""
 
 import math
 
+import pytest
 from django.test import TestCase
 
 from events.models import Event, Performance
@@ -29,6 +30,12 @@ from venues.generation import (
 )
 from venues.models import Seat, SeatingChart, Section, Venue
 from venues.tests import make_org
+
+# The seat-generation / seating-editor suite is the heaviest in the repo (see
+# CLAUDE.md "Verifying"). Tag it `slow` so a fast local inner loop can skip it
+# with `pytest -m "not slow"`; it still runs in a normal `pytest` and in the
+# CI gate (parallelised via pytest-xdist).
+pytestmark = pytest.mark.slow
 
 
 class RowLabelTests(TestCase):

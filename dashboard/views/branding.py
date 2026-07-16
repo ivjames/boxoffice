@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 
@@ -47,9 +48,20 @@ def _branding_context(request, **extra):
         # key -> CSS stack, so the live-preview JS can resolve a font <select>'s
         # value to an actual font-family without another request.
         "font_stacks": {key: spec["stack"] for key, spec in FONTS.items()},
+        # A pending background-removal result (base64 PNG in the session, set by
+        # the preview action) surfaced as a data URI so the template can show the
+        # cut-out for Save/Discard without a second request. None = nothing to
+        # confirm -> the plain "Remove background" button shows instead.
+        "logo_bg_preview": _pending_logo_bg_preview(request),
     }
     context.update(extra)
     return context
+
+
+def _pending_logo_bg_preview(request):
+    """The session's pending background-removal PNG as a data URI, or None."""
+    preview_b64 = request.session.get(LOGO_BG_PREVIEW_SESSION_KEY)
+    return f"data:image/png;base64,{preview_b64}" if preview_b64 else None
 
 
 def _apply_scheme_to_org(request, scheme):
@@ -257,20 +269,52 @@ def branding_harmonize(request):
     return JsonResponse({"ok": True, "roles": scheme_from_primary(primary)})
 
 
+# Session key holding a pending background-removal result (base64 PNG) that the
+# manager has been shown but not yet accepted. Sessions here are DB-backed (not
+# the cookie backend), so a small PNG rides along fine. Kept out of the model so
+# a discarded preview never touches the live logo.
+LOGO_BG_PREVIEW_SESSION_KEY = "logo_bg_preview"
+
+
 @manager_required
 @require_POST
 def branding_logo_remove_bg(request):
-    """Strip the background from the org's current logo (tenants.logo_bg) and
-    save the transparent result back over it, so a logo exported on a white box
-    drops cleanly onto the themed storefront, the dark theme, and email headers.
+    """Background removal as a PREVIEW-then-confirm flow, so the manager sees the
+    cut-out result before it replaces the live logo (a logo is load-bearing --
+    overwriting it sight-unseen was the wrong default). Dispatches on `action`:
 
-    Operates on the STORED logo (no upload here) and flashes a message, then
-    redirects to the branding page where the new logo is shown -- there's no
-    inline preview to update, and a plain redirect keeps it working without JS.
-    Like the derive endpoint it runs a heavy model, so it's rate-limited per org
-    (a fixed-window cap + a short cooldown); a missing rembg dependency is a
-    clean "unavailable" message, never a 500."""
+    - preview (default): run rembg on the STORED logo and stash the transparent
+      PNG in the session, then redirect back; _branding_context surfaces it as a
+      side-by-side "before / after" with Save / Discard. The heavy step, so it's
+      rate-limited per org (fixed-window cap + short cooldown) and a missing
+      rembg dependency is a clean "unavailable" message, never a 500.
+    - confirm: write the stashed preview over the logo (as `<stem>-nobg.png`).
+    - discard: drop the stashed preview; the live logo is untouched.
+
+    Every path redirects (POST/redirect/GET), so a refresh never re-runs the
+    model or re-saves."""
     organization = request.organization
+    action = request.POST.get("action", "preview")
+
+    if action == "discard":
+        request.session.pop(LOGO_BG_PREVIEW_SESSION_KEY, None)
+        return redirect("dashboard_branding")
+
+    if action == "confirm":
+        preview_b64 = request.session.get(LOGO_BG_PREVIEW_SESSION_KEY)
+        if not preview_b64 or not organization.logo:
+            # Preview expired, already applied, or the logo was cleared meanwhile.
+            request.session.pop(LOGO_BG_PREVIEW_SESSION_KEY, None)
+            messages.error(request, "That preview expired — run “Remove background” again.")
+            return redirect("dashboard_branding")
+        cleaned = base64.b64decode(preview_b64)
+        stem = os.path.splitext(os.path.basename(organization.logo.name))[0].removesuffix("-nobg")
+        organization.logo.save(f"{stem}-nobg.png", ContentFile(cleaned), save=True)
+        request.session.pop(LOGO_BG_PREVIEW_SESSION_KEY, None)
+        messages.success(request, "Saved your logo with the background removed.")
+        return redirect("dashboard_branding")
+
+    # --- action == "preview": run the model and stash the result ---
     if not organization.logo:
         messages.error(request, "Upload a logo first, then you can remove its background.")
         return redirect("dashboard_branding")
@@ -306,6 +350,11 @@ def branding_logo_remove_bg(request):
         # the cooldown, so a manager can immediately try a different file.
         messages.error(request, str(exc))
         return redirect("dashboard_branding")
+
+    throttle.start_cooldown("logo_bg", org_id, settings.LOGO_BG_COOLDOWN_SECONDS)
+    request.session[LOGO_BG_PREVIEW_SESSION_KEY] = base64.b64encode(cleaned).decode("ascii")
+    messages.success(request, "Here’s your logo with the background removed — save it or discard it.")
+    return redirect("dashboard_branding")
 
     stem = os.path.splitext(os.path.basename(organization.logo.name))[0].removesuffix("-nobg")
     organization.logo.save(f"{stem}-nobg.png", ContentFile(cleaned), save=True)

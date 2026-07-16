@@ -3776,8 +3776,38 @@ table.dash-table th {
 .brand-logo__current {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: flex-end;
     gap: 0.5rem 0.75rem;
+    margin-top: 0.6rem;
+}
+
+/* One "before"/"after" logo shot: the image above a small caption. */
+.brand-logo__shot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    margin: 0;
+}
+
+.brand-logo__caption {
+    font-size: 0.7rem;
+    color: var(--muted-color, #6b7280);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.brand-logo__arrow {
+    align-self: center;
+    font-size: 1.1rem;
+    color: var(--muted-color, #6b7280);
+    padding-bottom: 1rem;
+}
+
+.brand-logo__bg-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
     margin-top: 0.6rem;
 }
 

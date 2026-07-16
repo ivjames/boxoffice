@@ -102,16 +102,37 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                         {{ branding_form.logo.errors }}
                         <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background.</p>
                         {% if organization.logo %}
-                            {% comment %}The button posts the standalone #logo-bg-form declared
-                               above (via form=), so removing the background acts on the
-                               SAVED logo independent of the unsaved color edits here.{% endcomment %}
+                            {% comment %}The buttons post the standalone #logo-bg-form declared
+                               above (via form=), each carrying its action as the submitter, so
+                               background removal acts on the SAVED logo independent of the unsaved
+                               color edits here. A pending result (logo_bg_preview) shows the
+                               before/after for Save/Discard; nothing overwrites the logo until
+                               "Use this logo".{% endcomment %}
                             <div class="brand-logo__current">
-                                <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview">
-                                <button type="submit" form="logo-bg-form" class="button button--secondary button--sm" data-logo-bg-btn>
+                                <figure class="brand-logo__shot">
+                                    <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview">
+                                    <figcaption class="brand-logo__caption">Current</figcaption>
+                                </figure>
+                                {% if logo_bg_preview %}
+                                    <span class="brand-logo__arrow" aria-hidden="true">&rarr;</span>
+                                    <figure class="brand-logo__shot">
+                                        <img src="{{ logo_bg_preview }}" alt="Logo with the background removed (preview)" class="brand-logo__preview">
+                                        <figcaption class="brand-logo__caption">Background removed</figcaption>
+                                    </figure>
+                                {% endif %}
+                            </div>
+                            {% if logo_bg_preview %}
+                                <div class="brand-logo__bg-actions">
+                                    <button type="submit" form="logo-bg-form" name="action" value="confirm" class="button button--sm">Use this logo</button>
+                                    <button type="submit" form="logo-bg-form" name="action" value="discard" class="button button--secondary button--sm">Keep original</button>
+                                </div>
+                                <p class="muted brand-logo__hint">Preview only — your logo isn’t changed until you choose “Use this logo”.</p>
+                            {% else %}
+                                <button type="submit" form="logo-bg-form" name="action" value="preview" class="button button--secondary button--sm" data-logo-bg-btn>
                                     <span class="logo-bg-btn__label">Remove background</span>
                                     <span class="spinner" hidden aria-hidden="true"></span>
                                 </button>
-                            </div>
+                            {% endif %}
                         {% endif %}
                     </div>
                     <div class="font-grid">
@@ -670,11 +691,13 @@ colors straight into these pickers (id="save-scheme" is the JS target).
     // and show the spinner on submit to signal it's running -- no fetch/JSON.
     var bgForm = document.querySelector("[data-logo-bg-form]");
     if (bgForm) {
-        bgForm.addEventListener("submit", function () {
-            // The button is associated via form= and lives outside this form's
-            // DOM subtree, so look it up in the document, not under bgForm.
-            var btn = document.querySelector("[data-logo-bg-btn]");
-            if (!btn) return;
+        bgForm.addEventListener("submit", function (e) {
+            // Only the slow "Remove background" (preview) submit shows the
+            // spinner; confirm/discard are instant. event.submitter is the
+            // button that triggered submit (it lives outside this form's DOM
+            // subtree, associated via form=).
+            var btn = e.submitter || document.querySelector("[data-logo-bg-btn]");
+            if (!btn || !btn.matches("[data-logo-bg-btn]")) return;
             btn.disabled = true;
             var label = btn.querySelector(".logo-bg-btn__label");
             var spinner = btn.querySelector(".spinner");

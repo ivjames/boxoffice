@@ -1,35 +1,31 @@
 """WCAG-aware color-map generator.
 
-The 36 built-in schemes (tenants.color_schemes.BUILTIN_SCHEMES) carry the
-design's exact brand colors. This module takes a source palette and produces a
-WCAG-nudged one by shifting ONLY the two neutral/text roles so they clear
-contrast against the surfaces they sit on -- the four brand colors (primary /
-secondary / feature_accent / dark_accent) are never touched.
+The 36 built-in schemes (tenants.color_schemes.SOURCE_SCHEMES) carry the
+design's exact brand colors. This module takes that source and produces the
+shipped `BUILTIN_SCHEMES` by shifting ONLY the two neutral/text roles so they
+clear WCAG contrast against the surfaces they sit on -- the four brand colors
+(primary / secondary / feature_accent / dark_accent) are never touched.
 
-NOTE: this generator is not yet applied to the shipped catalog -- the contrast
-contract below ("fixed roles") is still being decided, because it leaves 19 of
-36 schemes below AA (every scheme with a light primary: light text can't clear
-AA over a light fill). `manage.py generate_color_schemes` reports that. A
-"best-of-two per surface" contract resolves all 36 and is the likely successor.
+Contract ("best-of-two per surface"):
 
-Contract (chosen for this palette -- "fixed roles"):
+Each surface (the four brand fills, plus the light_neutral page background) is
+labelled light or dark by its relative luminance (WCAG's black/white crossover,
+TEXT_LUMINANCE_THRESHOLD). Text over a light fill is the DARK neutral; text over
+a dark fill is the LIGHT neutral -- the two neutrals swap by surface. Then:
 
-  * `neutral` is the dark body-text color, shown over the `light_neutral`
-    page background. Darken it until it clears the target over light_neutral.
-  * `light_neutral` is the light text color, shown over the dark brand fills
-    (`primary`, `dark_accent`) and over `neutral`. Lighten it until it clears
-    the target over all of those.
+  * `light_neutral` (light text) is lightened until it clears the target over
+    every DARK brand fill.
+  * `neutral` (dark text) is darkened until it clears the target over every
+    LIGHT brand fill AND over the light_neutral page background.
 
-Only luminance moves -- the adjustment shifts a color's HSL lightness while
-holding hue and saturation, so a "Champagne Cream" stays cream, just a shade
-lighter/darker. Target is WCAG AA (4.5:1), upgraded to AAA (7:1) when reaching
-it costs only a small extra nudge (AAA_CHEAP_DELTA_L).
-
-Some schemes have a *light* primary (Powder Blue, Blush, Sea Glass...): light
-text can't clear AA over a light fill no matter how light it goes, so
-`light_neutral` caps at white and `build_wcag_schemes` records the shortfall.
-`manage.py generate_color_schemes` reports those. The generation is pure and
-idempotent: re-running over an already-compliant palette is a no-op.
+Because the threshold is exactly the point where black/white text hits ~4.58:1,
+pushing the chosen neutral toward white/black always clears AA -- so every
+scheme is reachable (no light-primary dead ends). Only luminance moves: the
+adjustment shifts HSL lightness while holding hue and saturation, so a
+"Champagne Cream" stays cream, just a shade lighter/darker, and most neutrals
+barely move (they already pass). Target is WCAG AA (4.5:1), upgraded to AAA
+(7:1) when reaching it costs only a small extra nudge (AAA_CHEAP_DELTA_L). The
+generation is pure and idempotent.
 """
 
 import colorsys
@@ -37,6 +33,12 @@ import colorsys
 # WCAG 2.x contrast thresholds for text.
 AA = 4.5
 AAA = 7.0
+
+# Relative-luminance crossover where black text and white text over a fill give
+# equal contrast (~4.58:1). Above it a fill takes DARK text (the `neutral`
+# role); at or below it, LIGHT text (`light_neutral`). Derives from solving
+# (L+0.05)/0.05 = 1.05/(L+0.05).
+TEXT_LUMINANCE_THRESHOLD = 0.1791
 
 # Upgrade an AA-passing color to AAA only when the extra HSL-lightness move
 # beyond the AA solution is at most this much -- i.e. AAA is "cheap" here.
@@ -125,32 +127,42 @@ def _adjust(hex_color, backgrounds, lighten):
     return aa_hex, True
 
 
+def _is_light(hex_color):
+    """True if a fill takes dark text (its luminance is above the black/white
+    crossover), False if it takes light text."""
+    return relative_luminance(hex_color) > TEXT_LUMINANCE_THRESHOLD
+
+
 def adjust_scheme(roles):
-    """Return (adjusted_roles, warnings) for one scheme's role dict. Only
-    `light_neutral` and `neutral` may change; brand roles pass through
-    untouched. `warnings` lists human-readable AA shortfalls (light-primary
-    schemes)."""
+    """Return (adjusted_roles, warnings) for one scheme's role dict under the
+    best-of-two contract. Only `light_neutral` and `neutral` may change; brand
+    roles pass through untouched. `warnings` is normally empty (every surface is
+    reachable) but is kept for defensiveness against pathological inputs."""
     out = dict(roles)
     warnings = []
+    brand_fills = [roles["primary"], roles["secondary"], roles["feature_accent"], roles["dark_accent"]]
+    dark_fills = [c for c in brand_fills if not _is_light(c)]
+    light_fills = [c for c in brand_fills if _is_light(c)]
 
-    # light_neutral: light text over the dark fills + neutral. Lighten to clear.
-    ln_backgrounds = [roles["primary"], roles["dark_accent"], roles["neutral"]]
-    out["light_neutral"], ln_ok = _adjust(roles["light_neutral"], ln_backgrounds, lighten=True)
-    if not ln_ok:
-        worst = min(ln_backgrounds, key=lambda bg: contrast_ratio(out["light_neutral"], bg))
-        warnings.append(
-            f"light_neutral {out['light_neutral']} only reaches "
-            f"{contrast_ratio(out['light_neutral'], worst):.2f}:1 over {worst} (< {AA}) -- "
-            "light text can't clear AA over this fill (light primary)."
-        )
+    # light_neutral is the LIGHT text over dark fills -> lighten until it clears.
+    if dark_fills:
+        out["light_neutral"], ok = _adjust(roles["light_neutral"], dark_fills, lighten=True)
+        if not ok:
+            worst = min(dark_fills, key=lambda bg: contrast_ratio(out["light_neutral"], bg))
+            warnings.append(
+                f"light_neutral {out['light_neutral']} only reaches "
+                f"{contrast_ratio(out['light_neutral'], worst):.2f}:1 over {worst} (< {AA})."
+            )
 
-    # neutral: dark body text over the finalized light_neutral. Darken to clear.
-    out["neutral"], n_ok = _adjust(roles["neutral"], [out["light_neutral"]], lighten=False)
-    if not n_ok:
+    # neutral is the DARK text over light fills + the light_neutral page bg
+    # -> darken until it clears over all of them.
+    neutral_fills = light_fills + [out["light_neutral"]]
+    out["neutral"], ok = _adjust(roles["neutral"], neutral_fills, lighten=False)
+    if not ok:
+        worst = min(neutral_fills, key=lambda bg: contrast_ratio(out["neutral"], bg))
         warnings.append(
             f"neutral {out['neutral']} only reaches "
-            f"{contrast_ratio(out['neutral'], out['light_neutral']):.2f}:1 "
-            f"over light_neutral {out['light_neutral']} (< {AA})."
+            f"{contrast_ratio(out['neutral'], worst):.2f}:1 over {worst} (< {AA})."
         )
 
     return out, warnings

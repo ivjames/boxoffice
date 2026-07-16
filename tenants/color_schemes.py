@@ -23,6 +23,8 @@ the derive agent) speaks in these six role keys; ROLE_TO_ORG_FIELD is the
 single place the mapping to storage lives.
 """
 
+from .color_generator import build_wcag_schemes
+
 # (role key, human label, Organization field it applies onto). Order matches
 # the client's palette spec (Feature Accent precedes Dark Accent) and is the
 # display order everywhere: admin, the branding form, the preset swatches.
@@ -45,17 +47,14 @@ ROLE_TO_ORG_FIELD = {key: field for key, _label, field in COLOR_ROLES}
 HEX_COLOR_RE = r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
 
 
-# The built-in preset catalog: The Roxy Theater's curated 36-scheme palette
-# matrix (spectrum order). Seeded as ColorScheme rows with organization=NULL,
-# is_preset=True and kept in sync (upsert + prune) by sync_presets / the
-# `seed_color_schemes` command. Each entry is (slug, name, roles) in the
-# six-key role shape above; `feature_accent` holds the spec's Feature Accent.
-#
-# A WCAG contrast generator (tenants.color_generator) that nudges the two
-# neutral/text roles for accessibility is available and reported by
-# `manage.py generate_color_schemes`, but is NOT yet applied to this shipped
-# catalog -- the contrast contract is still being decided (see that module).
-BUILTIN_SCHEMES = [
+# The design source: The Roxy Theater's curated 36-scheme palette matrix
+# (spectrum order). These are the exact brand colors; the shipped BUILTIN_SCHEMES
+# below is derived from them by the WCAG generator (tenants.color_generator),
+# which nudges ONLY the two neutral/text roles for contrast (best-of-two per
+# surface) and leaves the four brand roles untouched. Each entry is (slug, name,
+# roles) in the six-key role shape above; `feature_accent` holds the Feature
+# Accent.
+SOURCE_SCHEMES = [
     ("ruby-velvet", "Ruby Velvet", {
         "primary": "#6A1E32", "secondary": "#A64868", "feature_accent": "#4E7773",
         "dark_accent": "#2C0E17", "light_neutral": "#F7EFE3", "neutral": "#181312"}),
@@ -165,6 +164,12 @@ BUILTIN_SCHEMES = [
         "primary": "#B6B8BD", "secondary": "#D8D9DC", "feature_accent": "#6A7F94",
         "dark_accent": "#41444A", "light_neutral": "#FAFAFA", "neutral": "#202124"}),
 ]
+
+# The shipped catalog: SOURCE_SCHEMES with the two neutral/text roles nudged for
+# WCAG contrast (best-of-two per surface -- see tenants.color_generator).
+# Everything else in the app imports BUILTIN_SCHEMES and is unaffected by the
+# source/generated split. Computed once at import -- pure and deterministic.
+BUILTIN_SCHEMES = build_wcag_schemes(SOURCE_SCHEMES)
 
 
 def sync_presets(ColorScheme):

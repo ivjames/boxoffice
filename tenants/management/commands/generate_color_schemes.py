@@ -1,16 +1,17 @@
-"""Report what the WCAG color generator (tenants.color_generator) would do to
-the current catalog: which schemes' neutral/text colors it shifts, and which
-can't reach AA (light-primary schemes where light text over the primary fill is
-impossible).
+"""Report what the WCAG color generator (tenants.color_generator) does to the
+SOURCE palette to produce the shipped catalog: which schemes' neutral/text
+colors it shifts (source -> generated) and any AA shortfalls (there should be
+none under the best-of-two contract).
 
-Evaluation tool only -- the generator is NOT yet applied to the shipped
-BUILTIN_SCHEMES (the contrast contract is being decided), so this command
-writes nothing. `--check` exits non-zero if any scheme fails AA.
+The shipped BUILTIN_SCHEMES is already `build_wcag_schemes(SOURCE_SCHEMES)`
+computed at import, so this command writes nothing -- it's the
+inspection/verification surface. `--check` exits non-zero if any scheme fails
+AA (suitable for CI).
 """
 
 from django.core.management.base import BaseCommand
 
-from tenants.color_schemes import BUILTIN_SCHEMES
+from tenants.color_schemes import SOURCE_SCHEMES
 from tenants.color_generator import scheme_report
 
 
@@ -25,7 +26,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        report = scheme_report(BUILTIN_SCHEMES)
+        report = scheme_report(SOURCE_SCHEMES)
         shifted = [r for r in report if r["changes"]]
         failed = [r for r in report if r["warnings"]]
 

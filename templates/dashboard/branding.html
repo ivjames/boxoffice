@@ -82,10 +82,10 @@ colors straight into these pickers (id="save-scheme" is the JS target).
     <p class="muted">Upload a logo, choose fonts, and set the exact colors your
     storefront uses right now. Preview a ready-made scheme below to load it here.</p>
     {% if organization.logo %}
-    {# Background removal is its OWN form, kept outside the editor form below --
+    {% comment %}Background removal is its OWN form, kept outside the editor form below --
        nested <form>s are invalid HTML (the browser drops the inner one, so the
        button would post to the editor instead). Its button sits by the logo
-       preview inside that form via the HTML5 form= attribute. #}
+       preview inside that form via the HTML5 form= attribute.{% endcomment %}
     <form method="post" action="{% url 'dashboard_branding_logo_remove_bg' %}" id="logo-bg-form" data-logo-bg-form hidden>
         {% csrf_token %}
     </form>
@@ -102,9 +102,9 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                         {{ branding_form.logo.errors }}
                         <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background.</p>
                         {% if organization.logo %}
-                            {# The button posts the standalone #logo-bg-form declared
+                            {% comment %}The button posts the standalone #logo-bg-form declared
                                above (via form=), so removing the background acts on the
-                               SAVED logo independent of the unsaved color edits here. #}
+                               SAVED logo independent of the unsaved color edits here.{% endcomment %}
                             <div class="brand-logo__current">
                                 <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview">
                                 <button type="submit" form="logo-bg-form" class="button button--secondary button--sm" data-logo-bg-btn>

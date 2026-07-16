@@ -394,6 +394,17 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def _messages(self, resp):
         return [str(m) for m in get_messages(resp.wsgi_request)]
 
+    def test_branding_page_does_not_leak_template_comments(self):
+        # Regression: the logo-field explainer comments must be {% comment %}
+        # blocks, not multi-line {# #} (which Django can't span across lines and
+        # renders as literal text -- see the repo's earlier fix for the same
+        # footgun). Both comments only render once a logo exists.
+        self._give_logo()
+        html = self.client.get(BRANDING_URL, HTTP_HOST=host_for("roxy")).content.decode()
+        self.assertNotIn("The button posts the standalone", html)
+        self.assertNotIn("Background removal is its OWN", html)
+        self.assertNotIn("{#", html)
+
     def test_success_saves_cleaned_logo(self):
         self._give_logo()
         original = self.org.logo.name

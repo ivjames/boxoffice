@@ -16,6 +16,7 @@ from guests import services as guest_services
 from guests.models import normalize_email
 from payments import services as payment_services
 from tenants.decorators import require_tenant
+from tenants.logo_images import read_logo_bytes
 
 from . import services
 from .emails import send_order_receipt
@@ -699,7 +700,13 @@ def ticket_detail(request, token):
             "seat__section__ordering", "seat__row_label", "seat__number", "id"
         )
     )
-    ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket)} for ticket in tickets]
+    # One logo read for the whole order; each ticket's QR gets the org's mark
+    # centered on it (None => plain QR). See orders/qr.py.
+    logo_bytes = read_logo_bytes(order.organization)
+    ticket_rows = [
+        {"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket, logo_bytes=logo_bytes)}
+        for ticket in tickets
+    ]
     donation_item = (
         order.items.filter(kind=OrderItem.Kind.DONATION)
         .select_related("donation_campaign")

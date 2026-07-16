@@ -37,6 +37,24 @@ MAX_LOGO_UPLOAD_BYTES = getattr(settings, "MAX_LOGO_UPLOAD_BYTES", 5 * 1024 * 10
 MAX_LOGO_DIMENSION = getattr(settings, "MAX_LOGO_DIMENSION", 512)
 
 
+def read_logo_bytes(organization):
+    """Return the raw bytes of an org's logo, or None if it has none / the file
+    can't be read. Central helper so the surfaces that embed the logo (the ticket
+    PDF header, the QR overlay) read it one way and never raise on a missing or
+    broken file -- an unbranded fallback beats a crash."""
+    logo = getattr(organization, "logo", None)
+    if not logo:
+        return None
+    try:
+        logo.open("rb")
+        try:
+            return logo.read()
+        finally:
+            logo.close()
+    except Exception:
+        return None
+
+
 def validate_logo_upload(file):
     """Field validator: refuse a logo whose raw bytes exceed
     MAX_LOGO_UPLOAD_BYTES. Runs during form/model full_clean (dashboard branding

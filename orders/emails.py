@@ -20,6 +20,8 @@ from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.urls import reverse
 
+from tenants.logo_images import read_logo_bytes
+
 from .models import OrderItem
 from .qr import ticket_qr_data_uri
 
@@ -69,8 +71,14 @@ def send_ticket_email(order):
     a link; see orders/qr.py.)
     """
     tickets = list(order.tickets.select_related("seat", "seat__section").order_by("id"))
-    ticket_rows = [{"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket)} for ticket in tickets]
     organization = order.organization
+    # Read the org logo once and hand it to every ticket's QR (they share one
+    # org) rather than re-reading the file per ticket; None => plain QR codes.
+    logo_bytes = read_logo_bytes(organization)
+    ticket_rows = [
+        {"ticket": ticket, "qr_data_uri": ticket_qr_data_uri(ticket, logo_bytes=logo_bytes)}
+        for ticket in tickets
+    ]
     tickets_url = organization.base_url + reverse("ticket_detail", args=[order.token])
 
     # Carry the theater's branding into the email so a buyer sees the venue

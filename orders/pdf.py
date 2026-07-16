@@ -16,21 +16,10 @@ URL, so there's no host/scheme to resolve.
 
 import io
 
-import segno
-
 from events.timezones import in_venue_tz
+from tenants.logo_images import read_logo_bytes
 
-from .tokens import scan_code
-
-
-def _qr_png_bytes(ticket, scale=6, border=2):
-    """PNG bytes of the ticket's signed scan QR (same code/signing/error level
-    as the on-page and email QR, just emitted as raw PNG bytes for reportlab's
-    ImageReader instead of a data URI)."""
-    buf = io.BytesIO()
-    segno.make(scan_code(ticket), error="h").save(buf, kind="png", scale=scale, border=border)
-    buf.seek(0)
-    return buf
+from .qr import ticket_qr_png_bytes
 
 
 def render_order_pdf(order):
@@ -59,18 +48,21 @@ def render_order_pdf(order):
         )
     )
 
+    # Read the org logo once: it brands the header (below) AND is centered on
+    # each ticket's QR (see the card loop). None => an unbranded PDF + plain QRs.
+    logo_bytes = read_logo_bytes(order.organization)
+
     # --- Theater logo (first page, top-right) ---
     # Brand the downloadable/printed ticket with the org's logo when it has one,
     # opposite the event title. Drawn inside a fixed box with preserveAspectRatio
     # so any logo shape fits without distortion, and mask="auto" so a transparent
     # PNG (the normalized/background-removed form) has no white plate. Wrapped
     # like the QR below: a bad logo must never sink the whole PDF.
-    logo_reader = _logo_reader(order.organization, ImageReader)
-    if logo_reader is not None:
+    if logo_bytes:
         logo_w, logo_h = 1.6 * inch, 0.55 * inch
         try:
             c.drawImage(
-                logo_reader,
+                ImageReader(io.BytesIO(logo_bytes)),
                 page_w - margin - logo_w,
                 page_h - margin - logo_h,
                 width=logo_w,
@@ -116,7 +108,7 @@ def render_order_pdf(order):
         qr_x = margin
         try:
             c.drawImage(
-                ImageReader(_qr_png_bytes(ticket)),
+                ImageReader(io.BytesIO(ticket_qr_png_bytes(ticket, logo_bytes=logo_bytes))),
                 qr_x,
                 qr_top - qr_size,
                 width=qr_size,
@@ -152,25 +144,6 @@ def render_order_pdf(order):
     c.showPage()
     c.save()
     return buf.getvalue()
-
-
-def _logo_reader(organization, image_reader_cls):
-    """A reportlab ImageReader for the org's logo, or None if it has no logo or
-    the file can't be read. Reads the bytes into memory (the storage file may be
-    remote/one-shot) and never raises -- a broken logo just means an unbranded
-    PDF, not a failed download."""
-    logo = getattr(organization, "logo", None)
-    if not logo:
-        return None
-    try:
-        logo.open("rb")
-        try:
-            data = logo.read()
-        finally:
-            logo.close()
-        return image_reader_cls(io.BytesIO(data))
-    except Exception:
-        return None
 
 
 def _seat_label(ticket):

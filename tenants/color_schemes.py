@@ -46,11 +46,15 @@ HEX_COLOR_RE = r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
 
 
 # The built-in preset catalog: The Roxy Theater's curated 36-scheme palette
-# matrix (spectrum order; every swatch label WCAG AA against its fill). Seeded
-# as ColorScheme rows with organization=NULL, is_preset=True by the tenants
-# migration and kept in sync (upsert + prune) by sync_presets / the
+# matrix (spectrum order). Seeded as ColorScheme rows with organization=NULL,
+# is_preset=True and kept in sync (upsert + prune) by sync_presets / the
 # `seed_color_schemes` command. Each entry is (slug, name, roles) in the
 # six-key role shape above; `feature_accent` holds the spec's Feature Accent.
+#
+# A WCAG contrast generator (tenants.color_generator) that nudges the two
+# neutral/text roles for accessibility is available and reported by
+# `manage.py generate_color_schemes`, but is NOT yet applied to this shipped
+# catalog -- the contrast contract is still being decided (see that module).
 BUILTIN_SCHEMES = [
     ("ruby-velvet", "Ruby Velvet", {
         "primary": "#6A1E32", "secondary": "#A64868", "feature_accent": "#4E7773",

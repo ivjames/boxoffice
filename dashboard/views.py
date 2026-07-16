@@ -861,11 +861,14 @@ def branding(request):
     colors, the built-in preset gallery, and the tenant's saved custom schemes.
     POST dispatches on an `action` field:
 
-    - save_colors:  save the logo + hand-picked colors (BrandingForm).
+    - save_colors:  save the logo + fonts + hand-picked colors (BrandingForm).
+      This is the one editor's primary "Save branding" button.
     - apply_scheme: copy a preset OR one of this tenant's own schemes onto the
       org (scheme lookup is scoped to presets + this org, so a tampered pk
       can't apply another tenant's scheme).
-    - save_scheme:  save the six posted colors as a new custom scheme.
+    - save_scheme:  save the editor's six colors as a new named custom scheme
+      (the same form's "Save as scheme" button; colors post under the org field
+      names, normalized back to role keys here).
     - delete_scheme: delete one of this tenant's own custom schemes.
 
     Colors are stored on the Organization (the storefront's source of truth);
@@ -891,14 +894,31 @@ def branding(request):
         return redirect("dashboard_branding")
 
     if action == "save_scheme":
-        form = ColorSchemeForm(request.POST, organization=organization)
+        # The unified editor posts colors under the Organization field names
+        # (primary_color, …); accept the scheme-role names too so the derive
+        # flow and a direct role-keyed POST both work. ROLE key wins if present.
+        scheme_data = {
+            "name": request.POST.get("name", ""),
+            **{
+                role: request.POST.get(role) or request.POST.get(org_field) or ""
+                for role, _label, org_field in COLOR_ROLES
+            },
+        }
+        form = ColorSchemeForm(scheme_data, organization=organization)
         if form.is_valid():
             scheme = form.save()
             messages.success(request, f"Saved “{scheme.name}” to your schemes.")
             if request.POST.get("apply_after_save"):
                 _apply_scheme_to_org(request, scheme)
             return redirect("dashboard_branding")
-        return render(request, "dashboard/branding.html", _branding_context(request, scheme_form=form))
+        # Re-render with the name error surfaced and the manager's in-progress
+        # logo/font/color edits preserved in the one editor (bound, not saved).
+        branding_form = BrandingForm(request.POST, request.FILES, instance=organization)
+        return render(
+            request,
+            "dashboard/branding.html",
+            _branding_context(request, branding_form=branding_form, scheme_form=form),
+        )
 
     if action == "delete_scheme":
         scheme = get_object_or_404(
@@ -930,14 +950,26 @@ def branding_derive(request):
         messages.error(request, str(exc))
         return redirect("dashboard_branding")
 
-    # Pre-fill the save-a-scheme form with the derived colors so the same POST
-    # paths (save_scheme / apply_after_save) handle it -- no special apply path.
-    initial = {"name": derived["name"], **derived["roles"]}
-    scheme_form = ColorSchemeForm(initial=initial, organization=request.organization)
+    # Pre-fill the one editor with the derived colors: the six pickers (on the
+    # Organization field names) and the optional scheme-name input (scheme_form
+    # supplies its value/errors). Saving then runs the ordinary save_colors /
+    # save_scheme POST paths -- no special apply path.
+    organization = request.organization
+    scheme_form = ColorSchemeForm(
+        initial={"name": derived["name"], **derived["roles"]}, organization=organization
+    )
+    branding_form = BrandingForm(
+        instance=organization,
+        initial={
+            org_field: derived["roles"][role] for role, _label, org_field in COLOR_ROLES
+        },
+    )
     return render(
         request,
         "dashboard/branding.html",
-        _branding_context(request, scheme_form=scheme_form, derived=derived),
+        _branding_context(
+            request, scheme_form=scheme_form, branding_form=branding_form, derived=derived
+        ),
     )
 
 

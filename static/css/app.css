@@ -3468,33 +3468,63 @@ table.dash-table th {
    CLAUDE.md "Frontend / styling". */
 
 .brand-section {
-    margin: 2rem 0;
-    padding-bottom: 1.5rem;
+    margin: 1.25rem 0;
+    padding-bottom: 1rem;
     border-bottom: 1px solid var(--border-color);
 }
 
 .brand-section h2 {
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+
+/* Current colors (left) + Derive-from-website (right) share one row. Stacks
+   on narrow. */
+.brand-intro-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1.25rem 2rem;
+    align-items: start;
+}
+
+.brand-intro-row__col {
+    min-width: 0;
+}
+
+.brand-intro-row__col > h2:first-child {
+    margin-top: 0;
+}
+
+@media (max-width: 52rem) {
+    .brand-intro-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Keep the page's primary actions compact so the tools stay above the fold --
+   scoped to the branding page (:not(.button--sm) leaves the already-small
+   card/tool buttons alone). */
+.brand-section .button:not(.button--sm) {
+    padding: 0.45rem 1rem;
 }
 
 /* Labelled swatches (the "current colors" preview). */
 .swatch-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 1rem;
+    gap: 0.65rem;
 }
 
 .swatch {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.15rem;
     font-size: 0.8125rem;
 }
 
 .swatch__chip {
-    width: 3rem;
-    height: 3rem;
+    width: 2.25rem;
+    height: 2.25rem;
     border-radius: 0.5rem;
     border: 1px solid var(--border-color);
 }
@@ -3504,7 +3534,8 @@ table.dash-table th {
     font-size: 0.75rem;
 }
 
-/* Compact contiguous strip of chips (preset cards, found-colors ribbon). */
+/* Compact contiguous strip of chips (preset cards, found-colors ribbon,
+   the current-palette display). */
 .swatch-strip {
     display: flex;
     flex-wrap: wrap;
@@ -3519,20 +3550,52 @@ table.dash-table th {
     flex: 0 0 auto;
 }
 
+/* Full-bleed variant: chips share the row equally (used for the current
+   palette, where the six roles should span the whole strip). */
+.swatch-strip--fill .swatch-strip__chip {
+    flex: 1 0 0;
+    height: 2.5rem;
+}
+
+/* Role/hex captions aligned under a --fill strip: one equal-width column per
+   chip, so each label sits beneath its swatch. */
+.current-colors__labels {
+    display: flex;
+    margin-top: 0.35rem;
+}
+
+.current-colors__label {
+    flex: 1 0 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+    text-align: center;
+    font-size: 0.75rem;
+    padding: 0 0.15rem;
+}
+
+.current-colors__label code {
+    color: var(--muted-color, #6b7280);
+    font-size: 0.7rem;
+}
+
 /* Preset / saved-scheme gallery. */
 .scheme-gallery {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr));
+    gap: 0.75rem;
 }
 
 /* The preset gallery holds the full catalog (36+), so it scrolls inside a
-   fixed-height viewport instead of stretching the page. Padding + top border
-   keep the scrollbar and the last row off the cards' edges. */
+   fixed-height viewport instead of stretching the page. Kept short (320px) so
+   the logo/fonts/fine-tuning tools below stay within reach. Padding + top
+   border keep the scrollbar and the last row off the cards' edges. */
 .scheme-gallery--scroll {
-    max-height: 32rem;
+    max-height: 320px;
     overflow-y: auto;
-    padding: 0.75rem;
+    padding: 0.5rem;
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     background: color-mix(in srgb, var(--border-color) 12%, transparent);
@@ -3579,9 +3642,9 @@ table.dash-table th {
 .font-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-    gap: 0.75rem 1rem;
+    gap: 0.55rem 0.85rem;
     max-width: 40rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
 }
 
 .font-grid .field {
@@ -3591,10 +3654,10 @@ table.dash-table th {
 /* The six color pickers, laid out in a responsive grid. */
 .color-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-    gap: 0.75rem 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+    gap: 0.55rem 0.85rem;
     max-width: 40rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.6rem;
 }
 
 .color-grid__field {
@@ -3612,7 +3675,7 @@ table.dash-table th {
 
 .brand-actions {
     display: flex;
-    gap: 0.75rem;
+    gap: 0.6rem;
 }
 
 .brand-derived {
@@ -3622,18 +3685,57 @@ table.dash-table th {
 /* Editor + live preview side by side (stacks under ~40rem, see below). */
 .brand-editor {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
-    gap: 1.5rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 19rem);
+    gap: 1.25rem 1.5rem;
     align-items: start;
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
 }
 
 .brand-editor .color-grid {
     margin-bottom: 0;
 }
 
+/* Columnar controls: the logo/fonts/tint/name metadata in one column, the six
+   color pickers + harmonize in the next, so the editor packs into the preview's
+   height instead of a tall single stack. Collapses to one column on narrow. */
+.brand-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem 1.25rem;
+    align-items: start;
+}
+
+.brand-controls__col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    min-width: 0;
+}
+
+/* Inside a control column the grids stay single-column-friendly (narrower
+   track), so they never overflow their half of the row. */
+.brand-controls .color-grid,
+.brand-controls .font-grid {
+    grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
+    margin-bottom: 0;
+    max-width: none;
+}
+
+.brand-controls .brand-tools,
+.brand-controls .page-tint-field,
+.brand-controls .brand-name-field {
+    margin-top: 0;
+    max-width: none;
+}
+
+@media (max-width: 52rem) {
+    .brand-controls {
+        grid-template-columns: 1fr;
+    }
+}
+
 .page-tint-field {
-    margin-top: 1.25rem;
+    margin-top: 0.85rem;
     max-width: 24rem;
 }
 
@@ -3646,12 +3748,19 @@ table.dash-table th {
     font-size: 0.8rem;
 }
 
+/* Optional "save these colors as a named scheme" field, tucked under the
+   editor's controls (part of the one branding form). */
+.brand-name-field {
+    margin-top: 0.85rem;
+    max-width: 28rem;
+}
+
 .brand-tools {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem 0.75rem;
-    margin-top: 1.25rem;
+    margin-top: 0.85rem;
 }
 
 .brand-tools__hint {
@@ -3665,7 +3774,7 @@ table.dash-table th {
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    margin-top: 1rem;
+    margin-top: 0.75rem;
 }
 
 .brand-history {

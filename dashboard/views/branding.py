@@ -356,8 +356,20 @@ def branding_logo_remove_bg(request):
     messages.success(request, "Here’s your logo with the background removed — save it or discard it.")
     return redirect("dashboard_branding")
 
-    stem = os.path.splitext(os.path.basename(organization.logo.name))[0].removesuffix("-nobg")
-    organization.logo.save(f"{stem}-nobg.png", ContentFile(cleaned), save=True)
-    throttle.start_cooldown("logo_bg", org_id, settings.LOGO_BG_COOLDOWN_SECONDS)
-    messages.success(request, "Removed the background from your logo.")
+
+@manager_required
+@require_POST
+def branding_logo_remove(request):
+    """Delete the org's logo entirely (the storefront falls back to its name).
+    An explicit action button on the branding page -- the reason the logo field
+    uses a plain file input instead of Django's ClearableFileInput + its Clear
+    checkbox. Also drops any pending background-removal preview, since it's about
+    a logo that's about to be gone."""
+    organization = request.organization
+    request.session.pop(LOGO_BG_PREVIEW_SESSION_KEY, None)
+    if organization.logo:
+        organization.logo.delete(save=True)  # removes the stored file, clears the field, saves
+        messages.success(request, "Removed your logo.")
+    else:
+        messages.info(request, "There’s no logo to remove.")
     return redirect("dashboard_branding")

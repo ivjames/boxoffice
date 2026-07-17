@@ -545,6 +545,12 @@ class BrandingForm(forms.ModelForm):
         # of the (org-field) input name. data-page-tint lets that JS recolor the
         # preview's page background live as the intensity changes.
         widgets = {
+            # Plain FileInput, NOT the default ClearableFileInput: the branding
+            # page shows the current logo as a preview thumbnail and offers an
+            # explicit "Remove logo" button, so the widget's "Currently…/Clear
+            # checkbox/Change…" chrome is redundant clutter. A bare file input is
+            # all we want here.
+            "logo": forms.FileInput(attrs={"accept": "image/*"}),
             **{
                 field: forms.TextInput(attrs={"type": "color", "data-role": role})
                 for role, _label, field in COLOR_ROLES

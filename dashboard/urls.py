@@ -132,6 +132,11 @@ urlpatterns = [
         name="dashboard_branding_logo_remove_bg",
     ),
     path(
+        "dashboard/branding/logo/upload/",
+        views.branding_logo_upload,
+        name="dashboard_branding_logo_upload",
+    ),
+    path(
         "dashboard/branding/logo/remove/",
         views.branding_logo_remove,
         name="dashboard_branding_logo_remove",

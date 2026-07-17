@@ -782,10 +782,19 @@ browser will honor it.
 ## Logo background removal (optional)
 
 The branding page's **"Remove background"** button (`tenants/logo_bg.py`) strips
-a tenant logo's background to a transparent PNG, using `rembg` (a U²-Net model
-via `onnxruntime`). Unlike the AI features above it needs **no API key** — it's
+a tenant logo's background to a transparent PNG. It's a two-tier hybrid:
+
+- A logo on a **clean, solid background** (the common case — exported on white)
+  is handled by a fast, **dependency-free flood-fill** (`tenants/logo_flood.py`,
+  Pillow-only). No model, no cold start — and it keeps interior same-colour
+  areas (a white belly on a white background) that the ML model over-removes.
+- Only a **busy/photographic background** (no uniform edge to key on) falls back
+  to `rembg` (a U²-Net model via `onnxruntime`).
+
+So everything below about `rembg` applies **only to that fallback** — clean-
+background logos work with `rembg` absent. It needs **no API key** and is
 dependency-gated: the import is guarded like Sentry, so if `rembg` isn't
-installed the endpoint just reports itself unavailable and nothing else breaks.
+installed the fallback just reports itself unavailable and nothing else breaks.
 
 `rembg[cpu]` is already in `requirements.txt`, so a normal **`boxoffice deploy`
 installs it automatically** (that command runs `pip install -r requirements.txt`

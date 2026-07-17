@@ -3936,6 +3936,77 @@ table.dash-table th {
     color: #111827;
 }
 
+/* "Erase areas" editor overlay. Same hidden gotcha as the lightbox: default
+   display is flex, [hidden] out-specifies it. */
+.logo-erase {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+}
+
+.logo-erase[hidden] {
+    display: none;
+}
+
+.logo-erase__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.logo-erase__dialog {
+    position: relative;
+    max-width: min(92vw, 560px);
+    background: #fff;
+    border-radius: 12px;
+    padding: 1.25rem;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+
+.logo-erase__hint {
+    margin: 0 0 0.75rem;
+    font-size: 0.85rem;
+    color: #374151;
+}
+
+.logo-erase__canvas-wrap {
+    display: flex;
+    justify-content: center;
+    max-height: 60vh;
+    overflow: auto;
+}
+
+/* Checkerboard so cleared (transparent) areas read as gone; crosshair to signal
+   click-to-erase. object-fit isn't used -- the canvas is drawn at native size. */
+#logo-erase-canvas {
+    max-width: 100%;
+    height: auto;
+    cursor: crosshair;
+    border-radius: 8px;
+    background-color: #fff;
+    background-image:
+        linear-gradient(45deg, #e5e7eb 25%, transparent 25%, transparent 75%, #e5e7eb 75%),
+        linear-gradient(45deg, #e5e7eb 25%, transparent 25%, transparent 75%, #e5e7eb 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 10px 10px;
+}
+
+.logo-erase__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.logo-erase__spacer {
+    flex: 1 1 auto;
+}
+
 .brand-save-row {
     display: flex;
     flex-wrap: wrap;

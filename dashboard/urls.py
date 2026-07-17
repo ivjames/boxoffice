@@ -141,6 +141,11 @@ urlpatterns = [
         views.branding_logo_remove,
         name="dashboard_branding_logo_remove",
     ),
+    path(
+        "dashboard/branding/logo/erase/",
+        views.branding_logo_erase,
+        name="dashboard_branding_logo_erase",
+    ),
     # -- team / roles -------------------------------------------------------
     path("dashboard/team/", views.team, name="dashboard_team"),
     path("dashboard/team/add/", views.team_add, name="dashboard_team_add"),

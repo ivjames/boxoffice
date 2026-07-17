@@ -3773,12 +3773,40 @@ table.dash-table th {
     font-size: 0.8rem;
 }
 
+/* Logo lives in its own full-width row above the fonts/colors grid: upload on
+   the left, previews on the right, so the previews don't stretch a grid column
+   and leave a gap. Wraps to stacked on narrow screens. */
+.brand-logo-row {
+    grid-column: 1 / -1;  /* span the full brand-editor grid, above both columns */
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 1rem 2rem;
+    margin-bottom: 1.25rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.22);
+}
+
+.brand-logo-row__upload {
+    flex: 0 1 30rem;
+    min-width: 220px;
+    max-width: 100%;
+}
+
+.brand-logo-row__preview {
+    flex: 0 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
 .brand-logo__current {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem 0.9rem;
-    margin-top: 0.6rem;
+    margin-top: 0;
 }
 
 /* One "before"/"after" logo shot: the image above a small caption. */

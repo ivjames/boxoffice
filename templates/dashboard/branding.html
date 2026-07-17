@@ -93,50 +93,58 @@ colors straight into these pickers (id="save-scheme" is the JS target).
     <form method="post" action="{% url 'dashboard_branding' %}" enctype="multipart/form-data" class="dash-form">
         {% csrf_token %}
         <div class="brand-editor">
-            <div class="brand-controls">
-                {# Column 1: logo, fonts, page tint, optional scheme name. #}
-                <div class="brand-controls__col">
-                    <div class="field">
-                        {{ branding_form.logo.label_tag }}
-                        {{ branding_form.logo }}
-                        {{ branding_form.logo.errors }}
-                        <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background.</p>
-                        {% if organization.logo %}
-                            {% comment %}The buttons post the standalone #logo-bg-form declared
-                               above (via form=), each carrying its action as the submitter, so
-                               background removal acts on the SAVED logo independent of the unsaved
-                               color edits here. A pending result (logo_bg_preview) shows the
-                               before/after for Save/Discard; nothing overwrites the logo until
-                               "Use this logo".{% endcomment %}
-                            <div class="brand-logo__current">
-                                <figure class="brand-logo__shot">
-                                    <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview"
-                                         data-zoomable data-caption="Current logo" role="button" tabindex="0" title="Click to enlarge">
-                                    <figcaption class="brand-logo__caption">Current</figcaption>
-                                </figure>
-                                {% if logo_bg_preview %}
-                                    <span class="brand-logo__arrow" aria-hidden="true">&rarr;</span>
-                                    <figure class="brand-logo__shot">
-                                        <img src="{{ logo_bg_preview }}" alt="Logo with the background removed (preview)" class="brand-logo__preview"
-                                             data-zoomable data-caption="Background removed" role="button" tabindex="0" title="Click to enlarge">
-                                        <figcaption class="brand-logo__caption">Background removed</figcaption>
-                                    </figure>
-                                {% endif %}
-                            </div>
-                            {% if logo_bg_preview %}
-                                <div class="brand-logo__bg-actions">
-                                    <button type="submit" form="logo-bg-form" name="action" value="confirm" class="button button--sm">Use this logo</button>
-                                    <button type="submit" form="logo-bg-form" name="action" value="discard" class="button button--secondary button--sm">Keep original</button>
-                                </div>
-                                <p class="muted brand-logo__hint">Preview only — your logo isn’t changed until you choose “Use this logo”.</p>
-                            {% else %}
-                                <button type="submit" form="logo-bg-form" name="action" value="preview" class="button button--secondary button--sm" data-logo-bg-btn>
-                                    <span class="logo-bg-btn__label">Remove background</span>
-                                    <span class="spinner" hidden aria-hidden="true"></span>
-                                </button>
-                            {% endif %}
+            {% comment %}Logo gets its OWN full-width row above the fonts/colors grid
+               (grid-column: 1 / -1), so its reasonably-sized previews sit inline
+               (upload left, previews right) instead of stretching column 1 and
+               leaving a gap by the pickers.{% endcomment %}
+            <div class="brand-logo-row">
+                <div class="field brand-logo-row__upload">
+                    {{ branding_form.logo.label_tag }}
+                    {{ branding_form.logo }}
+                    {{ branding_form.logo.errors }}
+                    <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background. Uploading a new logo replaces the current one when you Save.</p>
+                </div>
+                {% if organization.logo %}
+                <div class="brand-logo-row__preview">
+                    {% comment %}The buttons post the standalone #logo-bg-form declared
+                       above (via form=), each carrying its action as the submitter, so
+                       background removal acts on the SAVED logo independent of the unsaved
+                       color edits here. A pending result (logo_bg_preview) shows the
+                       before/after for Save/Discard; nothing overwrites the logo until
+                       "Use this logo".{% endcomment %}
+                    <div class="brand-logo__current">
+                        <figure class="brand-logo__shot">
+                            <img src="{{ organization.logo.url }}" alt="Current logo" class="brand-logo__preview"
+                                 data-zoomable data-caption="Current logo" role="button" tabindex="0" title="Click to enlarge">
+                            <figcaption class="brand-logo__caption">Current</figcaption>
+                        </figure>
+                        {% if logo_bg_preview %}
+                            <span class="brand-logo__arrow" aria-hidden="true">&rarr;</span>
+                            <figure class="brand-logo__shot">
+                                <img src="{{ logo_bg_preview }}" alt="Logo with the background removed (preview)" class="brand-logo__preview"
+                                     data-zoomable data-caption="Background removed" role="button" tabindex="0" title="Click to enlarge">
+                                <figcaption class="brand-logo__caption">Background removed</figcaption>
+                            </figure>
                         {% endif %}
                     </div>
+                    {% if logo_bg_preview %}
+                        <div class="brand-logo__bg-actions">
+                            <button type="submit" form="logo-bg-form" name="action" value="confirm" class="button button--sm">Use this logo</button>
+                            <button type="submit" form="logo-bg-form" name="action" value="discard" class="button button--secondary button--sm">Keep original</button>
+                        </div>
+                        <p class="muted brand-logo__hint">Preview only — your logo isn’t changed until you choose “Use this logo”.</p>
+                    {% else %}
+                        <button type="submit" form="logo-bg-form" name="action" value="preview" class="button button--secondary button--sm" data-logo-bg-btn>
+                            <span class="logo-bg-btn__label">Remove background</span>
+                            <span class="spinner" hidden aria-hidden="true"></span>
+                        </button>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+            <div class="brand-controls">
+                {# Column 1: fonts, page tint, optional scheme name. #}
+                <div class="brand-controls__col">
                     <div class="font-grid">
                         <div class="field">
                             {{ branding_form.heading_font.label_tag }}

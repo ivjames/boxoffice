@@ -33,6 +33,7 @@ from .branding import (
     branding_harmonize,
     branding_logo_remove,
     branding_logo_remove_bg,
+    branding_logo_upload,
     derive_scheme_from_url,
 )
 

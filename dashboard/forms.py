@@ -528,8 +528,10 @@ class BrandingForm(forms.ModelForm):
         model = Organization
         # Color order follows the palette spec (Feature Accent -> accent_color
         # precedes Dark Accent), matching COLOR_ROLES and the swatch previews.
+        # NOTE: logo is intentionally NOT here -- it uploads immediately via its
+        # own form/endpoint (LogoUploadForm below), so swapping the logo doesn't
+        # require hitting "Save branding" and doesn't disturb unsaved color edits.
         fields = [
-            "logo",
             "heading_font",
             "body_font",
             "primary_color",
@@ -545,12 +547,6 @@ class BrandingForm(forms.ModelForm):
         # of the (org-field) input name. data-page-tint lets that JS recolor the
         # preview's page background live as the intensity changes.
         widgets = {
-            # Plain FileInput, NOT the default ClearableFileInput: the branding
-            # page shows the current logo as a preview thumbnail and offers an
-            # explicit "Remove logo" button, so the widget's "Currently…/Clear
-            # checkbox/Change…" chrome is redundant clutter. A bare file input is
-            # all we want here.
-            "logo": forms.FileInput(attrs={"accept": "image/*"}),
             **{
                 field: forms.TextInput(attrs={"type": "color", "data-role": role})
                 for role, _label, field in COLOR_ROLES
@@ -561,6 +557,20 @@ class BrandingForm(forms.ModelForm):
             **{field: label for _role, label, field in COLOR_ROLES},
             "page_tint": "Page background",
         }
+
+
+class LogoUploadForm(forms.ModelForm):
+    """Just the org's logo, on its own so it can upload immediately (the file
+    picker auto-submits) rather than riding along with the "Save branding"
+    color/font form. A plain FileInput -- the branding page shows the current
+    logo as a preview and offers explicit Remove buttons, so the default
+    ClearableFileInput's Currently/Clear/Change chrome is redundant. The
+    validate_logo_upload validator + Organization.save normalization still run."""
+
+    class Meta:
+        model = Organization
+        fields = ["logo"]
+        widgets = {"logo": forms.FileInput(attrs={"accept": "image/*"})}
 
 
 class ColorSchemeForm(forms.ModelForm):

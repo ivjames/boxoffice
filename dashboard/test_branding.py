@@ -123,17 +123,6 @@ class ApplySchemeViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def _post(self, **data):
         return self.client.post(BRANDING_URL, data, HTTP_HOST=host_for("roxy"))
 
-    def test_oversized_logo_upload_is_a_form_error_not_a_500(self):
-        # Regression: a hi-res logo (huge dimensions, small bytes) used to 500 --
-        # the pixel guard ran in save(), past form validation. It's now a clean
-        # field error, so the page re-renders (200) instead of erroring.
-        big = SimpleUploadedFile("big.png", image_bytes(size=(6000, 6000)), content_type="image/png")
-        resp = self.client.post(
-            BRANDING_URL, {"action": "save_colors", "logo": big}, HTTP_HOST=host_for("roxy")
-        )
-        self.assertEqual(resp.status_code, 200)  # not a 500
-        self.assertContains(resp, "megapixels")
-
     def test_apply_preset_copies_colors_onto_org(self):
         preset = ColorScheme.objects.get(slug="art-deco-royal")
         resp = self._post(action="apply_scheme", scheme_id=preset.pk)
@@ -513,12 +502,15 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
 
 
 LOGO_REMOVE_URL = "/dashboard/branding/logo/remove/"
+LOGO_UPLOAD_URL = "/dashboard/branding/logo/upload/"
 
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class LogoRemoveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
-    """The explicit "Remove logo" endpoint + the plain-file-input widget (which
-    replaced Django's ClearableFileInput and its Clear checkbox)."""
+    """The logo upload + remove endpoints and the plain-file-input widget (which
+    replaced Django's ClearableFileInput and its Clear checkbox). Upload has its
+    own endpoint so a new logo saves immediately, without the "Save branding"
+    color form."""
 
     @classmethod
     def tearDownClass(cls):
@@ -537,6 +529,39 @@ class LogoRemoveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
         )
         self.org.save()
         self.org.refresh_from_db()
+
+    def _messages(self, resp):
+        return [str(m) for m in get_messages(resp.wsgi_request)]
+
+    def test_upload_saves_the_logo_immediately(self):
+        # No "Save branding" needed -- posting the file to its own endpoint saves.
+        self.assertFalse(self.org.logo)
+        f = SimpleUploadedFile("new.png", image_bytes(size=(300, 300)), content_type="image/png")
+        resp = self.client.post(LOGO_UPLOAD_URL, {"logo": f}, HTTP_HOST=host_for("roxy"))
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.logo)  # saved
+        self.assertTrue(self.org.logo.name.endswith(".png"))  # normalized
+
+    def test_upload_oversized_is_a_clean_error_not_a_500(self):
+        # Hi-res logo (huge dimensions, small bytes): a flashed error, never a 500.
+        big = SimpleUploadedFile("big.png", image_bytes(size=(6000, 6000)), content_type="image/png")
+        resp = self.client.post(LOGO_UPLOAD_URL, {"logo": big}, HTTP_HOST=host_for("roxy"))
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.logo)  # not saved
+        self.assertTrue(any("megapixels" in m for m in self._messages(resp)))
+
+    def test_upload_manager_gated(self):
+        self.client.logout()
+        self.client.force_login(self.box_office)
+        f = SimpleUploadedFile("new.png", image_bytes(size=(100, 100)), content_type="image/png")
+        resp = self.client.post(LOGO_UPLOAD_URL, {"logo": f}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_upload_get_not_allowed(self):
+        resp = self.client.get(LOGO_UPLOAD_URL, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 405)
 
     def test_remove_clears_the_logo(self):
         self._give_logo()

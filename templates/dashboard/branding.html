@@ -81,11 +81,15 @@ colors straight into these pickers (id="save-scheme" is the JS target).
     <h2>{% if derived %}Suggested scheme{% else %}Logo, colors &amp; fonts{% endif %}</h2>
     <p class="muted">Upload a logo, choose fonts, and set the exact colors your
     storefront uses right now. Preview a ready-made scheme below to load it here.</p>
+    {% comment %}Logo upload / background removal / removal are their OWN forms,
+       kept outside the editor form below -- nested <form>s are invalid HTML. The
+       file input + buttons sit in the logo row via the HTML5 form= attribute, so
+       the logo acts independently of the colors/fonts "Save branding" form.
+       Upload is always available; the bg/remove forms only when a logo exists.{% endcomment %}
+    <form method="post" action="{% url 'dashboard_branding_logo_upload' %}" id="logo-upload-form" enctype="multipart/form-data" hidden>
+        {% csrf_token %}
+    </form>
     {% if organization.logo %}
-    {% comment %}Background removal and logo removal are their OWN forms, kept
-       outside the editor form below -- nested <form>s are invalid HTML (the
-       browser drops the inner one). Their buttons sit by the logo preview inside
-       that form via the HTML5 form= attribute.{% endcomment %}
     <form method="post" action="{% url 'dashboard_branding_logo_remove_bg' %}" id="logo-bg-form" data-logo-bg-form hidden>
         {% csrf_token %}
     </form>
@@ -93,7 +97,7 @@ colors straight into these pickers (id="save-scheme" is the JS target).
         {% csrf_token %}
     </form>
     {% endif %}
-    <form method="post" action="{% url 'dashboard_branding' %}" enctype="multipart/form-data" class="dash-form">
+    <form method="post" action="{% url 'dashboard_branding' %}" class="dash-form">
         {% csrf_token %}
         <div class="brand-editor">
             {% comment %}Logo gets its OWN full-width row above the fonts/colors grid
@@ -102,10 +106,14 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                leaving a gap by the pickers.{% endcomment %}
             <div class="brand-logo-row">
                 <div class="field brand-logo-row__upload">
-                    {{ branding_form.logo.label_tag }}
-                    {{ branding_form.logo }}
-                    {{ branding_form.logo.errors }}
-                    <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background. Uploading a new logo replaces the current one when you Save.</p>
+                    {% comment %}File input posts the standalone #logo-upload-form (via
+                       form=) and auto-submits on pick, so a new logo uploads immediately
+                       -- no "Save branding" needed and unsaved color edits are left
+                       alone.{% endcomment %}
+                    <label for="logo-upload-input">Logo:</label>
+                    <input type="file" id="logo-upload-input" name="logo" accept="image/*"
+                           form="logo-upload-form" data-logo-upload>
+                    <p class="muted brand-logo__hint">PNG, JPG, SVG, GIF or WebP. Large images are resized automatically; a transparent PNG looks best on any background. It uploads as soon as you pick it — no need to Save.</p>
                 </div>
                 {% if organization.logo %}
                 <div class="brand-logo-row__preview">
@@ -733,6 +741,18 @@ background obvious. Top-level (outside every form) so it never nests.{% endcomme
             var spinner = btn.querySelector(".spinner");
             if (label) label.textContent = "Removing…";
             if (spinner) spinner.hidden = false;
+        });
+    }
+
+    // ---- Logo upload: submit as soon as a file is picked, so there's no
+    // separate "Save" step. The input is associated to #logo-upload-form via
+    // form=, so input.form is that standalone (multipart) form.
+    var uploadInput = document.querySelector("[data-logo-upload]");
+    if (uploadInput) {
+        uploadInput.addEventListener("change", function () {
+            if (uploadInput.files && uploadInput.files.length) {
+                (uploadInput.form || document.getElementById("logo-upload-form")).submit();
+            }
         });
     }
 

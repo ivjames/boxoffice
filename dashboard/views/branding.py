@@ -23,7 +23,7 @@ from tenants.logo_bg import (
 )
 from tenants.models import ColorScheme
 
-from ..forms import BrandingForm, ColorSchemeForm
+from ..forms import BrandingForm, ColorSchemeForm, LogoUploadForm
 
 
 # --- branding / color schemes (manager+) -----------------------------------
@@ -354,6 +354,26 @@ def branding_logo_remove_bg(request):
     throttle.start_cooldown("logo_bg", org_id, settings.LOGO_BG_COOLDOWN_SECONDS)
     request.session[LOGO_BG_PREVIEW_SESSION_KEY] = base64.b64encode(cleaned).decode("ascii")
     messages.success(request, "Here’s your logo with the background removed — save it or discard it.")
+    return redirect("dashboard_branding")
+
+
+@manager_required
+@require_POST
+def branding_logo_upload(request):
+    """Save a newly-picked logo immediately (the file input auto-submits), so
+    swapping the logo doesn't require hitting "Save branding" and doesn't touch
+    the unsaved color edits. Validation (size/pixels) + normalization run via the
+    form/model; an invalid file is a flashed error, not a 500. Any pending
+    background-removal preview is dropped, since it's about the old logo."""
+    organization = request.organization
+    form = LogoUploadForm(request.POST, request.FILES, instance=organization)
+    if form.is_valid():
+        form.save()
+        request.session.pop(LOGO_BG_PREVIEW_SESSION_KEY, None)
+        messages.success(request, "Logo updated.")
+    else:
+        errors = form.errors.get("logo") or ["Please choose a valid image file."]
+        messages.error(request, errors[0])
     return redirect("dashboard_branding")
 
 

@@ -503,6 +503,7 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
 
 LOGO_REMOVE_URL = "/dashboard/branding/logo/remove/"
 LOGO_UPLOAD_URL = "/dashboard/branding/logo/upload/"
+LOGO_ERASE_URL = "/dashboard/branding/logo/erase/"
 
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
@@ -562,6 +563,57 @@ class LogoRemoveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def test_upload_get_not_allowed(self):
         resp = self.client.get(LOGO_UPLOAD_URL, HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 405)
+
+    # -- "Erase areas" endpoint (the client-side canvas posts the edited PNG) --
+
+    def test_erase_saves_the_edited_image(self):
+        self._give_logo()
+        edited = SimpleUploadedFile("logo.png", image_bytes(size=(200, 200), mode="RGBA"), content_type="image/png")
+        resp = self.client.post(LOGO_ERASE_URL, {"image": edited}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.logo.name.endswith("-erased.png"))
+
+    def test_erase_with_no_logo_is_a_clean_error(self):
+        edited = SimpleUploadedFile("logo.png", image_bytes(size=(50, 50)), content_type="image/png")
+        resp = self.client.post(LOGO_ERASE_URL, {"image": edited}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()["ok"])
+
+    def test_erase_without_an_image_is_a_clean_error(self):
+        self._give_logo()
+        resp = self.client.post(LOGO_ERASE_URL, {}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()["ok"])
+
+    def test_erase_oversized_image_is_a_clean_error_not_a_500(self):
+        self._give_logo()
+        original = self.org.logo.name
+        big = SimpleUploadedFile("big.png", image_bytes(size=(6000, 6000)), content_type="image/png")
+        resp = self.client.post(LOGO_ERASE_URL, {"image": big}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()["ok"])
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.logo.name, original)  # unchanged
+
+    def test_erase_manager_gated(self):
+        self._give_logo()
+        self.client.logout()
+        self.client.force_login(self.box_office)
+        edited = SimpleUploadedFile("logo.png", image_bytes(size=(50, 50)), content_type="image/png")
+        resp = self.client.post(LOGO_ERASE_URL, {"image": edited}, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_erase_get_not_allowed(self):
+        resp = self.client.get(LOGO_ERASE_URL, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 405)
+
+    def test_page_offers_erase_areas_when_a_logo_exists(self):
+        self._give_logo()
+        html = self.client.get(BRANDING_URL, HTTP_HOST=host_for("roxy")).content.decode()
+        self.assertIn("Erase areas", html)
+        self.assertIn('id="logo-erase"', html)
 
     def test_remove_clears_the_logo(self):
         self._give_logo()

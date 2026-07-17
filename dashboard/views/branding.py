@@ -16,11 +16,14 @@ from tenants.color_extraction import ColorDeriveError, derive_scheme_from_url
 from tenants.color_generator import scheme_from_primary
 from tenants.color_schemes import COLOR_ROLES, HEX_COLOR_RE
 from tenants.fonts import FONTS
+from django.core.exceptions import ValidationError
+
 from tenants.logo_bg import (
     BackgroundRemovalUnavailable,
     LogoBackgroundError,
     remove_logo_background,
 )
+from tenants.logo_images import normalize_logo_bytes, validate_logo_upload
 from tenants.models import ColorScheme
 
 from ..forms import BrandingForm, ColorSchemeForm, LogoUploadForm
@@ -393,3 +396,32 @@ def branding_logo_remove(request):
     else:
         messages.info(request, "There’s no logo to remove.")
     return redirect("dashboard_branding")
+
+
+@manager_required
+@require_POST
+def branding_logo_erase(request):
+    """Save a logo the manager touched up with the client-side "Erase areas"
+    tool (canvas flood-fill): the finished transparent PNG is POSTed as `image`.
+    The edit is a JS/canvas flow, so this answers JSON (the page reloads on ok).
+    Validated + normalized like any other upload, so a hostile/oversized blob is
+    a clean 400, never a 500."""
+    organization = request.organization
+    if not organization.logo:
+        return JsonResponse({"ok": False, "error": "There’s no logo to edit."}, status=400)
+
+    upload = request.FILES.get("image")
+    if upload is None:
+        return JsonResponse({"ok": False, "error": "No edited image was received."}, status=400)
+
+    try:
+        validate_logo_upload(upload)  # byte + pixel caps; rewinds the file
+        png = normalize_logo_bytes(upload.read())
+    except ValidationError as exc:
+        messages_list = exc.messages if hasattr(exc, "messages") else [str(exc)]
+        return JsonResponse({"ok": False, "error": messages_list[0]}, status=400)
+
+    stem = os.path.splitext(os.path.basename(organization.logo.name))[0].removesuffix("-erased")
+    organization.logo.save(f"{stem}-erased.png", ContentFile(png), save=True)
+    request.session.pop(LOGO_BG_PREVIEW_SESSION_KEY, None)
+    return JsonResponse({"ok": True})

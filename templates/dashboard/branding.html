@@ -148,6 +148,7 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                                 <span class="logo-bg-btn__label">Remove background</span>
                                 <span class="spinner" hidden aria-hidden="true"></span>
                             </button>
+                            <button type="button" class="button button--secondary button--sm" data-erase-open>Erase areas</button>
                             <button type="submit" form="logo-remove-form" class="button button--secondary button--sm" data-logo-remove-btn>Remove logo</button>
                         </div>
                     {% endif %}
@@ -301,6 +302,29 @@ background obvious. Top-level (outside every form) so it never nests.{% endcomme
         <img class="logo-zoom__img" id="logo-zoom-img" alt="Logo preview">
         <figcaption class="logo-zoom__caption" id="logo-zoom-caption"></figcaption>
     </figure>
+</div>
+
+{% comment %}"Erase areas" editor: the logo on a <canvas>; clicking a spot flood-
+clears that connected patch of similar colour to transparent -- for background,
+or enclosed areas the auto-remove can't reach. Client-side (instant per click);
+Save POSTs the finished PNG to branding_logo_erase. Top-level (outside every
+form). data-src is cache-busted in JS so it always loads the current logo.{% endcomment %}
+<div class="logo-erase" id="logo-erase" hidden>
+    <div class="logo-erase__backdrop" data-erase-cancel></div>
+    <div class="logo-erase__dialog" role="dialog" aria-modal="true" aria-label="Erase logo areas">
+        <p class="logo-erase__hint">Click any area to erase it — the background, or an enclosed spot the auto-remove left filled. Erase as many as you like, then Save.</p>
+        <div class="logo-erase__canvas-wrap">
+            <canvas id="logo-erase-canvas" data-src="{{ organization.logo.url }}"></canvas>
+        </div>
+        <div class="logo-erase__actions">
+            <button type="button" class="button button--secondary button--sm" data-erase-undo disabled>Undo</button>
+            <button type="button" class="button button--secondary button--sm" data-erase-reset disabled>Reset</button>
+            <span class="logo-erase__spacer"></span>
+            <button type="button" class="button button--secondary button--sm" data-erase-cancel>Cancel</button>
+            <button type="button" class="button button--sm" data-erase-save>Save</button>
+        </div>
+    </div>
+    <form method="post" action="{% url 'dashboard_branding_logo_erase' %}" id="logo-erase-form" hidden>{% csrf_token %}</form>
 </div>
 {% endif %}
 
@@ -795,6 +819,114 @@ background obvious. Top-level (outside every form) so it never nests.{% endcomme
         });
         document.addEventListener("keydown", function (e) {
             if (!zoom.hidden && e.key === "Escape") closeZoom();
+        });
+    }
+
+    // ---- "Erase areas": click a spot to flood-clear that connected patch of
+    // similar colour to transparent (background, or enclosed spots the auto
+    // remove can't reach). All client-side on a canvas; Save POSTs the PNG.
+    var eraseOpen = document.querySelector("[data-erase-open]");
+    var erase = document.getElementById("logo-erase");
+    if (eraseOpen && erase) {
+        var canvas = document.getElementById("logo-erase-canvas");
+        var cx = canvas.getContext("2d", { willReadFrequently: true });
+        var eForm = document.getElementById("logo-erase-form");
+        var undoB = erase.querySelector("[data-erase-undo]");
+        var resetB = erase.querySelector("[data-erase-reset]");
+        var saveB = erase.querySelector("[data-erase-save]");
+        var TOL = 40;          // colour match tolerance, matches the auto flood-fill
+        var MAX_HISTORY = 12;
+        var originalData = null;
+        var history = [];
+
+        var syncButtons = function () {
+            undoB.disabled = history.length === 0;
+            resetB.disabled = history.length === 0;
+        };
+        var loadLogo = function () {
+            var img = new Image();
+            img.onload = function () {
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                cx.clearRect(0, 0, canvas.width, canvas.height);
+                cx.drawImage(img, 0, 0);
+                originalData = cx.getImageData(0, 0, canvas.width, canvas.height);
+                history = [];
+                syncButtons();
+            };
+            // Cache-bust so a just-saved logo re-loads fresh.
+            img.src = canvas.getAttribute("data-src") + "?t=" + Date.now();
+        };
+        var openErase = function () { erase.hidden = false; loadLogo(); };
+        var closeErase = function () { erase.hidden = true; };
+
+        var floodClear = function (sx, sy) {
+            var w = canvas.width, h = canvas.height;
+            var image = cx.getImageData(0, 0, w, h);
+            var d = image.data;
+            var start = (sy * w + sx) * 4;
+            if (d[start + 3] === 0) return;          // already transparent
+            var tr = d[start], tg = d[start + 1], tb = d[start + 2];
+            if (history.length >= MAX_HISTORY) history.shift();
+            history.push(cx.getImageData(0, 0, w, h));   // snapshot for undo
+            var stack = [sy * w + sx];
+            var seen = new Uint8Array(w * h);
+            while (stack.length) {
+                var p = stack.pop();
+                if (seen[p]) continue;
+                seen[p] = 1;
+                var o = p * 4;
+                if (d[o + 3] === 0) continue;
+                if (Math.max(Math.abs(d[o] - tr), Math.abs(d[o + 1] - tg), Math.abs(d[o + 2] - tb)) > TOL) continue;
+                d[o + 3] = 0;
+                var x = p % w, y = (p - x) / w;
+                if (x > 0) stack.push(p - 1);
+                if (x < w - 1) stack.push(p + 1);
+                if (y > 0) stack.push(p - w);
+                if (y < h - 1) stack.push(p + w);
+            }
+            cx.putImageData(image, 0, 0);
+            syncButtons();
+        };
+
+        canvas.addEventListener("click", function (e) {
+            var rect = canvas.getBoundingClientRect();
+            var x = Math.floor((e.clientX - rect.left) * canvas.width / rect.width);
+            var y = Math.floor((e.clientY - rect.top) * canvas.height / rect.height);
+            if (x >= 0 && y >= 0 && x < canvas.width && y < canvas.height) floodClear(x, y);
+        });
+        undoB.addEventListener("click", function () {
+            if (history.length) { cx.putImageData(history.pop(), 0, 0); syncButtons(); }
+        });
+        resetB.addEventListener("click", function () {
+            if (originalData) { cx.putImageData(originalData, 0, 0); history = []; syncButtons(); }
+        });
+        eraseOpen.addEventListener("click", openErase);
+        erase.querySelectorAll("[data-erase-cancel]").forEach(function (el) {
+            el.addEventListener("click", closeErase);
+        });
+        document.addEventListener("keydown", function (e) {
+            if (!erase.hidden && e.key === "Escape") closeErase();
+        });
+
+        saveB.addEventListener("click", function () {
+            saveB.disabled = true;
+            saveB.textContent = "Saving…";
+            var done = function (msg) { saveB.disabled = false; saveB.textContent = "Save"; if (msg) alert(msg); };
+            canvas.toBlob(function (blob) {
+                if (!blob) { done("Couldn’t read the edited image."); return; }
+                var fd = new FormData();
+                fd.append("image", blob, "logo.png");
+                fd.append("csrfmiddlewaretoken", eForm.querySelector("[name=csrfmiddlewaretoken]").value);
+                fetch(eForm.getAttribute("action"), {
+                    method: "POST", body: fd, headers: { "X-Requested-With": "XMLHttpRequest" },
+                }).then(function (r) {
+                    return r.json().catch(function () { return { ok: r.ok }; });
+                }).then(function (data) {
+                    if (data && data.ok) { window.location.reload(); }
+                    else { done((data && data.error) || "Couldn’t save the edit."); }
+                }).catch(function () { done("Couldn’t reach the server."); });
+            }, "image/png");
         });
     }
 })();

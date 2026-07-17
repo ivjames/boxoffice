@@ -3788,13 +3788,12 @@ table.dash-table th {
 }
 
 .brand-logo-row__upload {
-    flex: 0 1 30rem;
+    flex: 1 1 22rem;  /* grow to fill the row so the controls span the full width */
     min-width: 220px;
-    max-width: 100%;
 }
 
 .brand-logo-row__preview {
-    flex: 0 1 auto;
+    flex: 0 0 auto;  /* natural width, pinned to the right */
     display: flex;
     flex-direction: column;
     align-items: flex-start;

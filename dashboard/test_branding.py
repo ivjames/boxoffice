@@ -510,3 +510,63 @@ class LogoRemoveBgViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
     def test_get_not_allowed(self):
         resp = self.client.get(LOGO_BG_URL, HTTP_HOST=host_for("roxy"))
         self.assertEqual(resp.status_code, 405)
+
+
+LOGO_REMOVE_URL = "/dashboard/branding/logo/remove/"
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class LogoRemoveViewTests(StaffFixtureMixin, DashFixtureMixin, TestCase):
+    """The explicit "Remove logo" endpoint + the plain-file-input widget (which
+    replaced Django's ClearableFileInput and its Clear checkbox)."""
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(settings.MEDIA_ROOT, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.org, _ = self.build_org("roxy")
+        self.manager = self.make_staff(self.org, Membership.Role.MANAGER)[0]
+        self.box_office = self.make_staff(self.org, Membership.Role.BOX_OFFICE)[0]
+        self.client.force_login(self.manager)
+
+    def _give_logo(self):
+        self.org.logo = SimpleUploadedFile(
+            "logo.png", image_bytes(size=(200, 200)), content_type="image/png"
+        )
+        self.org.save()
+        self.org.refresh_from_db()
+
+    def test_remove_clears_the_logo(self):
+        self._give_logo()
+        self.assertTrue(self.org.logo)
+        resp = self.client.post(LOGO_REMOVE_URL, HTTP_HOST=host_for("roxy"))
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.logo)  # field cleared
+
+    def test_remove_with_no_logo_is_harmless(self):
+        resp = self.client.post(LOGO_REMOVE_URL, HTTP_HOST=host_for("roxy"))
+        self.assertRedirects(resp, BRANDING_URL, fetch_redirect_response=False)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.logo)
+
+    def test_remove_is_manager_gated(self):
+        self.client.logout()
+        self.client.force_login(self.box_office)
+        resp = self.client.post(LOGO_REMOVE_URL, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_remove_get_not_allowed(self):
+        resp = self.client.get(LOGO_REMOVE_URL, HTTP_HOST=host_for("roxy"))
+        self.assertEqual(resp.status_code, 405)
+
+    def test_page_uses_plain_file_input_and_offers_remove_logo(self):
+        # The default ClearableFileInput's "Clear" checkbox is gone; an explicit
+        # "Remove logo" action button is offered instead.
+        self._give_logo()
+        html = self.client.get(BRANDING_URL, HTTP_HOST=host_for("roxy")).content.decode()
+        self.assertNotIn('name="logo-clear"', html)   # no Django Clear checkbox
+        self.assertNotIn("Currently:", html)           # no ClearableFileInput chrome
+        self.assertIn("Remove logo", html)             # our explicit action

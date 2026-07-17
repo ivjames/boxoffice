@@ -82,11 +82,14 @@ colors straight into these pickers (id="save-scheme" is the JS target).
     <p class="muted">Upload a logo, choose fonts, and set the exact colors your
     storefront uses right now. Preview a ready-made scheme below to load it here.</p>
     {% if organization.logo %}
-    {% comment %}Background removal is its OWN form, kept outside the editor form below --
-       nested <form>s are invalid HTML (the browser drops the inner one, so the
-       button would post to the editor instead). Its button sits by the logo
-       preview inside that form via the HTML5 form= attribute.{% endcomment %}
+    {% comment %}Background removal and logo removal are their OWN forms, kept
+       outside the editor form below -- nested <form>s are invalid HTML (the
+       browser drops the inner one). Their buttons sit by the logo preview inside
+       that form via the HTML5 form= attribute.{% endcomment %}
     <form method="post" action="{% url 'dashboard_branding_logo_remove_bg' %}" id="logo-bg-form" data-logo-bg-form hidden>
+        {% csrf_token %}
+    </form>
+    <form method="post" action="{% url 'dashboard_branding_logo_remove' %}" id="logo-remove-form" hidden>
         {% csrf_token %}
     </form>
     {% endif %}
@@ -134,10 +137,13 @@ colors straight into these pickers (id="save-scheme" is the JS target).
                         </div>
                         <p class="muted brand-logo__hint">Preview only — your logo isn’t changed until you choose “Use this logo”.</p>
                     {% else %}
-                        <button type="submit" form="logo-bg-form" name="action" value="preview" class="button button--secondary button--sm" data-logo-bg-btn>
-                            <span class="logo-bg-btn__label">Remove background</span>
-                            <span class="spinner" hidden aria-hidden="true"></span>
-                        </button>
+                        <div class="brand-logo__bg-actions">
+                            <button type="submit" form="logo-bg-form" name="action" value="preview" class="button button--secondary button--sm" data-logo-bg-btn>
+                                <span class="logo-bg-btn__label">Remove background</span>
+                                <span class="spinner" hidden aria-hidden="true"></span>
+                            </button>
+                            <button type="submit" form="logo-remove-form" class="button button--secondary button--sm" data-logo-remove-btn>Remove logo</button>
+                        </div>
                     {% endif %}
                 </div>
                 {% endif %}
@@ -727,6 +733,16 @@ background obvious. Top-level (outside every form) so it never nests.{% endcomme
             var spinner = btn.querySelector(".spinner");
             if (label) label.textContent = "Removing…";
             if (spinner) spinner.hidden = false;
+        });
+    }
+
+    // ---- "Remove logo" is destructive: confirm before it deletes the logo.
+    var removeBtn = document.querySelector("[data-logo-remove-btn]");
+    if (removeBtn) {
+        removeBtn.addEventListener("click", function (e) {
+            if (!window.confirm("Remove your logo? Your storefront will show your theater name instead.")) {
+                e.preventDefault();
+            }
         });
     }
 

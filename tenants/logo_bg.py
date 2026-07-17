@@ -93,14 +93,30 @@ def warm():
 
 
 def remove_logo_background(raw):
-    """Take the raw bytes of an image and return optimized PNG bytes with the
-    background made transparent, reusing the cached session. The result is run
-    back through normalize_logo_bytes so a de-boxed logo obeys the same
-    size/format rules as any other upload (and a huge source can't sneak past
-    the resize).
+    """Return optimized PNG bytes for `raw` with the background made transparent.
 
-    Raises BackgroundRemovalUnavailable if rembg/model isn't available, or
-    LogoBackgroundError if the model runs but the image can't be processed."""
+    Two-tier: a logo on a clean SOLID background (the common case -- exported on
+    white) is handled by a fast, dependency-free flood-fill (tenants/logo_flood)
+    that keys on the edge colour and leaves interior same-colour areas intact --
+    where the ML model over-removes. Only a BUSY/photographic background (no
+    uniform edge to key on) falls through to rembg.
+
+    Every result is run back through normalize_logo_bytes so a de-boxed logo
+    obeys the same size/format rules as any other upload. Raises
+    BackgroundRemovalUnavailable only when a busy background needs rembg and it
+    isn't available; LogoBackgroundError if a cutout can't be processed."""
+    from .logo_flood import flood_fill_background
+
+    flooded = flood_fill_background(raw)
+    if flooded is not None:
+        try:
+            return normalize_logo_bytes(flooded)
+        except ValidationError as exc:
+            raise LogoBackgroundError(
+                "The background was removed but the result couldn’t be saved."
+            ) from exc
+
+    # Busy/photographic background -> the ML model.
     session = _get_session()
 
     from rembg import remove  # import is cheap now the session's been built

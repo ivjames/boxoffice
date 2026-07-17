@@ -78,9 +78,7 @@ a ready-made scheme below and the derive-from-website flow both load their
 colors straight into these pickers (id="save-scheme" is the JS target).
 {% endcomment %}
 <section class="brand-section" id="save-scheme">
-    <h2>{% if derived %}Suggested scheme{% else %}Logo, colors &amp; fonts{% endif %}</h2>
-    <p class="muted">Upload a logo, choose fonts, and set the exact colors your
-    storefront uses right now. Preview a ready-made scheme below to load it here.</p>
+    {% if derived %}<h2>Suggested scheme</h2>{% endif %}
     {% comment %}Logo upload / background removal / removal are their OWN forms,
        kept outside the editor form below -- nested <form>s are invalid HTML. The
        file input + buttons sit in the logo row via the HTML5 form= attribute, so

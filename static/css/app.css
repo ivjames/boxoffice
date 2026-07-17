@@ -3782,9 +3782,7 @@ table.dash-table th {
     flex-wrap: wrap;
     align-items: flex-start;
     gap: 1rem 2rem;
-    margin-bottom: 1.25rem;
-    padding-bottom: 1.25rem;
-    border-bottom: 1px solid rgba(128, 128, 128, 0.22);
+    margin-bottom: 0.5rem;
 }
 
 .brand-logo-row__upload {

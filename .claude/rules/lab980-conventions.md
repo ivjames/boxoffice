@@ -54,13 +54,20 @@ the only two every site has — the rest of the command set differs, and
 `boxoffice` for instance has no `status` at all. Ask `--help` rather than
 assuming; this repo's `DEPLOY.md` is the full runbook.
 
-- **Never edit files on the droplet.** Deploying re-syncs the checkout from
-  git, and what that does to a hand-edit depends on the site: most hard-reset,
-  so the edit is destroyed silently; at least one fast-forwards, so a
-  non-conflicting edit survives into production and a conflicting one aborts
-  the deploy. Both are bad, differently, and neither is something to rely on —
-  the repo is the only place to fix anything. Which one this site does is in
-  its own `DEPLOY.md`.
+- **Never edit a tracked file on the droplet.** Deploying re-syncs the
+  checkout from git, and what that does to a hand-edit depends on the site:
+  most hard-reset, so the edit is destroyed silently; at least one
+  fast-forwards, so a non-conflicting edit survives into production and a
+  conflicting one aborts the deploy. Both are bad, differently, and neither is
+  something to rely on — for anything in git, the repo is the only place to fix
+  it. Which one this site does is in its own `DEPLOY.md`, or failing that in
+  its `bin/<stub>`.
+- **The untracked state on the box is a different matter, and is meant to be
+  edited there.** `.env` and `data/` are gitignored precisely so they survive a
+  deploy: an app site's keys are added to `.env` on the droplet by hand, and
+  that is the supported path, not a workaround. Never move a secret into the
+  repo to avoid editing on the box — on a static site the checkout *is* the web
+  root, so a committed secret is served.
 - **Check what is actually live before saying a deploy happened.** A 200 only
   proves the endpoint answered, not which build it served — ask for the
   deployed commit, not just the status code.

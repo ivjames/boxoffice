@@ -62,12 +62,16 @@ assuming; this repo's `DEPLOY.md` is the full runbook.
   something to rely on — for anything in git, the repo is the only place to fix
   it. Which one this site does is in its own `DEPLOY.md`, or failing that in
   its `bin/<stub>`.
-- **The untracked state on the box is a different matter, and is meant to be
-  edited there.** `.env` and `data/` are gitignored precisely so they survive a
-  deploy: an app site's keys are added to `.env` on the droplet by hand, and
-  that is the supported path, not a workaround. Never move a secret into the
-  repo to avoid editing on the box — on a static site the checkout *is* the web
-  root, so a committed secret is served.
+- **On an app site, the untracked state is a different matter and is meant to
+  be edited on the box.** `.env` and `data/` are gitignored precisely so they
+  survive a deploy: the keys go into `.env` on the droplet by hand, and that is
+  the supported path, not a workaround. Never move a secret into the repo to
+  avoid editing there.
+- **A static site has no such state, and must not acquire any.** Its checkout
+  *is* the nginx web root, so anything left in it is something the internet can
+  fetch — the vhost denies dotfiles and `*.md`, and nothing else. A `data/`
+  directory created on the box would be served. Static sites hold no secrets,
+  in git or beside it.
 - **Check what is actually live before saying a deploy happened.** A 200 only
   proves the endpoint answered, not which build it served — ask for the
   deployed commit, not just the status code.

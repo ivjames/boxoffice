@@ -88,7 +88,7 @@ assumed. That set is exactly what `sites.py --attach` lists — registry entries
 with a recorded repo, minus the conventions repo itself, which holds the
 canonical copy rather than a copy of it. It is deliberately not "every entry in
 the registry": `lab980` deploys with `update.sh` rather than a `bin/<stub>`
-CLI, and five entries have no repo recorded yet, so a test written that way
+CLI, and four entries have no repo recorded yet, so a test written that way
 would be unverifiable and would quietly license checking the same handful while
 believing otherwise. Three claims have already failed that test — a hard reset that one
 site doesn't do, a `status` command one site doesn't have, and a deploy ref

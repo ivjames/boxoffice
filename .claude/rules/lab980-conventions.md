@@ -52,9 +52,13 @@ Each site ships its own operate CLI at `bin/<stub>`, symlinked to
 `/usr/local/bin/<stub>` on the droplet. `<stub> deploy` and `<stub> status` are
 the two you want; this repo's `DEPLOY.md` is the full runbook.
 
-- **`deploy` hard-resets the checkout to `origin/main`.** Anything hand-edited
-  on the droplet is destroyed on the next deploy, silently. Fix things in the
-  repo, not on the box.
+- **Never edit files on the droplet.** Deploying re-syncs the checkout from
+  git, and what that does to a hand-edit depends on the site: most hard-reset,
+  so the edit is destroyed silently; at least one fast-forwards, so a
+  non-conflicting edit survives into production and a conflicting one aborts
+  the deploy. Both are bad, differently, and neither is something to rely on —
+  the repo is the only place to fix anything. Which one this site does is in
+  its own `DEPLOY.md`.
 - **Check what is actually live before saying a deploy happened.** A 200 only
   proves the endpoint answered, not which build it served — ask for the
   deployed commit, not just the status code.

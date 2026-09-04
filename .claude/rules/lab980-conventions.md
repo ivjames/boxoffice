@@ -21,17 +21,32 @@ true in *this* repo, so it is here rather than one clone away.
    is worse than the bug it imagined. Read the actual script or file it names
    first. When it *is* right, push the fix and resolve the thread; when it
    isn't, say why on the thread rather than silently ignoring it.
-5. **Re-request a review after substantial pushes** by commenting
-   `@codex review`. It reviews when a PR opens, when a draft is marked ready,
-   and when it's asked — *not* on every push. A PR whose reviewed commit is
-   ten commits behind its head has not been reviewed. The one push that
-   doesn't need re-reviewing is a sync of this file to canonical: its content
-   is reviewed in the lab980 PR that authors it, and asking for it again in
-   every site repo reviews the same bytes N times to learn nothing.
+5. **One review round is the default — don't ask for another after fixing.**
+   Codex reviews when a PR opens, when a draft is marked ready, and when it's
+   asked (`@codex review`), *not* on every push. But it re-reads the whole diff
+   rather than what changed since, so asking again after pushing the fixes it
+   requested restarts the loop on code it has already passed: fresh findings on
+   old lines, another round of fixes, a PR that stops converging, and a metered
+   review spent each time round. The fix you pushed is the end of the round —
+   verify it yourself, resolve the thread, merge.
+   Ask for a second review only when the PR has picked up work the first one
+   never saw: commits that add or change behaviour on their own account, not
+   the ones answering its findings. A PR whose reviewed commit is ten commits
+   of new work behind its head has effectively not been reviewed; a PR whose
+   only unreviewed commits are its own review fixes has. If you can't name what
+   is unreviewed, that is the answer — don't ask. Nor does a sync of this file
+   to canonical need asking: its content is reviewed in the lab980 PR that
+   authors it, and asking again in every site repo reviews the same bytes N
+   times to learn nothing.
 6. **Which branch it targets is this repo's business** — its own `CLAUDE.md`
    says, and that answer wins over this file. Where it says nothing: target
-   `main`. Sites here genuinely differ; `boxoffice` ships beta-first, so
-   feature PRs go to `staging` and reach `main` by promotion.
+   the branch this repo actually deploys from, which is its **default branch**
+   — read it, don't assume it. `main` is the common case but not a safe
+   default: of the repos this file is fanned out to, two are on `master` and
+   one has no `main` at all, its only branch being a `claude/…` one. A PR
+   opened against a branch that doesn't exist is a PR nobody merges. Sites
+   here also differ on purpose; `boxoffice` ships beta-first, so feature PRs
+   go to `staging` and reach `main` by promotion.
 7. **Watch the PR on a five-minute poll**, not the hourly one a harness will
    default to. GitHub's events — CI, review comments, conflict notices — do the
    real work and nearly all arrive within about four minutes of a push; the
@@ -94,8 +109,9 @@ canonical copy rather than a copy of it. It is deliberately not "every entry in
 the registry": `lab980` deploys with `update.sh` rather than a `bin/<stub>`
 CLI, and four entries have no repo recorded yet, so a test written that way
 would be unverifiable and would quietly license checking the same handful while
-believing otherwise. Three claims have already failed that test — a hard reset that one
-site doesn't do, a `status` command one site doesn't have, and a deploy ref
-that isn't always `main` — and each was wrong in the direction that stops the
-reader looking. A file this widely copied earns its keep only by being
-narrower than it is tempting to make it.
+believing otherwise. Four claims have already failed that test — a hard reset
+that one site doesn't do, a `status` command one site doesn't have, a deploy
+ref that isn't always `main`, and a *default branch* that isn't always `main`
+either — and each was wrong in the direction that stops the reader looking. A
+file this widely copied earns its keep only by being narrower than it is
+tempting to make it.

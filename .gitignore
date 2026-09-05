@@ -18,6 +18,8 @@ staticfiles/
 media/
 # Deploy stamp written by `bin/boxoffice deploy` (config/version.py reads it).
 VERSION
+# pg_dump output and media tarballs from `bin/boxoffice backup`.
+backups/
 
 # Editors / OS
 .vscode/

@@ -188,16 +188,79 @@ cmd_deploy() {
   log "deploy complete ($new_head)"
 }
 
+# Every pm2 call goes through pm2_clean, which launches it from an EMPTY
+# environment plus the handful of variables pm2 itself needs (and PORT when
+# load_env has set it — not a secret, and the ecosystem file has no env
+# block of its own). pm2 copies the environment of the `pm2 start` call into
+# the process, and from there into ~/.pm2/dump.pm2 on save, and the calling
+# shell here has just run load_env: SECRET_KEY, DATABASE_URL, the Stripe keys
+# — every value in .env — was exported into it. A plain `pm2 start` gave each
+# of those an indefinite on-disk lifetime in the dump. The app needs none of
+# it from pm2: `serve` reads .env itself, so the process is configured the
+# same way whether pm2 or a hand `bin/boxoffice serve` started it. The daemon
+# keeps the environment of whichever call first spawned it, which is why
+# describe, logs and save go through here as well.
+pm2_clean() {
+  env -i PATH="$PATH" HOME="$HOME" ${PM2_HOME:+PM2_HOME="$PM2_HOME"} \
+    ${TERM:+TERM="$TERM"} LANG=C.UTF-8 ${PORT:+PORT="$PORT"} pm2 "$@"
+}
+
+# `pm2 jlist` is JSON only on a good day: pm2 writes chatter to STDOUT ahead
+# of it (`[PM2] Spawning PM2 daemon…`, `>>>> In-memory PM2 is out-of-date`),
+# so the JSON is taken from the first line that starts one and parses.
+PM2_JSON='import json, sys
+lines = sys.stdin.read().split("\n")
+for i, line in enumerate(lines):
+    if line[:1] in "[{":
+        try:
+            procs = json.loads("\n".join(lines[i:]))
+        except ValueError:
+            continue
+        if isinstance(procs, list):
+            json.dump(procs, sys.stdout); sys.exit(0)
+sys.exit("no parseable JSON in pm2 jlist output")'
+pm2_jlist() {   # -> JSON array on stdout; 1 with the reason on stderr
+  local jl
+  jl="$(pm2_clean jlist 2>/dev/null)" || { echo "pm2 jlist failed" >&2; return 1; }
+  printf '%s' "$jl" | python3 -c "$PM2_JSON"
+}
+
+# Names of registered processes that are not online (empty = all online);
+# exit 1 with the reason when the list cannot be read.
+pm2_not_online() {
+  local js
+  js="$(pm2_jlist 2>&1)" || { printf '%s' "$js"; return 1; }
+  printf '%s' "$js" | python3 -c 'import json, sys
+print(" ".join(x.get("name", "?") for x in json.load(sys.stdin)
+               if x.get("pm2_env", {}).get("status") != "online"))'
+}
+
+save_if_online() {
+  # pm2 save overwrites the dump with whatever is running right now, so a save
+  # while anything is down persists a dump that comes back short on the next
+  # reboot. The box rule (lab980 CLAUDE.md) is EVERY app online before a save,
+  # not just this one; otherwise say so and leave the previous dump alone.
+  local bad
+  if ! bad="$(pm2_not_online)"; then
+    warn "skipping pm2 save: cannot read the pm2 process list ($bad)"; return 0
+  fi
+  if [ -n "$bad" ]; then
+    warn "not every pm2 process is online ($bad) — skipping pm2 save so the dump keeps its last good state. Run \`pm2 save\` yourself once they are."
+    return 0
+  fi
+  pm2_clean save >/dev/null
+}
+
 restart_pm2() {
   require_cmd pm2
-  if pm2 describe "$PM2_APP_NAME" >/dev/null 2>&1; then
+  if pm2_clean describe "$PM2_APP_NAME" >/dev/null 2>&1; then
     log "pm2 restart $PM2_APP_NAME"
-    pm2 restart "$PM2_APP_NAME" >/dev/null
+    pm2_clean restart "$PM2_APP_NAME" >/dev/null
   else
     log "pm2 app '$PM2_APP_NAME' not found — starting it from deploy/ecosystem.config.js"
-    pm2 start "$APP_DIR/deploy/ecosystem.config.js" >/dev/null
+    pm2_clean start "$APP_DIR/deploy/ecosystem.config.js" >/dev/null
   fi
-  pm2 save >/dev/null
+  save_if_online
 }
 
 # ========================================================== restart ====
@@ -210,7 +273,7 @@ cmd_restart() {
 # ============================================================= logs ====
 cmd_logs() {
   require_cmd pm2
-  pm2 logs "$PM2_APP_NAME" "$@"
+  pm2_clean logs "$PM2_APP_NAME" "$@"
 }
 
 # =========================================================== migrate ====
@@ -356,15 +419,27 @@ cmd_add_tenant() {
   fi
 
   # -- (c) nginx vhost, same PORT as the main app --
-  local conf="/etc/nginx/sites-available/$fqdn"
+  local conf="/etc/nginx/sites-available/$fqdn" link="/etc/nginx/sites-enabled/$fqdn"
+  local wrote_conf=0 wrote_link=0
   if [ -f "$conf" ]; then
     log "nginx: $conf already exists (leaving as-is)"
   else
     log "nginx: writing $conf (proxy -> 127.0.0.1:$PORT)"
     nginx_proxy_block "$fqdn" "$PORT" > "$conf"
+    wrote_conf=1
   fi
-  ln -sf "$conf" "/etc/nginx/sites-enabled/$fqdn"
-  nginx -t && systemctl reload nginx
+  [ -e "$link" ] || [ -L "$link" ] || wrote_link=1
+  ln -sf "$conf" "$link"
+  # `nginx -t && systemctl reload nginx` is fail-open under set -e (a failed
+  # left side of && does not abort), so a rejected config was left enabled on
+  # disk for the next reload or reboot to trip over. Test, and on failure take
+  # back exactly what this run put there before dying.
+  if ! nginx -t; then
+    [ "$wrote_link" -eq 0 ] || rm -f "$link"
+    [ "$wrote_conf" -eq 0 ] || rm -f "$conf"
+    die "nginx -t rejected the config with $fqdn's vhost enabled — removed what this run wrote, nginx not reloaded"
+  fi
+  systemctl reload nginx
   log "nginx: enabled and reloaded"
 
   # -- (d) TLS via certbot --
@@ -417,12 +492,23 @@ cmd_remove_tenant() {
     return 0
   fi
 
-  local removed=0
-  for f in "/etc/nginx/sites-enabled/$fqdn" "/etc/nginx/sites-available/$fqdn"; do
+  local removed=0 saved="" had_link=0
+  local conf="/etc/nginx/sites-available/$fqdn" link="/etc/nginx/sites-enabled/$fqdn"
+  [ ! -f "$conf" ] || saved="$(cat "$conf")"
+  [ ! -e "$link" ] && [ ! -L "$link" ] || had_link=1
+  for f in "$link" "$conf"; do
     if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f"; removed=1; fi
   done
   if [ "$removed" -eq 1 ]; then
-    nginx -t && systemctl reload nginx
+    # Same fail-open `nginx -t && reload` as add-tenant had: test, and put the
+    # vhost back exactly as it was if nginx now rejects the config, so the
+    # running nginx and its next reload agree.
+    if ! nginx -t; then
+      [ -z "$saved" ] || printf '%s\n' "$saved" > "$conf"
+      [ "$had_link" -eq 0 ] || ln -sf "$conf" "$link"
+      die "nginx -t rejected the config with $fqdn's vhost removed — restored it, nginx not reloaded"
+    fi
+    systemctl reload nginx
     log "nginx: vhost removed for $fqdn"
   else
     log "nginx: no vhost for $fqdn (nothing to remove)"
